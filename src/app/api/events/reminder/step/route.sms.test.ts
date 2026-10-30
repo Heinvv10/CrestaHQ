@@ -398,6 +398,19 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     expect(mem.list("contacts/c1/activities").filter((a) => String(a.content).includes("a later reminder was held"))).toHaveLength(1);
   });
 
+  it("a later reminder whose republish could not be queued does not make the earlier one yield: the earlier still sends", async () => {
+    await remind({ channels: { sms: true } }, 120);
+    publishCallback.mockResolvedValueOnce(null); // the later offset's republish fails
+    expect(await (await remind({ channels: { sms: true } }, 60)).json()).toMatchObject({ sms: "quiet_hours_hold_failed" });
+    // No marker entry for an offset that was never queued.
+    const marker = mem.list("events/e1/reminderSends").find((d) => d.id.startsWith("smshold_"))!;
+    expect(marker.offsets).toEqual([120]);
+    vi.setSystemTime(MORNING);
+    const [earlier] = published().map((p) => p.body);
+    expect(await (await remind(earlier, 120)).json()).toMatchObject({ sms: "sent" });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+  });
+
   it("whichever republished step runs first, the earlier reminder never sends", async () => {
     await remind({ channels: { sms: true } }, 120);
     await remind({ channels: { sms: true } }, 60);

@@ -30,13 +30,16 @@ vi.mock("@/lib/booking/lifecycle", async (orig) => ({
   fireBookingTrigger: async () => undefined,
   recordBookingActivity: async () => undefined,
 }));
-vi.mock("@/lib/google-calendar/push", () => ({ pushBookingToGoogle: async () => undefined }));
+vi.mock("@/lib/google-calendar/push", () => ({ pushBookingToGoogle: async () => undefined, pushBookingToGoogleAfterResponse: () => undefined }));
+vi.mock("@/lib/google-calendar/busy", () => ({ loadGoogleBusyForEvent: async () => [] }));
 vi.mock("@/lib/comms/sms/select", () => ({ sendSmsVia: (...a: unknown[]) => sendSmsVia(...a) }));
 vi.mock("@/lib/server/sub-account-secrets", () => ({ readSubAccountSecret: async () => "token" }));
 vi.mock("@/lib/server/conversations-service", () => ({ upsertConversationForMessage: async () => undefined }));
 
 const { SA, AGENCY, SMTP_SUB, mem, resetSeam, smtpSend } = await s();
 const { markBookingPaidServerSide } = await import("./bookings-service");
+const { defaultBookingPageFormData } = await import("@/lib/booking/defaults");
+const { rescheduleBooking, rescheduleBookingAsOperator } = await import("./booking-changes-service");
 const { POST: reminderStep } = await import("@/app/api/events/reminder/step/route");
 
 const DAY = new Date("2026-09-24T10:00:00Z");
@@ -123,6 +126,73 @@ describe("an agent-approved mark-paid", () => {
     seedPage({ smsRemindersEnabled: true });
     await runPublishedSteps();
     expect(sendSmsVia).not.toHaveBeenCalled();
+  });
+});
+
+describe("the veto survives a reschedule", () => {
+  /** The agent paid it; the booking is then moved, which schedules reminders afresh from the live page. */
+  async function agentPaidThenMoved(move: () => Promise<unknown>, page = () => seedPage({ remindersEnabled: true })) {
+    page();
+    mem.seed("events/e1", { ...mem.read("events/e1"), source: "booking_page" });
+    expect(await markPaid(true)).toMatchObject({ ok: true });
+    expect(mem.read("events/e1")).toHaveProperty("smsVetoedAt");
+    publishCallback.mockClear();
+    await move();
+    await flushAfterResponse();
+    expect(publishCallback).toHaveBeenCalled(); // reminders were rescheduled...
+  }
+  const newStart = () => new Date(DAY.getTime() + 30 * 3600_000);
+  const hash = () => (mem.read("events/e1") as { publicTokenHash: string }).publicTokenHash;
+
+  it("an operator move: the new reminders carry no text, and the real step sends none", async () => {
+    await agentPaidThenMoved(() => rescheduleBookingAsOperator("e1", newStart(), new Date(newStart().getTime() + 1800_000)));
+    const bodies = await runPublishedSteps();
+    expect(bodies.every((b) => b.channels?.sms === false)).toBe(true);
+    expect(sendSmsVia).not.toHaveBeenCalled();
+  });
+
+  it("the booker's own reschedule (through their link): still no text", async () => {
+    const openPage = () =>
+      mem.seed(`subAccounts/${SA}/bookingPages/p1`, {
+        ...defaultBookingPageFormData("p1", "UTC"),
+        name: "Intro call", status: "published", remindersEnabled: true, smsRemindersEnabled: true, minNoticeHours: 0,
+        workingHours: [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({ dayOfWeek, startMinute: 0, endMinute: 1440 })),
+        agencyId: AGENCY, subAccountId: SA, territoryId: "global",
+      });
+    await agentPaidThenMoved(async () => {
+      const moved = await rescheduleBooking({ eventId: "e1", newStart: newStart(), newEnd: null, guard: (e) => e.publicTokenHash === hash() });
+      expect(moved).toMatchObject({ ok: true });
+    }, openPage);
+    const bodies = await runPublishedSteps();
+    expect(bodies.every((b) => b.channels?.sms === false)).toBe(true);
+    expect(sendSmsVia).not.toHaveBeenCalled();
+  });
+
+  it("even a step carrying an old snapshot that said sms:true is vetoed by the event itself", async () => {
+    seedPage({ remindersEnabled: true });
+    await markPaid(true);
+    await runPublishedSteps();
+    const res = await reminderStep(
+      new Request("https://app.test/api/events/reminder/step", {
+        method: "POST",
+        headers: { "Upstash-Signature": "sig" },
+        body: JSON.stringify({ eventId: "e1", offsetMinutes: 60, token: (publishCallback.mock.calls[0][0] as { body: { token: string } }).body.token, channels: { email: false, sms: true } }),
+      }),
+    );
+    await flushAfterResponse();
+    expect(res.status).toBe(200);
+    expect(sendSmsVia).not.toHaveBeenCalled();
+  });
+
+  it("an operator's own mark-paid sets no veto, and a move keeps texting", async () => {
+    seedPage({ remindersEnabled: true });
+    mem.seed("events/e1", { ...mem.read("events/e1"), source: "booking_page" });
+    await markPaid(false);
+    expect(mem.read("events/e1")).not.toHaveProperty("smsVetoedAt");
+    publishCallback.mockClear();
+    await rescheduleBookingAsOperator("e1", new Date(DAY.getTime() + 30 * 3600_000), new Date(DAY.getTime() + 30 * 3600_000 + 1800_000));
+    const bodies = await runPublishedSteps();
+    expect(bodies.every((b) => b.channels?.sms === true)).toBe(true);
   });
 });
 

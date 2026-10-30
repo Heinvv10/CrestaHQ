@@ -144,6 +144,7 @@ export async function markBookingPaidServerSide(input: {
         paidByUid: input.paidByUid,
         ...(input.paidOrderId ? { paidOrderId: input.paidOrderId } : {}),
         paidFromTokenHash: event.publicTokenHash ?? null,
+        ...(input.expect ? { smsVetoedAt: FieldValue.serverTimestamp() } : {}),
         publicTokenHash: hash,
         paymentHoldExpiresAt: null,
         icsSequence,

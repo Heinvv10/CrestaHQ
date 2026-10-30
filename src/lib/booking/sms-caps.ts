@@ -71,6 +71,12 @@ export async function reserveBookingSms(t: Target, now: Date = new Date()): Prom
         tx.get(sub),
         tx.get(number),
       ]);
+      // A claim a failed release could only mark "held" (nothing was sent, its
+      // slots are still counted): take it over without counting it again.
+      if (claimSnap?.exists && claimSnap.data()?.state === "held" && claim) {
+        tx.set(claim, { state: "sending", resumedAt: FieldValue.serverTimestamp() }, { merge: true });
+        return { ok: true, day };
+      }
       if (claimSnap?.exists) return { ok: false, reason: "already_sent" };
       const subCount = countOf(subSnap);
       const numberCount = countOf(numberSnap);
@@ -80,7 +86,7 @@ export async function reserveBookingSms(t: Target, now: Date = new Date()): Prom
       tx.set(sub, { count: subCount + 1, subAccountId: t.subAccountId, agencyId: t.agencyId, expiresAt });
       tx.set(number, { count: numberCount + 1, subAccountId: t.subAccountId, agencyId: t.agencyId, expiresAt });
       if (claim) {
-        tx.set(claim, { agencyId: t.agencyId, subAccountId: t.subAccountId, claimedAt: FieldValue.serverTimestamp() });
+        tx.set(claim, { agencyId: t.agencyId, subAccountId: t.subAccountId, state: "sending", claimedAt: FieldValue.serverTimestamp() });
       }
       return { ok: true, day };
     });
@@ -90,19 +96,43 @@ export async function reserveBookingSms(t: Target, now: Date = new Date()): Prom
   }
 }
 
-/** Gives back a reservation whose text was NOT sent (held by quiet hours): frees the claim and both slots. */
-export async function releaseBookingSms(t: Target, day: string): Promise<void> {
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+export const jitter = (attempt: number) => sleep(attempt * (15 + Math.random() * 35));
+
+/**
+ * Gives back a reservation whose text was NOT sent (quiet hours held it after
+ * all): frees the claim and both slots. If the transaction keeps failing, the
+ * claim is at least marked "held" so the retry takes it over instead of finding
+ * it taken (see reserveBookingSms). False: neither worked; the claim stays
+ * taken and the caller must say so.
+ */
+export async function releaseBookingSms(t: Target, day: string): Promise<boolean> {
   const db = getAdminDb();
   const { sub, number } = refs(t.subAccountId, t.to, day);
   const claim = t.claimPath ? db.doc(t.claimPath) : null;
-  try {
-    await db.runTransaction(async (tx) => {
-      const [subSnap, numberSnap] = await Promise.all([tx.get(sub), tx.get(number)]);
-      tx.update(sub, { count: Math.max(0, countOf(subSnap) - 1) });
-      tx.update(number, { count: Math.max(0, countOf(numberSnap) - 1) });
-      if (claim) tx.delete(claim);
-    });
-  } catch (err) {
-    console.error("[booking/sms] cap release failed", err instanceof Error ? err.message : String(err));
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await db.runTransaction(async (tx) => {
+        const [subSnap, numberSnap] = await Promise.all([tx.get(sub), tx.get(number)]);
+        tx.update(sub, { count: Math.max(0, countOf(subSnap) - 1) });
+        tx.update(number, { count: Math.max(0, countOf(numberSnap) - 1) });
+        if (claim) tx.delete(claim);
+      });
+      return true;
+    } catch (err) {
+      console.warn("[booking/sms] cap release failed", attempt, err instanceof Error ? err.message : String(err));
+      await jitter(attempt);
+    }
   }
+  if (!claim) return false;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await claim.set({ state: "held", heldAt: FieldValue.serverTimestamp() }, { merge: true });
+      return true;
+    } catch (err) {
+      console.error("[booking/sms] claim hold-mark failed", attempt, err instanceof Error ? err.message : String(err));
+      await jitter(attempt);
+    }
+  }
+  return false;
 }

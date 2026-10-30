@@ -7,7 +7,7 @@ import { getCountryCallingCode, parsePhoneNumberFromString } from "libphonenumbe
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
-import { formatHoldUntil, isQuietHoursDeferred, type QuietHoursHold } from "@/lib/comms/quiet-hours";
+import { formatHoldUntil, isQuietHoursDeferred, quietHoursHold, type QuietHoursHold } from "@/lib/comms/quiet-hours";
 import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
 import {
   sendSmsForSubAccount,
@@ -18,7 +18,7 @@ import {
 import { upsertConversationForMessage } from "@/lib/server/conversations-service";
 import { loadEventContact } from "@/lib/server/tenant-ref";
 import { formatStartLocal } from "@/lib/booking/email";
-import { releaseBookingSms, reserveBookingSms } from "@/lib/booking/sms-caps";
+import { jitter, releaseBookingSms, reserveBookingSms } from "@/lib/booking/sms-caps";
 import { coercePhoneCountry } from "@/lib/contacts/phone";
 import type { SubAccountDoc } from "@/types/tenancy";
 
@@ -56,11 +56,17 @@ export function smsFirstName(name: string): string {
   return first.length <= 30 && /^[\p{L}][\p{L}\p{M}'\u2019-]*$/u.test(first) ? first : "";
 }
 
-/** The meeting link when it is a plain https URL, else null. */
+/**
+ * The meeting link when it is a plain https URL, else null. The PARSED form is
+ * returned, never the stored string: the URL parser drops tabs and line breaks
+ * and percent-encodes spaces, so a control character cannot start a new line
+ * of the text.
+ */
 function joinUrl(url: string | null): string | null {
   if (!url || url.length > 300) return null;
   try {
-    return new URL(url).protocol === "https:" ? url : null;
+    const u = new URL(url);
+    return u.protocol === "https:" ? u.href : null;
   } catch {
     return null;
   }
@@ -104,12 +110,16 @@ export function bookingReminderSmsBody(input: {
     .join("\n");
 }
 
+/** The US and Canada share +1 and one domestic network; a workspace in either texts both. */
+const NANP_HOME = new Set(["US", "CA"]);
+
 /**
- * `raw` as E.164 when it is a valid MOBILE number whose country calling code
- * is the home country's (the workspace's `defaultPhoneCountry`, US when unset),
- * else null. A national number is read in the home country; a "+" number keeps its
- * own. Calling codes are shared (+1 covers the US and Canada): the check is on
- * the code, which is what a toll route is priced by.
+ * `raw` as E.164 when it is a valid MOBILE number in the home country (the
+ * workspace's `defaultPhoneCountry`, US when unset), else null. A national
+ * number is read in the home country; a "+" number keeps its own. The number's
+ * REGION must be the home country, not just its calling code: +1 also covers
+ * Jamaica, the Bahamas and the other Caribbean NANP countries, whose rates are
+ * not domestic. The one exception is US/CA, which accept each other.
  */
 export function homeCountryE164(raw: string, homeCountry: string | null | undefined): string | null {
   const home = coercePhoneCountry(homeCountry);
@@ -123,8 +133,11 @@ export function homeCountryE164(raw: string, homeCountry: string | null | undefi
   if (type !== "MOBILE" && type !== "FIXED_LINE_OR_MOBILE") return null;
   // The metadata accepts some very short ranges (+27 82 123 reads as a mobile).
   if (parsed.nationalNumber.length < 7) return null;
+  const region = parsed.country;
+  if (!region) return null;
+  const sameRegion = region === home || (NANP_HOME.has(region) && NANP_HOME.has(home));
   try {
-    return parsed.countryCallingCode === getCountryCallingCode(home) ? parsed.number : null;
+    return sameRegion && parsed.countryCallingCode === getCountryCallingCode(home) ? parsed.number : null;
   } catch {
     return null;
   }
@@ -198,6 +211,8 @@ export async function sendBookingSms(input: {
    * again when quiet hours hold the text.
    */
   claimPath?: string;
+  /** The caller's own redelivery retries a `cap_unavailable` (the reminder step answers 503): do not note it as a final failure. */
+  retryOnContention?: boolean;
 }): Promise<BookingSmsResult> {
   const db = getAdminDb();
   let contact: Awaited<ReturnType<typeof loadEventContact>> = null;
@@ -226,12 +241,20 @@ export async function sendBookingSms(input: {
   if (!hasSms) return unsent("sms_not_configured");
 
   const target = { subAccountId: input.subAccountId, agencyId: input.sub.agencyId, to, claimPath: input.claimPath };
-  const reserved = await reserveBookingSms(target);
+  // Quiet hours first, and pure: a held text takes no claim and no cap slot.
+  const hold = quietHoursHold({ subAccount: input.sub, origin: "automated", selfTriggeredBookingAt: input.selfTriggeredBookingAt ?? null });
+  if (hold) return { sent: false, reason: "quiet_hours", hold };
+
+  let reserved = await reserveBookingSms(target);
+  for (let retry = 1; retry <= 3 && !reserved.ok && reserved.reason === "cap_unavailable"; retry++) {
+    await jitter(retry);
+    reserved = await reserveBookingSms(target);
+  }
   if (!reserved.ok) {
-    if (reserved.reason !== "already_sent") {
-      console.warn(`[booking/sms] not sent: ${reserved.reason} sub=${input.subAccountId}`);
-    }
-    return reserved.reason === "already_sent" ? { sent: false, reason: reserved.reason } : unsent(reserved.reason);
+    if (reserved.reason === "already_sent") return { sent: false, reason: reserved.reason };
+    console.warn(`[booking/sms] not sent: ${reserved.reason} sub=${input.subAccountId}`);
+    if (reserved.reason === "cap_unavailable" && input.retryOnContention) return { sent: false, reason: reserved.reason };
+    return unsent(reserved.reason);
   }
 
   try {
@@ -291,7 +314,8 @@ export async function sendBookingSms(input: {
     return { sent: true };
   } catch (err) {
     if (isQuietHoursDeferred(err)) {
-      await releaseBookingSms(target, reserved.day);
+      // Only a window boundary crossed between the check above and the send gets here.
+      if (!(await releaseBookingSms(target, reserved.day))) return { sent: false, reason: "release_failed" };
       return { sent: false, reason: "quiet_hours", hold: err.hold };
     }
     if (err instanceof SmsRecipientUnsubscribedError) {

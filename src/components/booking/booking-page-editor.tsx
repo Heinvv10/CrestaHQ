@@ -1,5 +1,6 @@
 "use client";
 
+import { hasExplicitPhoneCountry } from "@/lib/contacts/phone";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { hasCardRail, hasPaypalRail } from "@/lib/payments/can-take-payment";
 import { useRouter } from "next/navigation";
@@ -986,6 +987,21 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
             </p>
           </div>
         </label>
+        {form.smsRemindersEnabled && !subLoading && !hasExplicitPhoneCountry(subAccount?.defaultPhoneCountry) && (
+          <div
+            role="alert"
+            data-testid="sms-phone-country-warning"
+            className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              This workspace has no phone country saved, so only US numbers
+              could be texted and this page could not be saved with texts
+              on. Open Settings → Phone region and save your country
+              first.
+            </span>
+          </div>
+        )}
       </Section>
 
       {/* ── Payment (gated on any connected rail: card or paypal.me) ── */}

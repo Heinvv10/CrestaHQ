@@ -171,9 +171,11 @@ export async function POST(request: Request) {
     (page ? page.remindersEnabled !== false : (snap?.email ?? true));
   // `sms: false` in the snapshot is a veto the live page cannot lift (an agent
   // mark-paid: the approver never reviewed the phone). Absent = no veto.
-  const smsOn = page
-    ? page.smsRemindersEnabled === true && snap?.sms !== false
-    : snap?.sms === true;
+  // The veto also lives on the event (`smsVetoedAt`, set by an agent-approved
+  // mark-paid), so a later reschedule's fresh snapshot cannot lift it.
+  const smsOn =
+    !event.smsVetoedAt &&
+    (page ? page.smsRemindersEnabled === true && snap?.sms !== false : snap?.sms === true);
 
   let smsResult: string | undefined;
   if (smsOn) {
@@ -190,6 +192,10 @@ export async function POST(request: Request) {
       heldUntil: typeof body.heldUntil === "number" ? body.heldUntil : null,
       attempt: typeof body.attempt === "number" && body.attempt >= 0 ? Math.floor(body.attempt) : 0,
     });
+  }
+  // Nothing was claimed or sent: let QStash deliver this again.
+  if (smsResult === "cap_unavailable" || smsResult === "release_failed") {
+    return NextResponse.json({ error: "Text could not be queued; retry", sms: smsResult }, { status: 503 });
   }
   const withSms = smsResult === undefined ? {} : { sms: smsResult };
 

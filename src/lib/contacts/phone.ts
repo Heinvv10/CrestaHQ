@@ -42,6 +42,15 @@ export function coercePhoneCountry(country?: string | null): CountryCode {
     : DEFAULT_PHONE_COUNTRY;
 }
 
+/**
+ * Whether the workspace has CHOSEN a phone country. An unset one reads as US
+ * (see coercePhoneCountry), which is right for typing a number but not for
+ * deciding who may be texted: that needs an explicit choice.
+ */
+export function hasExplicitPhoneCountry(country?: string | null): boolean {
+  return /^[A-Za-z]{2}$/.test(country?.trim() ?? "");
+}
+
 /** E.164 (`+13055551234`) when the input parses to a valid number, else null. */
 export function normalizePhoneE164(
   raw: string | null | undefined,

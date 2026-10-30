@@ -203,15 +203,15 @@ describe("the claim", () => {
     expect(sendSmsVia).toHaveBeenCalledTimes(1);
   });
 
-  it("a text held by quiet hours gives back its claim and both slots, so holding never exhausts a cap", async () => {
+  it("a text held by quiet hours takes no claim and no cap slot at all: the check comes before the reservation", async () => {
     vi.setSystemTime(NIGHT);
     const claimPath = "events/e1/reminderSends/sms_60_abc";
     for (let i = 0; i < BOOKING_SMS_PER_NUMBER_PER_DAY * 2; i++) {
       expect(await send({ claimPath })).toMatchObject({ sent: false, reason: "quiet_hours" });
     }
     expect(mem.read(claimPath)).toBeFalsy();
-    expect(counter(`subAccounts/${SA}/bookingSmsCaps/${TODAY}`)).toBe(0);
-    expect(numberDocs()[0].count).toBe(0);
+    expect(mem.list(`subAccounts/${SA}/bookingSmsCaps`)).toHaveLength(0);
+    expect(sendSmsVia).not.toHaveBeenCalled();
     vi.setSystemTime(NEXT_DAY);
     expect(await send({ claimPath })).toEqual({ sent: true });
   });

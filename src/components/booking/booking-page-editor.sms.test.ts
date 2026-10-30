@@ -10,8 +10,9 @@ import type { BookingPage } from "@/types/booking";
  * is ticked is what the save sends as `smsRemindersEnabled`.
  */
 
+const ctx = vi.hoisted(() => ({ subAccount: {} as Record<string, unknown>, loading: false }));
 vi.mock("@/context/sub-account-context", () => ({
-  useSubAccount: () => ({ subAccountId: "sa1", subAccount: {}, saPath: (p: string) => `/sa/sa1${p}`, loading: false }),
+  useSubAccount: () => ({ subAccountId: "sa1", subAccount: ctx.subAccount, saPath: (p: string) => `/sa/sa1${p}`, loading: ctx.loading }),
 }));
 vi.mock("@/hooks/use-auth", () => ({ useAuth: () => ({ agencyRole: null }) }));
 vi.mock("@/hooks/use-agency-owner-uid", () => ({ useAgencyOwnerUid: () => null }));
@@ -58,6 +59,8 @@ async function save(): Promise<{ url: string; method: string; body: Record<strin
 }
 
 beforeEach(() => {
+  ctx.subAccount = { defaultPhoneCountry: "ZA" };
+  ctx.loading = false;
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", fetchMock);
   container = document.createElement("div");
@@ -109,5 +112,43 @@ describe("BookingPageEditor text reminders toggle", () => {
     await act(async () => toggle().click());
     const body = (await save()).body;
     expect(body).toMatchObject({ remindersEnabled: true, smsRemindersEnabled: true });
+  });
+});
+
+describe("the phone-country warning", () => {
+  const warning = () => container.querySelector('[data-testid="sms-phone-country-warning"]');
+
+  it("shows when texts are ticked and the workspace has no phone country, and says where to set it", async () => {
+    ctx.subAccount = {};
+    await render({ mode: "edit", initial: stored() });
+    expect(warning()).toBeNull();
+    await act(async () => toggle().click());
+    expect(warning()?.textContent).toContain("Settings → Phone region");
+    expect(warning()?.textContent).toContain("only US numbers");
+  });
+
+  it("is there from the start for a page that already has texts on", async () => {
+    ctx.subAccount = { defaultPhoneCountry: null };
+    await render({ mode: "edit", initial: stored({ smsRemindersEnabled: true }) });
+    expect(warning()).not.toBeNull();
+  });
+
+  it("goes away when the toggle is cleared", async () => {
+    ctx.subAccount = {};
+    await render({ mode: "edit", initial: stored({ smsRemindersEnabled: true }) });
+    await act(async () => toggle().click());
+    expect(warning()).toBeNull();
+  });
+
+  it("is not shown when the workspace has a phone country", async () => {
+    await render({ mode: "edit", initial: stored({ smsRemindersEnabled: true }) });
+    expect(warning()).toBeNull();
+  });
+
+  it("is not shown while the workspace is still loading (it would read as unset)", async () => {
+    ctx.subAccount = {};
+    ctx.loading = true;
+    await render({ mode: "edit", initial: stored({ smsRemindersEnabled: true }) });
+    expect(warning()).toBeNull();
   });
 });

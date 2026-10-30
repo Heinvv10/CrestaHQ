@@ -69,8 +69,9 @@ export async function deliverReminderSms(input: {
     sub,
     contactId: event.contactId,
     label: "booking reminder",
-    // Claimed, and counted against the daily caps, in one transaction; released
-    // again below when quiet hours hold the text so the republished step can send.
+    // Claimed, and counted against the daily caps, in one transaction. Quiet
+    // hours are checked first, so a held text takes neither.
+    retryOnContention: true,
     claimPath: `events/${eventId}/reminderSends/sms_${offsetMinutes}_${tokenKey}`,
     body: bookingReminderSmsBody({
       businessName: sub.name ?? "us",
@@ -95,19 +96,6 @@ export async function deliverReminderSms(input: {
     );
     return "quiet_hours_dropped";
   }
-  await getAdminDb()
-    .runTransaction(async (tx) => {
-      const ref = holdMarker(hold.until.getTime());
-      const offsets = (((await tx.get(ref)).data()?.offsets ?? []) as unknown[]).filter((o): o is number => typeof o === "number");
-      tx.set(ref, {
-        agencyId: event.agencyId,
-        subAccountId: event.subAccountId,
-        offsets: [...new Set([...offsets, offsetMinutes])],
-      });
-    })
-    .catch((err: unknown) => {
-      console.error("[events/reminder] hold marker write failed", err instanceof Error ? err.message : String(err));
-    });
   const queued = await publishCallback({
     pathname: REMINDER_STEP_PATH,
     body: {
@@ -122,6 +110,24 @@ export async function deliverReminderSms(input: {
     delaySeconds: hold.retryAfterSec,
     deduplicationId: `evt_reminder_${eventId}_${offsetMinutes}_${tokenKey}_qh${hold.until.getTime()}_a${attempt + 1}`,
   });
+  // The marker is written only once the republish is queued: an entry for a
+  // step that was never queued would make the earlier reminder yield to a
+  // later one that never comes, and neither would send.
+  if (queued) {
+    await getAdminDb()
+      .runTransaction(async (tx) => {
+        const ref = holdMarker(hold.until.getTime());
+        const offsets = (((await tx.get(ref)).data()?.offsets ?? []) as unknown[]).filter((o): o is number => typeof o === "number");
+        tx.set(ref, {
+          agencyId: event.agencyId,
+          subAccountId: event.subAccountId,
+          offsets: [...new Set([...offsets, offsetMinutes])],
+        });
+      })
+      .catch((err: unknown) => {
+        console.error("[events/reminder] hold marker write failed", err instanceof Error ? err.message : String(err));
+      });
+  }
   await writeHoldActivity(
     event.contactId,
     queued

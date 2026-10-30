@@ -88,6 +88,24 @@ describe("the confirmation body", () => {
       expect(bookingConfirmationSmsBody({ ...base, recipientName: "T", meetingUrl })).not.toContain("Join:");
     }
   });
+
+  it("prints the PARSED link, so a control character cannot start a new line of the text", () => {
+    const meetingUrl = "https://meet.example/room\r\nCall 0861234567 now\tfor a prize";
+    for (const body of [
+      bookingConfirmationSmsBody({ ...base, recipientName: "T", meetingUrl }),
+      bookingReminderSmsBody({ ...base, meetingUrl }),
+    ]) {
+      expect(body).not.toMatch(/[\r\t]/);
+      const lines = body.split("\n");
+      expect(lines).toHaveLength(3);
+      expect(lines[1]).toBe(`Join: ${new URL(meetingUrl).href}`);
+      expect(lines[1].slice("Join: ".length)).not.toContain(" ");
+    }
+  });
+
+  it("normalises the link the way the URL parser does (host case, default port)", () => {
+    expect(bookingReminderSmsBody({ ...base, meetingUrl: "https://MEET.Example:443/Room" })).toContain("Join: https://meet.example/Room");
+  });
 });
 
 describe("the reminder body", () => {
@@ -137,7 +155,21 @@ describe("homeCountryE164", () => {
     expect(homeCountryE164("+14155552671", undefined)).toBe("+14155552671");
   });
 
-  it("keeps the shared +1 calling code (US and Canada)", () => {
-    expect(homeCountryE164("+16042345678", "US")).toBe("+16042345678");
+  it("US and Canada text each other, on the shared +1", () => {
+    expect(homeCountryE164("+16042345678", "US")).toBe("+16042345678"); // a Vancouver number
+    expect(homeCountryE164("+14155552671", "CA")).toBe("+14155552671"); // a San Francisco number
+  });
+
+  it("refuses the Caribbean +1 countries, whose rates are not domestic, whichever workspace", () => {
+    for (const n of ["+18765551234", "+1 876 316 1234", "+12425551234", "+17875551234", "+18095551234"]) {
+      // Jamaica, the Bahamas (and Puerto Rico and the Dominican Republic stay their own regions, not US).
+      expect(homeCountryE164(n, "US"), n).toBeNull();
+      expect(homeCountryE164(n, "CA"), n).toBeNull();
+    }
+    expect(homeCountryE164("+18763161234", "JM")).toBe("+18763161234");
+  });
+
+  it("a Jamaican number typed nationally in a US workspace is read as US, not Jamaican", () => {
+    expect(homeCountryE164("876 316 1234", "US")).toBeNull();
   });
 });

@@ -122,6 +122,11 @@ const CASES: [string, Case, "allow" | "deny"][] = [
   ["events: re-link to a foreign contact", { method: "update", path: "events/e1", before: EVENT, after: { ...EVENT, contactId: "contacts_foreign" } }, "deny"],
   ["events: re-link to own contact", { method: "update", path: "events/e1", before: EVENT, after: { ...EVENT, contactId: "contacts_own" } }, "allow"],
   ["events: unrelated edit", { method: "update", path: "events/e1", before: EVENT, after: { ...EVENT, title: "Moved" } }, "allow"],
+  // smsVetoedAt (an agent-approved mark-paid's "no texts") is server-set: no client may write or clear it.
+  ["events: create carrying smsVetoedAt", { method: "create", path: "events/e1", after: { ...EVENT, smsVetoedAt: "2026-09-24T10:00:00Z" } }, "deny"],
+  ["events: set smsVetoedAt", { method: "update", path: "events/e1", before: EVENT, after: { ...EVENT, smsVetoedAt: "2026-09-24T10:00:00Z" } }, "deny"],
+  ["events: clear smsVetoedAt", { method: "update", path: "events/e1", before: { ...EVENT, smsVetoedAt: "2026-09-24T10:00:00Z" }, after: EVENT }, "deny"],
+  ["events: unrelated edit of a vetoed event", { method: "update", path: "events/e1", before: { ...EVENT, smsVetoedAt: "2026-09-24T10:00:00Z" }, after: { ...EVENT, smsVetoedAt: "2026-09-24T10:00:00Z", title: "Moved" } }, "allow"],
 ];
 
 describe.skipIf(!haveCreds)("linked-record ids — firestore rules", () => {
