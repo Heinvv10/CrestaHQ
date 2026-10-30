@@ -36,6 +36,8 @@ import {
   typeDefaults,
 } from "@/components/booking/calendar-type-section";
 import { pageCalendarType } from "@/lib/booking/calendar-types";
+import { effectiveBookingLocation } from "@/lib/booking/location";
+import { BookingLocationField } from "@/components/booking/booking-location-field";
 import {
   defaultBookingPageFormData,
   detectTimezone,
@@ -158,6 +160,8 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
           ? initial.themePreset
           : null,
         meetingUrl: initial.meetingUrl ?? null,
+        googleMeet: initial.googleMeet ?? false,
+        location: effectiveBookingLocation(initial),
         confirmationMessage: initial.confirmationMessage,
         redirectUrl: initial.redirectUrl ?? null,
         redirectAppendParams: initial.redirectAppendParams ?? true,
@@ -343,13 +347,13 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
         ok?: boolean;
         error?: string;
         slug?: string;
+        warning?: string;
       };
       if (!res.ok || !data.ok) {
         throw new Error(data.error ?? "Could not save.");
       }
-      toast.success(
-        mode === "new" ? "Booking page created." : "Saved.",
-      );
+      if (data.warning) toast.warning(data.warning);
+      else toast.success(mode === "new" ? "Booking page created." : "Saved.");
       if (mode === "new") {
         router.push(saPath(`/booking/${data.slug ?? form.slug}`));
       }
@@ -480,27 +484,11 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
           />
         </Field>
 
-        <Field
-          label="Meeting URL"
-          htmlFor="meetingUrl"
-          hint="Zoom, Google Meet, Whereby, or any video-call URL. Added to the confirmation email + the calendar invite (.ics LOCATION) so attendees can join with one click. Leave blank for in-person meetings or if you'll send the link separately."
-        >
-          <Input
-            id="meetingUrl"
-            type="url"
-            value={form.meetingUrl ?? ""}
-            onChange={(e) =>
-              set(
-                "meetingUrl",
-                e.target.value.trim().length > 0 ? e.target.value.trim() : null,
-              )
-            }
-            maxLength={1000}
-            placeholder="https://zoom.us/j/1234567890"
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </Field>
+        <BookingLocationField
+          form={form}
+          set={set}
+          calendarSyncOn={subAccount?.googleCalendarEnabledByAgency === true}
+        />
 
         <Field
           label="Status"

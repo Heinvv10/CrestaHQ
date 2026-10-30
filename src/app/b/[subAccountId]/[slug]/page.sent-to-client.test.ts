@@ -51,7 +51,7 @@ const PAGES: Record<string, (stored: Record<string, unknown>) => Promise<ReactEl
   },
 };
 
-const PAGE_KEYS = ["description", "durationMinutes", "intakeFields", "isServicePage", "name", "payment", "services", "slug", "themePreset", "timezone", "visibleDays"];
+const PAGE_KEYS = ["description", "durationMinutes", "intakeFields", "isServicePage", "location", "name", "payment", "services", "slug", "themePreset", "timezone", "visibleDays"];
 const BRANDING_KEYS = ["accentColor", "logoUrl", "name"];
 /** The exact props each page gives its client component. */
 const PROP_KEYS: Record<string, string[]> = {
@@ -155,7 +155,28 @@ describe.each(Object.keys(PAGES))("what %s sends to the browser", (name) => {
       intakeFields: [{ id: "q1", label: "Topic", type: "select", required: true, options: ["A", "B"] }],
       payment: { amount: 50, currency: "USD", description: "Deposit", holdHours: 24 },
       themePreset: "ocean",
+      // Derived from the stored meeting link — its type only, never the link.
+      location: { type: "video_link", value: null },
     });
+  });
+
+  it("sends the location's type and the business's own address or number, nothing else", async () => {
+    if (name === "/e") return;
+    const inPerson = await open({ location: { type: "in_person", value: "12 Main Rd, Sandton", extra: "loc-SENTINEL" } });
+    expect(inPerson.props.page?.location).toEqual({ type: "in_person", value: "12 Main Rd, Sandton" });
+    // A video page's stored value is not the business's to show — dropped.
+    const video = await open({ meetingUrl: "https://meet.example/x", location: { type: "video_link", value: "value-SENTINEL" } });
+    expect(video.props.page?.location).toEqual({ type: "video_link", value: null });
+    expect(stringsSentToClient(video).filter((s) => s.includes("SENTINEL"))).toEqual([]);
+  });
+
+  // CSS-shaped text is a harmless string where an address is shown (React
+  // text, never a style); markup is refused, as the editor's save refuses it.
+  it.each(HOSTILE.filter(([, v]) => v.includes("<")))("drops a stored location address that is %s", async (_label, value) => {
+    if (name === "/e") return;
+    const el = await open({ location: { type: "in_person", value } });
+    expect(stringsSentToClient(el).filter((s) => s.includes("evil.example"))).toEqual([]);
+    expect(el.props.page?.location).toBeNull();
   });
 
   it("sends none of a fully populated doc's private values, by value or by key name", async () => {

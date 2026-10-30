@@ -152,6 +152,7 @@ describe("reschedule", () => {
     expect(startMs()).toBe(at("10:00").getTime());
     expect(doc.publicTokenHash).not.toBe(HASH);
     expect(doc).toMatchObject({ rescheduleCount: 1, icsSequence: 2, isLong: false });
+    // Sending isn't configured here, so no "Updated:" mail: a fill-only push.
     expect(fx.push).toHaveBeenCalledWith("e1");
   });
 

@@ -190,7 +190,12 @@ export async function changeEventStatus(
   }
   if (outcome === "noop") return { ok: true, httpStatus: 200, status: next, noop: true };
   if (outcome !== "write") return { ok: false, httpStatus: 409, error: outcome };
-  if (next === "cancelled") await pushBookingToGoogle(live.id);
+  // A cancel takes every Google copy down. A finished meeting keeps its
+  // hosts' copies; only one kept for a Meet room (a former host's) goes.
+  const finished = next === "completed" || next === "no_show";
+  if (next === "cancelled" || (finished && (live as { googleMeetOwnerUid?: unknown }).googleMeetOwnerUid)) {
+    await pushBookingToGoogle(live.id);
+  }
 
   // A test-mode event (v1 `lsk_test_*` key) gets the validated status write
   // only — no activity row, no workflow trigger, no email. The public API

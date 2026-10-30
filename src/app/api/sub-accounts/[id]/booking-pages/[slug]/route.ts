@@ -75,10 +75,11 @@ export async function PATCH(
   if (!snap.exists) {
     return NextResponse.json({ error: "Booking page not found" }, { status: 404 });
   }
-  const storedType = (snap.data() as BookingPage).calendarType;
+  const stored = snap.data() as BookingPage;
+  const storedType = stored.calendarType;
 
   // A body without a type has its type fields checked against the stored one.
-  const prepared = await prepareBookingPage(subAccountId, bodyWithSlug, { storedType });
+  const prepared = await prepareBookingPage(subAccountId, bodyWithSlug, { storedType, stored });
   if (!prepared.ok) {
     return NextResponse.json({ error: prepared.error }, { status: prepared.status });
   }
@@ -94,7 +95,7 @@ export async function PATCH(
     updatedAt: FieldValue.serverTimestamp(),
   };
   await ref.update(patch);
-  return NextResponse.json({ ok: true, slug });
+  return NextResponse.json({ ok: true, slug, ...(prepared.warning ? { warning: prepared.warning } : {}) });
 }
 
 export async function DELETE(

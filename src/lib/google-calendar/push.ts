@@ -6,11 +6,13 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { queryHostEvents } from "@/lib/booking/hosts";
 import { eventHostUids } from "@/lib/booking/page-slots";
+import { effectiveBookingLocation } from "@/lib/booking/location";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
 import type { BookingPage } from "@/types/booking";
 import { eventOccupiesSlot, eventStatus, isImportedEvent, type CalendarEvent } from "@/types/events";
 import {
   activeGoogleHosts,
+  isActiveMember,
   describeFailure,
   gcalConnectionPath,
   readConnection,
@@ -20,7 +22,61 @@ import {
 } from "./connection";
 import { googleCalendarGateOn } from "./gate";
 import { getGcalProviderFor } from "./provider/select";
-import type { GcalEventInput } from "./provider/types";
+import { meetUrlOf, type GcalEventInput } from "./provider/types";
+import { runAfterResponse } from "@/lib/server/after-response";
+import { sendMeetLinkFollowUp } from "@/lib/booking/meet-link-follow-up";
+import { settleMeetLinkPending, settleMeetLinkRows } from "@/lib/booking/meet-link-missing";
+import type { ActivityType } from "@/types/contacts";
+import { loadEventContact } from "@/lib/server/tenant-ref";
+
+/**
+ * The P4c warning, kept where a later push can't overwrite it: a row on the
+ * booking's contact timeline. Never throws.
+ */
+async function recordMeetRoomOwnerRemoved(e: SyncedEvent, eventId: string, message: string): Promise<void> {
+  if (!e.contactId || e.contactId.includes("/")) return;
+  try {
+    // Never onto another tenant's timeline (a legacy event's foreign contact id).
+    if (!(await loadEventContact(e))) {
+      console.warn(`[google-calendar] room-owner-removed row skipped event=${eventId}: contact not in sub-account ${e.subAccountId}`);
+      return;
+    }
+    await getAdminDb()
+      .collection(`contacts/${e.contactId}/activities`)
+      .add({
+        type: "meet_room_owner_removed" satisfies ActivityType,
+        content: message,
+        createdBy: "booking",
+        agencyId: e.agencyId,
+        subAccountId: e.subAccountId,
+        meta: { eventId },
+        createdAt: FieldValue.serverTimestamp(),
+      });
+  } catch (err) {
+    console.warn(`[google-calendar] room-owner-removed row failed event=${eventId}`, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** `p`'s value (false if it rejects), or "timeout" after `ms`. */
+async function settledWithin(p: Promise<boolean>, ms: number): Promise<boolean | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p.catch(() => false),
+      new Promise<"timeout">((r) => (timer = setTimeout(() => r("timeout"), Math.max(0, ms)))),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Resolves when `p` settles or after `ms`, whichever is first; never rejects. */
+async function waitAtMost(p: Promise<void> | undefined, ms: number): Promise<void> {
+  if (!p) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([p.catch(() => undefined), new Promise<void>((r) => (timer = setTimeout(r, ms)))]);
+  clearTimeout(timer);
+}
 
 /**
  * Mirror one booking into its hosts' primary Google calendars (G3).
@@ -49,7 +105,49 @@ export interface GoogleSyncFields {
   /** Host uid → the Google event id written to that host's primary calendar. */
   googleEventIds?: Record<string, string> | null;
   googleSyncError?: { message: string; at: Date } | null;
+  /**
+   * The host whose Google copy owns the booking's Meet room. After a
+   * reassign that copy is KEPT (marked, shown as free) rather than deleted,
+   * until the booking is cancelled or deleted: whether a Meet link survives
+   * its calendar event being deleted is not yet proven on a live walk.
+   */
+  googleMeetOwnerUid?: string | null;
+  /** Set while the owner's copy is kept (marked, free time) after a reassign. */
+  googleMeetKeptUid?: string | null;
 }
+
+/**
+ * A copy kept only because it owns the Meet room carries no booker details:
+ * this summary, this description, no location — just the time and, left
+ * untouched by the PATCH, the conference.
+ */
+export const KEPT_FOR_MEET_SUMMARY = "Reserved for a Google Meet link";
+const KEPT_FOR_MEET_DESCRIPTION =
+  "This time holds the Google Meet room of a booking that moved to another host. It is removed when the booking is cancelled, deleted or over.";
+
+/**
+ * How a push may store a room's link, read at store time.
+ * `replaceFallback`: the caller emails the booker the link it gets right
+ * after (the in-time booking push, mark-paid, a reschedule), so the room may
+ * replace the page's fallback. Every other push (Retry sync, reassign,
+ * cancel paths, voice) only FILLS an empty link: the booker already has the
+ * fallback. `detached`: the in-time caller gave up waiting
+ * (pushBookingAndGetMeetUrlWithin's deadline) and has already emailed its
+ * answer — from then on, fill only.
+ */
+interface PushMode {
+  detached: boolean;
+  replaceFallback: boolean;
+  /**
+   * Set (before its first await) when a store of the room's link has
+   * started, so a deadline firing mid-commit waits for the outcome instead
+   * of answering "pending" for a link that is about to be on the event.
+   */
+  storing?: { meetUrl: string; done: Promise<boolean> };
+}
+
+/** A fresh mode per push: convergeOnce writes `storing` onto it. */
+const fillOnly = (): PushMode => ({ detached: false, replaceFallback: false });
 
 type SyncedEvent = CalendarEvent & GoogleSyncFields;
 
@@ -111,24 +209,90 @@ async function clearSyncError(ref: FirebaseFirestore.DocumentReference, e: Synce
   return null;
 }
 
-function input(eventId: string, e: SyncedEvent, start: Date, end: Date): GcalEventInput {
+function input(eventId: string, e: SyncedEvent, start: Date, end: Date, meetUrl: string | null): GcalEventInput {
   return {
     status: "confirmed",
     summary: e.title || "Booking",
     description: e.notes || "",
-    location: e.meetingUrl || e.location || "",
+    location: meetUrl || e.meetingUrl || e.location || "",
     start: { dateTime: start.toISOString() },
     end: { dateTime: end.toISOString() },
     extendedProperties: { private: { leadstackEventId: eventId } },
   };
 }
 
+const isMeetPage = (page: BookingPage | null) =>
+  !!page && effectiveBookingLocation(page)?.type === "google_meet";
+
 /**
- * One pass. Returns the fingerprint it converged to, or null when it did
- * nothing. `removeAll`: take every Google copy down (the event is about to be
- * deleted outright).
+ * The booking already has its own Meet room: an owner is recorded, or the
+ * event holds a Meet link that is not just the page's fallback (a page may
+ * use a fixed meet.google.com URL as its fallback — that is not a room).
  */
-async function convergeOnce(eventId: string, removeAll = false): Promise<string | null> {
+function hasOwnRoom(e: SyncedEvent, page: BookingPage | null): boolean {
+  if (typeof e.googleMeetOwnerUid === "string" && e.googleMeetOwnerUid) return true;
+  return !!meetUrlOf(e.meetingUrl) && e.meetingUrl !== (page?.meetingUrl ?? null);
+}
+
+/**
+ * Google Meet pages: the host whose Google copy carries the Meet room — the
+ * assigned host (a collective meeting's first host), when eligible. Every
+ * other host's copy carries the link as its location. Decided from the page
+ * (reached through the server-set `bookingPageSlug`), so a client-written
+ * event can't ask for a room. A booking that already has its own room never
+ * asks for another (a reassign or reschedule keeps the booker's link).
+ */
+function meetHostFor(e: SyncedEvent, page: BookingPage | null, eligible: string[]): string | null {
+  if (!isMeetPage(page) || hasOwnRoom(e, page)) return null;
+  return e.assignedToUid && eligible.includes(e.assignedToUid) ? e.assignedToUid : null;
+}
+
+/** The event's link may be replaced by a room's only while it is empty or the page's fallback. */
+const replaceable = (current: string | null | undefined, fallback: string | null) =>
+  !current || current === fallback;
+
+/**
+ * May a room's link go onto the event over `current`? Empty always; the
+ * page's fallback only for a caller about to email the link (`PushMode`).
+ */
+const mayStore = (current: string | null | undefined, fallback: string | null, mode: PushMode) =>
+  mode.replaceFallback && !mode.detached ? replaceable(current, fallback) : !current;
+
+type Converged = { fingerprint: string; meetUrl: string | null; stored: boolean };
+
+/**
+ * Store a Meet room's link on the event, in a transaction that re-reads it:
+ * only while `mayStore` holds. Anything else is an operator's own link (or
+ * the fallback a booker was already sent) and wins. True when stored.
+ */
+async function storeMeetUrl(
+  ref: FirebaseFirestore.DocumentReference,
+  fallback: string | null,
+  meetUrl: string,
+  ownerUid: string,
+  mode: PushMode,
+): Promise<boolean> {
+  const stored = await getAdminDb().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return false;
+    if (!mayStore((snap.data() as SyncedEvent).meetingUrl, fallback, mode)) return false;
+    tx.update(ref, { meetingUrl: meetUrl, googleMeetOwnerUid: ownerUid });
+    return true;
+  });
+  if (!stored) console.warn(`[google-calendar] Meet room kept off event=${ref.id}: it holds its own meeting link`);
+  return stored;
+}
+
+/**
+ * One pass. Returns the fingerprint it converged to (and the event's Meet
+ * link, when this pass saw one), or null when it did nothing. `removeAll`:
+ * take every Google copy down (the event is about to be deleted outright).
+ */
+async function convergeOnce(
+  eventId: string,
+  removeAll = false,
+  mode: PushMode = fillOnly(),
+): Promise<Converged | null> {
   const ref = getAdminDb().collection("events").doc(eventId);
   const snap = await ref.get();
   if (!snap.exists) return null;
@@ -141,8 +305,12 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
   const end = toDate(e.endAt);
   const status = eventStatus(e);
   const live = !removeAll && eventOccupiesSlot(status);
-  // Completed / no-show: the meeting happened, its Google copy stays.
-  if (!live && !removeAll && status !== "cancelled") return clearSyncError(ref, e);
+  // Completed / no-show: the meeting happened, its Google copy stays — all
+  // but a copy kept only for the Meet room, which goes now.
+  if (!live && !removeAll && status !== "cancelled") {
+    if (e.googleMeetOwnerUid) return releaseRoomOwner(ref, e);
+    return clearSyncError(ref, e);
+  }
   if (live && (!start || !end)) return null;
 
   const page = live ? await loadPage(e) : null;
@@ -159,16 +327,45 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
     (uid) => `Not in ${hostName(uid)}'s Google Calendar: no longer an active member of this sub-account.`,
   );
   const ids: Record<string, string> = { ...prior };
+  const meetHost = live ? meetHostFor(e, page, eligible) : null;
+  let meetUrl: string | null = null;
+  // Reassigned away from the host whose copy owns the Meet room: keep that
+  // copy (marked, free time) while the booking is live and that host is
+  // still an active member (checked per host, below). A cancel or delete
+  // removes it like any other.
+  const owner = typeof e.googleMeetOwnerUid === "string" ? e.googleMeetOwnerUid : null;
+  const keepCandidate =
+    live && owner && prior[owner] && !eligible.includes(owner) && hasOwnRoom(e, page) ? owner : null;
+  const wasKept = typeof e.googleMeetKeptUid === "string" ? e.googleMeetKeptUid : null;
+  let keptNow = wasKept;
 
-  const upsert = async (uid: string) => {
+  const upsert = async (uid: string, kept = false) => {
     try {
       const conn = await readConnection(sa, uid);
       if (!conn || conn.status !== "connected") return;
       const gid = prior[uid] ?? googleEventIdFor(eventId, uid);
-      await withBudget(GOOGLE_PUSH_TIMEOUT_MS, async (signal) => {
+      const body = input(eventId, e, start!, end!, meetUrl);
+      if (kept) {
+        // No booker details in a former host's calendar.
+        body.summary = KEPT_FOR_MEET_SUMMARY;
+        body.description = KEPT_FOR_MEET_DESCRIPTION;
+        body.location = "";
+        body.transparency = "transparent";
+      } else if (uid === wasKept) {
+        // Leaving kept state: busy again (a PATCH would keep "transparent").
+        body.transparency = "opaque";
+      }
+      // The room is asked for once, when the Meet host's copy is first made.
+      if (uid === meetHost && !prior[uid]) {
+        body.conferenceData = { createRequest: { requestId: `meet-${gid}`, conferenceSolutionKey: { type: "hangoutsMeet" } } };
+      }
+      const put = await withBudget(GOOGLE_PUSH_TIMEOUT_MS, async (signal) => {
         const provider = await getGcalProviderFor(sa, uid);
-        await withGoogleToken(conn, provider, (t) => provider.putEvent(t, gid, input(eventId, e, start!, end!), signal), signal);
+        return withGoogleToken(conn, provider, (t) => provider.putEvent(t, gid, body, signal), signal);
       });
+      if (uid === meetHost) meetUrl = put.meetUrl;
+      if (kept) keptNow = uid;
+      else if (uid === keptNow) keptNow = null;
       ids[uid] = gid;
       if (conn.lastPushError) {
         await getAdminDb().doc(gcalConnectionPath(sa, uid)).update({ lastPushError: null, lastPushErrorAt: null });
@@ -185,6 +382,7 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
       // A host who disconnected (or was revoked) has nothing we can remove.
       if (!conn || conn.status !== "connected") {
         delete ids[uid];
+        if (uid === keptNow) keptNow = null;
         return;
       }
       await withBudget(GOOGLE_PUSH_TIMEOUT_MS, async (signal) => {
@@ -198,33 +396,113 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
         }, signal);
       });
       delete ids[uid];
+      if (uid === keptNow) keptNow = null;
     } catch (err) {
       failures.push(`Still in ${hostName(uid)}'s Google Calendar: ${describeFailure(err, "push")}`);
       await recordConnectionError(sa, uid, err, "remove");
     }
   };
 
+  /** The room owner's copy: kept while they are an active member, else removed. */
+  const keepOrRemove = async (uid: string) => {
+    let active: boolean;
+    try {
+      active = await isActiveMember(sa, uid);
+    } catch (err) {
+      // Unknown: leave the copy as it is rather than delete the room's event.
+      console.warn(`[google-calendar] membership check failed event=${eventId}`, err instanceof Error ? err.message : String(err));
+      failures.push(`Kept in ${hostName(uid)}'s Google Calendar for now: couldn't check whether they are still a member.`);
+      return;
+    }
+    await (active ? upsert(uid, true) : remove(uid));
+  };
+
+  // The Meet host first: the other hosts' copies carry its link.
+  if (meetHost) await upsert(meetHost);
   await Promise.all([
-    ...eligible.map(upsert),
-    ...Object.keys(prior).filter((uid) => !eligible.includes(uid)).map(remove),
+    ...eligible.filter((uid) => uid !== meetHost).map((uid) => upsert(uid)),
+    ...(keepCandidate ? [keepOrRemove(keepCandidate)] : []),
+    ...Object.keys(prior).filter((uid) => !eligible.includes(uid) && uid !== keepCandidate).map(remove),
   ]);
 
   await ref.update({
     googleEventIds: ids,
     googleSyncError: failures.length > 0 ? { message: failures.join(" "), at: new Date() } : null,
+    ...(keptNow !== wasKept ? { googleMeetKeptUid: keptNow } : {}),
   });
-  return fingerprint(e);
+  // The room's link (just made, or found on an overwrite after a first push
+  // timed out once Google had made it) replaces the event's link only while
+  // that is empty or the page's fallback. An operator's own link wins.
+  const room: string | null = meetUrl;
+  const fallback = page?.meetingUrl ?? null;
+  let stored = false;
+  if (!!room && room !== e.meetingUrl && mayStore(e.meetingUrl, fallback, mode)) {
+    const done = storeMeetUrl(ref, fallback, room, meetHost!, mode);
+    mode.storing = { meetUrl: room, done };
+    stored = await done;
+    // A fill-only push (Retry sync, reassign…) emails nobody: an open
+    // "link missing" row now says the link is on the booking, not emailed.
+    if (stored && !mode.replaceFallback && e.contactId) await settleMeetLinkRows(e, eventId, "not_emailed");
+  }
+  if (room && !stored && room !== e.meetingUrl && !mayStore(e.meetingUrl, fallback, mode)) {
+    console.warn(`[google-calendar] Meet room kept off event=${eventId}: it holds its own meeting link`);
+  }
+  const held = isMeetPage(page) && hasOwnRoom(e, page) ? meetUrlOf(e.meetingUrl) : null;
+  return { fingerprint: fingerprint(e), meetUrl: stored ? room : held, stored };
 }
 
-async function sync(eventId: string): Promise<void> {
-  const converged = await convergeOnce(eventId);
-  if (converged === null) return;
+/**
+ * A completed / no-show booking: take down the copy kept only because it
+ * owns the Meet room (the owner is no longer on the booking) and clear the
+ * owner. The owner's own copy, when they are still on it, stays like every
+ * host's. A copy that can't be removed is recorded, its id kept.
+ */
+async function releaseRoomOwner(ref: FirebaseFirestore.DocumentReference, e: SyncedEvent): Promise<null> {
+  const owner = e.googleMeetOwnerUid!;
+  const gid = e.googleEventIds?.[owner];
+  const clear = { googleMeetOwnerUid: null, googleMeetKeptUid: null };
+  if (!gid || eventHostUids(e).includes(owner)) {
+    await ref.update(clear);
+    return null;
+  }
+  const sa = e.subAccountId;
+  try {
+    const conn = await readConnection(sa, owner);
+    if (!conn || conn.status !== "connected") throw new GbpProviderError("revoked");
+    await withBudget(GOOGLE_PUSH_TIMEOUT_MS, async (signal) => {
+      const provider = await getGcalProviderFor(sa, owner);
+      await withGoogleToken(conn, provider, async (t) => {
+        try {
+          await provider.deleteEvent(t, gid, signal);
+        } catch (err) {
+          if (!isNotFound(err)) throw err;
+        }
+      }, signal);
+    });
+    await ref.update({ ...clear, [`googleEventIds.${owner}`]: FieldValue.delete() });
+  } catch (err) {
+    const name = hostLabel(e, await loadPage(e).catch(() => null), owner);
+    await ref.update({
+      googleSyncError: { message: `Still in ${name}'s Google Calendar: ${describeFailure(err, "push")}`, at: new Date() },
+    });
+  }
+  return null;
+}
+
+async function sync(eventId: string, mode?: PushMode): Promise<{ meetUrl: string | null; stored: boolean }> {
+  const converged = await convergeOnce(eventId, false, mode);
+  if (converged === null) return { meetUrl: null, stored: false };
   // A reschedule / cancel / reassign that landed while we were talking to
   // Google: converge once more to what is stored now.
   const now = await getAdminDb().collection("events").doc(eventId).get();
-  if (now.exists && fingerprint(now.data() as SyncedEvent) !== converged) {
-    await convergeOnce(eventId);
+  if (now.exists && fingerprint(now.data() as SyncedEvent) !== converged.fingerprint) {
+    const again = await convergeOnce(eventId, false, mode);
+    return {
+      meetUrl: converged.meetUrl ?? again?.meetUrl ?? null,
+      stored: converged.stored || !!again?.stored,
+    };
   }
+  return { meetUrl: converged.meetUrl, stored: converged.stored };
 }
 
 /**
@@ -281,13 +559,55 @@ export async function removeBookingFromGoogleBeforeDelete(
  * Member removal, BEFORE their tokens are deleted: take their Google copies
  * of upcoming bookings down (nothing could reach them afterwards). The next
  * push for each booking then records them as no longer a member. Never throws.
+ *
+ * Also every copy KEPT in their calendar for a Google Meet room after a
+ * reassign (`googleMeetOwnerUid`, any date): they are no longer on those
+ * bookings, so the host query can't find them. Those go first, and each
+ * event's owner is cleared. Without a working connection nothing can be
+ * removed: each such event records it in `googleSyncError`, id kept.
  */
 export async function removeMemberGoogleCopies(subAccountId: string, uid: string): Promise<void> {
   try {
     const conn = await readConnection(subAccountId, uid);
-    if (!conn || conn.status !== "connected") return;
+    const owned = (
+      await getAdminDb()
+        .collection("events")
+        .where("subAccountId", "==", subAccountId)
+        .where("googleMeetOwnerUid", "==", uid)
+        .get()
+    ).docs.filter((d) => !isImportedEvent(d.data() as SyncedEvent));
+    const hasCopy = (d: FirebaseFirestore.QueryDocumentSnapshot) => !!(d.data() as SyncedEvent).googleEventIds?.[uid];
+    const nameIn = async (d: FirebaseFirestore.QueryDocumentSnapshot) => {
+      const e = d.data() as SyncedEvent;
+      return hostLabel(e, await loadPage(e).catch(() => null), uid);
+    };
+
+    if (!conn || conn.status !== "connected") {
+      await Promise.all(
+        owned.map(async (d) =>
+          d.ref
+            .update({
+              googleMeetOwnerUid: null,
+              ...((d.data() as SyncedEvent).googleMeetKeptUid === uid ? { googleMeetKeptUid: null } : {}),
+              ...(hasCopy(d)
+                ? {
+                    googleSyncError: {
+                      message: `Still in ${await nameIn(d)}'s Google Calendar: they left with their Google Calendar not connected, so the copy kept for the Google Meet link couldn't be removed.`,
+                      at: new Date(),
+                    },
+                  }
+                : {}),
+            })
+            .catch((err) => console.warn(`[google-calendar] removed-member owner clear failed event=${d.id}`, err instanceof Error ? err.message : String(err))),
+        ),
+      );
+      return;
+    }
+
+    // Owners without a copy left: just clear the owner.
+    await Promise.all(owned.filter((d) => !hasCopy(d)).map((d) => d.ref.update({ googleMeetOwnerUid: null })));
     const docs = await queryHostEvents(subAccountId, uid, (q) => q.where("startAt", ">=", new Date()));
-    const queue = docs.filter((d) => (d.data() as SyncedEvent).googleEventIds?.[uid]);
+    const queue = [...new Map([...owned.filter(hasCopy), ...docs.filter(hasCopy)].map((d) => [d.id, d])).values()];
     const provider = await getGcalProviderFor(subAccountId, uid);
     const deadline = Date.now() + MEMBER_CLEANUP_TOTAL_MS;
     const worker = async () => {
@@ -303,10 +623,25 @@ export async function removeMemberGoogleCopies(subAccountId: string, uid: string
               }
             }, signal),
           );
-          await d.ref.update({ [`googleEventIds.${uid}`]: FieldValue.delete() });
-        } catch (err) {
           const e = d.data() as SyncedEvent;
-          const name = hostLabel(e, await loadPage(e).catch(() => null), uid);
+          // The deleted copy owned the Meet room of a booking still to come:
+          // the booker's link may stop working. Say so; the link itself is
+          // left alone until a live walk shows what Google does.
+          const roomGone =
+            e.googleMeetOwnerUid === uid && !!meetUrlOf(e.meetingUrl) && (toDate(e.startAt)?.getTime() ?? 0) > Date.now();
+          const warning = roomGone
+            ? `The Google Meet room belonged to ${await nameIn(d)}, who was removed. The link may stop working: reassign the booking and send the booker a new link.`
+            : null;
+          await d.ref.update({
+            [`googleEventIds.${uid}`]: FieldValue.delete(),
+            ...(e.googleMeetOwnerUid === uid ? { googleMeetOwnerUid: null } : {}),
+            ...(e.googleMeetKeptUid === uid ? { googleMeetKeptUid: null } : {}),
+            ...(warning ? { googleSyncError: { message: warning, at: new Date() } } : {}),
+          });
+          // googleSyncError is the next push's to overwrite; the timeline row stays.
+          if (warning) await recordMeetRoomOwnerRemoved(e, d.id, warning);
+        } catch (err) {
+          const name = await nameIn(d);
           await d.ref
             .update({ googleSyncError: { message: `Still in ${name}'s Google Calendar: ${describeFailure(err, "push")}`, at: new Date() } })
             .catch(() => undefined);
@@ -323,12 +658,118 @@ export async function removeMemberGoogleCopies(subAccountId: string, uid: string
   }
 }
 
-/** Converge Google to `events/{eventId}`. Never throws. */
-export async function pushBookingToGoogle(eventId: string): Promise<void> {
+/**
+ * Converge Google to `events/{eventId}`. Never throws. `replaceFallback`
+ * only for a caller that emails the booker the event's link right after (a
+ * reschedule): see PushMode.
+ */
+export async function pushBookingToGoogle(eventId: string, opts?: { replaceFallback: true }): Promise<void> {
+  await pushWithMode(eventId, { detached: false, replaceFallback: opts?.replaceFallback === true });
+}
+
+/**
+ * The same push, for a caller that needs the booking's Google Meet link
+ * (the book route, before the confirmation email). `meetUrl` is the link now
+ * stored on the event, or null when no room was made (not a Meet page, the
+ * host isn't connected, Google failed). Never throws.
+ */
+export async function pushBookingAndGetMeetUrl(eventId: string): Promise<{ meetUrl: string | null }> {
+  const { meetUrl } = await pushWithMode(eventId, fillOnly());
+  return { meetUrl };
+}
+
+async function pushWithMode(eventId: string, mode: PushMode): Promise<{ meetUrl: string | null; stored: boolean }> {
   try {
-    await sync(eventId);
+    return await sync(eventId, mode);
   } catch (err) {
     const kind = err instanceof Error ? `${err.name}: ${err.message}` : typeof err;
     console.error(`[google-calendar] push failed event=${eventId}`, kind);
+    return { meetUrl: null, stored: false };
+  }
+}
+
+/** The longest a booker-facing path waits on Google for a Meet link. */
+export const MEET_PUSH_DEADLINE_MS = 6_000;
+
+/** Past the deadline, the longest the caller waits for a store already committing. */
+export const STORE_WAIT_CAP_MS = 1_500;
+
+/** The longest a detached push's follow-up waits for its caller's `after`. */
+export const FOLLOW_UP_WAIT_CAP_MS = 30_000;
+
+export interface MeetPushWithinOptions {
+  /** Deadline; MEET_PUSH_DEADLINE_MS unless a test shortens it. */
+  ms?: number;
+  /** How long past the deadline to wait for a store already committing; STORE_WAIT_CAP_MS unless a test shortens it. */
+  storeWaitMs?: number;
+  /**
+   * Who a late link may be emailed to: undefined = the booking's contact;
+   * a string = only while the contact's email is still that address (an
+   * approver's pin); null = nobody (the caller's own mail was withheld).
+   */
+  followUpTo?: string | null;
+  /**
+   * Resolved by the caller once its confirmation and timeline row are
+   * written. The detached continuation (follow-up email, row rewrites)
+   * waits for it, capped at FOLLOW_UP_WAIT_CAP_MS, so it never overtakes
+   * them.
+   */
+  after?: Promise<void>;
+}
+
+/**
+ * The booking push for a path that sends the booker's email next (the book
+ * route, mark-paid): one overall deadline, and the room may replace the
+ * page's fallback (the email right after carries it). Past the deadline the
+ * answer is `{ meetUrl: null, pending: true }` (the caller says the link will
+ * follow) and the push carries on detached — registered with after() when it
+ * starts, so a serverless host keeps it alive. Detached, it only FILLS an
+ * empty link; when it does, the booker gets one follow-up email with it;
+ * when it ends with no room, the "being created" timeline row is corrected.
+ * Never throws.
+ */
+export async function pushBookingAndGetMeetUrlWithin(
+  eventId: string,
+  opts: MeetPushWithinOptions = {},
+): Promise<{ meetUrl: string | null; pending: boolean }> {
+  const ms = opts.ms ?? MEET_PUSH_DEADLINE_MS;
+  const mode: PushMode = { detached: false, replaceFallback: true };
+  const push = pushWithMode(eventId, mode);
+  runAfterResponse(async () => {
+    const r = await push;
+    if (!mode.detached) return;
+    await waitAtMost(opts.after, FOLLOW_UP_WAIT_CAP_MS);
+    if (r.stored && r.meetUrl) {
+      // Always: even with nobody to email (null), it settles the row.
+      await sendMeetLinkFollowUp(eventId, r.meetUrl, { pinnedEmail: opts.followUpTo });
+    } else {
+      await settleMeetLinkPending(eventId);
+    }
+  });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timedOut = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), ms)));
+  try {
+    const first = await Promise.race([push, timedOut]);
+    if (first !== "timeout") return { meetUrl: first.meetUrl, pending: false };
+    // Past the deadline. A store already under way decides it one way only:
+    // the caller gets the stored link, or (refused) the push goes detached.
+    const waitUntil = Date.now() + (opts.storeWaitMs ?? STORE_WAIT_CAP_MS);
+    for (let storing = mode.storing; storing; storing = mode.storing) {
+      const outcome = await settledWithin(storing.done, waitUntil - Date.now());
+      if (outcome === true) return { meetUrl: storing.meetUrl, pending: false };
+      // Stalled past the cap: answer "pending" and go detached. A store
+      // that already passed its check may still commit; fill-only governs
+      // every store after this point.
+      if (outcome === "timeout") break;
+      if (mode.storing === storing) break; // refused, and no newer store began meanwhile
+    }
+    // `pending`: the push is still running — a room may yet land on the
+    // event, unlike a push that finished without one. No await between the
+    // last check above and this, so a store can't start in between.
+    mode.detached = true;
+    console.warn(`[google-calendar] Meet push past ${ms}ms event=${eventId}; continuing detached`);
+    return { meetUrl: null, pending: true };
+  } finally {
+    clearTimeout(timer);
   }
 }

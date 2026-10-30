@@ -336,6 +336,44 @@ export function renderBookingCancelledEmail(
   return { subject, text, html };
 }
 
+/**
+ * A Google Meet booking's link, sent once when it was made after the
+ * confirmation went out saying "the joining link will follow".
+ */
+export function renderMeetLinkFollowUpEmail(input: {
+  recipientName: string;
+  businessName: string;
+  businessLogoUrl?: string | null;
+  pageName: string;
+  timezone: string;
+  startAt: Date;
+  meetingUrl: string;
+}): RenderedEmail {
+  const whenLocal = formatStartLocal(input.startAt, input.timezone);
+  const greeting = `Hi ${input.recipientName?.split(" ")[0] || "there"},`;
+  const subject = `Your Google Meet link: ${input.pageName} on ${whenLocal}`;
+  const text = [
+    greeting,
+    "",
+    `Here is the joining link for your ${input.pageName} on ${whenLocal}:`,
+    input.meetingUrl,
+    "",
+    "Thanks,",
+    input.businessName,
+  ].join("\n");
+  const html = wrapHtml(
+    input.businessName,
+    input.businessLogoUrl ?? null,
+    `
+      <h1 style="font-size:20px;margin:0 0 12px;">${escapeHtml(input.pageName)}</h1>
+      <p style="margin:0 0 16px;color:#3a3a44;">${escapeHtml(greeting)}</p>
+      <p style="margin:0 0 16px;">${escapeHtml(`Here is the joining link for your ${input.pageName} on ${whenLocal}.`)}</p>
+      ${primaryCta(input.meetingUrl, "Join the meeting")}
+    `,
+  );
+  return { subject, text, html };
+}
+
 // ── Shared HTML scaffolding ──────────────────────────────────────────
 
 function wrapHtml(

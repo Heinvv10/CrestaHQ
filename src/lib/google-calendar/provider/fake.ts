@@ -28,6 +28,7 @@ export type FakeGcalOp = "exchangeCode" | "refresh" | "listEvents" | "putEvent" 
 export interface FakeGcalEvent extends GcalEvent {
   description?: string;
   location?: string;
+  hangoutLink?: string;
 }
 
 export interface FakeCalendar {
@@ -114,6 +115,7 @@ export function createFakeGcalProvider(
     summary: input.summary,
     description: input.description,
     location: input.location,
+    ...(input.transparency ? { transparency: input.transparency } : {}),
     start: input.start,
     end: input.end,
     extendedProperties: input.extendedProperties,
@@ -161,8 +163,17 @@ export function createFakeGcalProvider(
 
     async putEvent(accessToken, eventId, input) {
       const calendar = await authed(accessToken, "putEvent");
-      calendar.events = [...calendar.events.filter((e) => e.id !== eventId), toEvent(eventId, input)];
+      const existing = calendar.events.find((e) => e.id === eventId);
+      // As at Google: a room is made only on create, and an overwrite keeps it.
+      const hangoutLink =
+        existing?.hangoutLink ??
+        (!existing && input.conferenceData ? `https://meet.google.com/fake-${eventId.slice(2, 12)}` : undefined);
+      calendar.events = [
+        ...calendar.events.filter((e) => e.id !== eventId),
+        { ...toEvent(eventId, input), ...(hangoutLink ? { hangoutLink } : {}) },
+      ];
       await save(calendar);
+      return { created: !existing, meetUrl: hangoutLink ?? null };
     },
 
     async deleteEvent(accessToken, eventId) {

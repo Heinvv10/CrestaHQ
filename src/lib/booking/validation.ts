@@ -6,6 +6,7 @@ import {
   DEFAULT_REMINDER_OFFSETS_MINUTES,
   DEFAULT_VISIBLE_DAYS,
   type BookingHost,
+  type BookingLocation,
   type BookingPageFormData,
   type BookingPayment,
   type BookingService,
@@ -16,6 +17,12 @@ import {
 } from "@/types/booking";
 import type { CheckoutThemeId } from "@/types/checkout-pages";
 import { isCheckoutThemeId } from "@/lib/checkout/themes";
+import {
+  LOCATION_ADDRESS_MAX,
+  isBookingLocationType,
+  isPlainLocationText,
+  locationNeedsValue,
+} from "@/lib/booking/location";
 
 /**
  * Server-side validation + normalisation for the booking-page CRUD
@@ -783,6 +790,42 @@ export function validateMeetingUrl(input: unknown): Validated<string | null> {
 }
 
 /**
+ * Where the meeting happens. null = not set (an older page, or one that
+ * leaves it to the confirmation message). The address / number the business
+ * types is plain text: it is shown on the public page and in every email.
+ */
+export function validateBookingLocation(
+  input: unknown,
+): Validated<BookingLocation | null> {
+  if (input == null) return { ok: true, value: null };
+  if (typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, error: "Location must be an object." };
+  }
+  const r = input as Record<string, unknown>;
+  if (!isBookingLocationType(r.type)) {
+    return { ok: false, error: "Choose a valid location type." };
+  }
+  const needs = locationNeedsValue(r.type);
+  const raw = typeof r.value === "string" ? r.value.trim() : "";
+  if (needs && !isPlainLocationText(raw)) {
+    return { ok: false, error: "The location can't contain < or > or line breaks." };
+  }
+  if (needs === "address") {
+    if (!raw) return { ok: false, error: "Enter the address for in-person meetings." };
+    if (raw.length > LOCATION_ADDRESS_MAX) {
+      return { ok: false, error: `Address must be ${LOCATION_ADDRESS_MAX} characters or fewer.` };
+    }
+  }
+  if (needs === "phone") {
+    const digits = raw.replace(/\D/g, "");
+    if (digits.length < 6 || raw.length > 40) {
+      return { ok: false, error: "Enter the phone number people should call." };
+    }
+  }
+  return { ok: true, value: { type: r.type, value: needs ? raw : null } };
+}
+
+/**
  * Optional post-booking redirect URL. Stricter than the meeting URL:
  * this navigates a real visitor's browser, so we require https:// (no
  * http://) and reject any non-http(s) scheme (javascript:, data:, etc.)
@@ -923,6 +966,21 @@ export function validateBookingPageFormData(
 
   const meetingUrl = validateMeetingUrl(b.meetingUrl);
   if (!meetingUrl.ok) return meetingUrl;
+  const location = validateBookingLocation(b.location);
+  if (!location.ok) return location;
+
+  // The location type decides which link fields apply, so stored values can't
+  // contradict it (an in-person page with a stray Zoom link, say). Google
+  // Meet is derived from the type, never taken on its own.
+  let meetingUrlValue = meetingUrl.value;
+  const googleMeetValue = location.value?.type === "google_meet";
+  if (location.value) {
+    const t = location.value.type;
+    if (t === "video_link" && !meetingUrlValue) {
+      return { ok: false, error: "Add the meeting link for a video call." };
+    }
+    if (t !== "video_link" && t !== "google_meet") meetingUrlValue = null;
+  }
 
   const confirmationMessage = validateConfirmationMessage(b.confirmationMessage);
   if (!confirmationMessage.ok) return confirmationMessage;
@@ -970,7 +1028,9 @@ export function validateBookingPageFormData(
       logoUrl: logoUrl.value,
       accentColor: accentColor.value,
       themePreset: themePreset.value,
-      meetingUrl: meetingUrl.value,
+      meetingUrl: meetingUrlValue,
+      googleMeet: googleMeetValue,
+      location: location.value,
       confirmationMessage: confirmationMessage.value,
       redirectUrl: redirectUrl.value,
       redirectAppendParams: redirectAppendParams.value,

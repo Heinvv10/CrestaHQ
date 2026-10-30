@@ -24,6 +24,9 @@ import type { CalendarEvent, EventNotifySkipReason } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { findEmailSuppression } from "@/lib/comms/email-suppression";
+import { meetUrlOf } from "@/lib/google-calendar/provider/types";
+import { settleMeetLinkRows } from "@/lib/booking/meet-link-missing";
 import { isLongEvent } from "@/lib/booking/long-event";
 
 /**
@@ -131,6 +134,27 @@ export async function rescheduleWithoutAvailabilityCheck(
 }
 
 /**
+ * Whether the "Updated:" mail has someone to go to (the checks below, plus
+ * the suppression list sendEmail applies), before the push. A send that
+ * then fails at the SMTP server is not foreseen here (accepted).
+ */
+async function updatedMailWillSend(event: CalendarEvent): Promise<boolean> {
+  if (!event.contactId) return false;
+  try {
+    const [contact, subSnap] = await Promise.all([
+      loadEventContact(event),
+      getAdminDb().doc(`subAccounts/${event.subAccountId}`).get(),
+    ]);
+    const sub = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
+    if (!contact?.email || contact.emailOptedOut || !sub || !emailIsConfigured(sub)) return false;
+    return !(await findEmailSuppression(event.subAccountId, contact.email));
+  } catch (err) {
+    console.warn("[booking/reschedule] pre-push mail check failed", err instanceof Error ? err.message : String(err));
+    return false;
+  }
+}
+
+/**
  * The side effects of ANY successful reschedule, regardless of actor or
  * which route wrote the new time: re-publish reminders with a fresh nonce,
  * record the activity row, fire `booking.rescheduled`, and mail the
@@ -154,7 +178,26 @@ export async function runRescheduleSideEffects(args: {
   const db = getAdminDb();
   const { event, page, newRawToken, publicEventUrl, startAt, endAt, actor } =
     args;
-  await pushBookingToGoogle(event.id);
+  // The "Updated:" mail below carries the event's link, so a room the push
+  // makes now may replace the page's fallback — but only when that mail will
+  // go out; otherwise the booker keeps the fallback and so does the event.
+  if (await updatedMailWillSend(event)) await pushBookingToGoogle(event.id, { replaceFallback: true });
+  else await pushBookingToGoogle(event.id);
+  // The push may have just stored the booking's Google Meet link (a room
+  // made now, or found after an earlier push timed out): mail that one.
+  let meetingUrl = event.meetingUrl ?? null;
+  try {
+    const fresh = await db.collection("events").doc(event.id).get();
+    meetingUrl = (fresh.data() as CalendarEvent | undefined)?.meetingUrl ?? meetingUrl;
+  } catch (err) {
+    console.warn("[booking/reschedule] post-push read failed", err instanceof Error ? err.message : String(err));
+  }
+
+  // The "Updated:" mail carried a Meet link: an open "link missing" row on
+  // the booking's contact is settled as sent.
+  const linkMailed = async () => {
+    if (meetUrlOf(meetingUrl)) await settleMeetLinkRows(event, event.id, "sent");
+  };
 
   // Re-publish reminder callbacks with a fresh schedule nonce so the
   // QStash dedup key doesn't collapse onto the previous ones.
@@ -233,6 +276,10 @@ export async function runRescheduleSideEffects(args: {
       },
       startAt,
       endAt,
+      // The link and place the booking was made with (a Google Meet link
+      // stays the same across a reschedule: the push only moves the event).
+      meetingUrl,
+      location: event.location || undefined,
       publicEventUrl,
     });
     rendered.subject = `Updated: ${rendered.subject.replace(/^Confirmed: /, "")}`;
@@ -247,7 +294,7 @@ export async function runRescheduleSideEffects(args: {
       endAt,
       summary: event.title || page?.name || "Meeting",
       description: page?.confirmationMessage ?? "",
-      location: event.location || "",
+      location: meetingUrl || event.location || "",
       method: "REQUEST",
       status: "CONFIRMED",
       sequence: event.icsSequence,
@@ -269,6 +316,7 @@ export async function runRescheduleSideEffects(args: {
         subAccount: sub,
         meter: { subAccountId: event.subAccountId },
       });
+      await linkMailed();
       return { emailSent: true };
     }
 
@@ -290,6 +338,7 @@ export async function runRescheduleSideEffects(args: {
         },
       ],
     });
+    await linkMailed();
     return { emailSent: true };
   } catch (err) {
     console.warn("[booking/reschedule] confirmation send failed", err);

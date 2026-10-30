@@ -74,6 +74,8 @@ export const ACTIVITY_CHIP = {
   booking_no_show: "other",
   booking_completed: "other",
   booking_reassigned: "other",
+  meet_link_missing: "other",
+  meet_room_owner_removed: "other",
   order_paid: "other",
   order_refunded: "other",
   webinar_registered: "other",

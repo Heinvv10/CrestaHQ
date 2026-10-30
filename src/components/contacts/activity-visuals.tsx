@@ -211,6 +211,16 @@ export function activityVisuals(type: ActivityType): {
         icon: <Users className="h-3 w-3 text-indigo-500" />,
         label: "Booking reassigned",
       };
+    case "meet_link_missing":
+      return {
+        icon: <CalendarClock className="h-3 w-3 text-rose-500" />,
+        label: "Meet link not sent",
+      };
+    case "meet_room_owner_removed":
+      return {
+        icon: <CalendarClock className="h-3 w-3 text-amber-500" />,
+        label: "Meet link may stop working",
+      };
     case "webinar_registered":
       return {
         icon: <MonitorPlay className="h-3 w-3 text-violet-500" />,

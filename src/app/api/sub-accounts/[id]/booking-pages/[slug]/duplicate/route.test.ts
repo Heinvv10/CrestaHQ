@@ -9,9 +9,8 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
-vi.mock("@/lib/auth/require-tenancy", () => ({
-  requireSubAccountAdmin: async () => ({ uid: "u1", agencyId: "ag1" }),
-}));
+const auth = vi.hoisted(() => ({ admin: vi.fn(async () => ({ uid: "u1", agencyId: "ag1" })) }));
+vi.mock("@/lib/auth/require-tenancy", () => ({ requireSubAccountAdmin: auth.admin }));
 
 const { POST } = await import("./route");
 
@@ -55,6 +54,22 @@ beforeEach(() => {
 });
 
 describe("duplicate", () => {
+  it.each([
+    ["a slug that is a path", "sa1", "src/../src"],
+    ["a slug of ..", "sa1", ".."],
+    ["a sub-account id that is a path", "sa1/bookingPages/src", "src"],
+    ["a reserved id", "__sa__", "src"],
+  ])("404s %s before any read or auth", async (_label, id, slug) => {
+    auth.admin.mockClear();
+    const before = mem.list("subAccounts/sa1/bookingPages").length;
+    const res = await POST(new Request("http://x/api", { method: "POST" }), {
+      params: Promise.resolve({ id, slug }),
+    });
+    expect(res.status).toBe(404);
+    expect(auth.admin).not.toHaveBeenCalled();
+    expect(mem.list("subAccounts/sa1/bookingPages")).toHaveLength(before);
+  });
+
   it("copies date-specific hours (page and host), before-buffer and slot interval", async () => {
     const res = await POST(new Request("http://x/api", { method: "POST" }), {
       params: Promise.resolve({ id: "sa1", slug: "src" }),

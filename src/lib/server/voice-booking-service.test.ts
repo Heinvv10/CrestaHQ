@@ -58,6 +58,23 @@ describe("voice booking", () => {
     expect(await bookAt(page, "09:00")).toMatchObject({ ok: true });
   });
 
+  it("a caller name or number with a line break reaches the title on one line", async () => {
+    const page = seedPage("solo", { location: { type: "we_call", value: null } });
+    const res = await bookVoiceSlot({
+      subAccountId: "sa1",
+      agencyId: "ag1",
+      page,
+      startAtIso: at("09:00").toISOString(),
+      callerName: "Eve\r\nATTENDEE:mailto:evil@example.com\u2028x",
+      callerPhone: "+27 60\u0085000",
+      contactId: "c1",
+    });
+    expect(res).toMatchObject({ ok: true });
+    const booked = mem.list("events").find((e) => e.bookingPageSlug === "solo")!;
+    expect(booked.title).toBe("solo — Eve ATTENDEE:mailto:evil@example.com x");
+    expect(booked.location).toBe("Phone call: we'll call +27 60 000");
+  });
+
   it("refuses service pages — a call has no service step", async () => {
     seedPage("svc", {
       calendarType: "service",

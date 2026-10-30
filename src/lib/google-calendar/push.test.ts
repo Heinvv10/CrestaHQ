@@ -225,6 +225,129 @@ describe("removeMemberGoogleCopies", () => {
   });
 });
 
+describe("removeMemberGoogleCopies: copies kept for a Google Meet room", () => {
+  /** host_a's copy owns the room; the booking was reassigned to host_b. */
+  const seedKept = (over: Record<string, unknown> = {}) =>
+    seedEvent({
+      assignedToUid: "host_b",
+      meetingUrl: "https://meet.google.com/abc-defg-hij",
+      googleMeetOwnerUid: "host_a",
+      googleEventIds: { host_a: "g_a", host_b: "g_b" },
+      ...over,
+    });
+
+  it("deletes the kept copy (upcoming or past) and clears the owner, leaving the new host's copy", async () => {
+    connect("host_a");
+    seedKept();
+    state.docs.set("events/past", { ...event(), id: "past", startAt: ts(at(6)), endAt: ts(at(6, 30)), googleEventIds: { host_a: "g_past", host_b: "g_pb" } });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at(8));
+    await removeMemberGoogleCopies(SUB, "host_a");
+    vi.useRealTimers();
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", "g_a", expect.any(AbortSignal));
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", "g_past", expect.any(AbortSignal));
+    expect(provider.deleteEvent).toHaveBeenCalledTimes(2);
+    expect(event()).toMatchObject({ googleEventIds: { host_b: "g_b" }, googleMeetOwnerUid: null });
+    expect(state.docs.get("events/past")).toMatchObject({ googleEventIds: { host_b: "g_pb" }, googleMeetOwnerUid: null });
+  });
+
+  it.each([
+    ["no connection", () => undefined],
+    ["a revoked connection", () => connect("host_a", { status: "revoked" })],
+  ])("with %s: nothing can be removed, so the event records it and keeps the id", async (_l, setup) => {
+    setup();
+    seedKept({ googleMeetKeptUid: "host_a" });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    expect(provider.deleteEvent).not.toHaveBeenCalled();
+    expect(event().googleEventIds).toEqual({ host_a: "g_a", host_b: "g_b" });
+    expect(event().googleMeetOwnerUid).toBeNull();
+    expect(event().googleMeetKeptUid).toBeNull();
+    expect((event().googleSyncError as { message: string }).message).toMatch(
+      /^Still in HOST_A's Google Calendar: .*copy kept for the Google Meet link couldn't be removed/,
+    );
+  });
+
+  it("deleting the room owner's copy of an upcoming booking warns that the booker's link may stop working", async () => {
+    connect("host_a");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at(8));
+    seedKept();
+    state.docs.set("events/past", { ...event(), id: "past", startAt: ts(at(6)), endAt: ts(at(6, 30)), googleEventIds: { host_a: "g_past" } });
+    // An upcoming booking they still host, and own the room of.
+    state.docs.set("events/own", { ...event(), id: "own", assignedToUid: "host_a", googleEventIds: { host_a: "g_own" } });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    vi.useRealTimers();
+    for (const path of ["events/ev_1", "events/own"]) {
+      expect((state.docs.get(path)!.googleSyncError as { message: string }).message).toBe(
+        "The Google Meet room belonged to HOST_A, who was removed. The link may stop working: reassign the booking and send the booker a new link.",
+      );
+    }
+    expect(state.docs.get("events/past")!.googleSyncError ?? null).toBeNull();
+  });
+
+  it("the warning also goes on the contact's timeline, where a later push can't overwrite it", async () => {
+    connect("host_a");
+    connect("host_b");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at(8));
+    seedKept({ contactId: "c1" });
+    state.docs.set("contacts/c1", { subAccountId: SUB });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    expect(event().googleSyncError).toBeTruthy();
+    // e.g. the reassign the warning asks for:
+    await pushBookingToGoogle("ev_1");
+    vi.useRealTimers();
+    expect(event().googleSyncError).toBeNull();
+    const rows = [...state.docs.entries()].filter(([p]) => p.startsWith("contacts/c1/activities/")).map(([, d]) => d);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        type: "meet_room_owner_removed",
+        content: expect.stringMatching(/^The Google Meet room belonged to HOST_A, who was removed/),
+        meta: { eventId: "ev_1" },
+      }),
+    ]);
+  });
+
+  it("the timeline row is never written onto a contact in another sub-account", async () => {
+    connect("host_a");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at(8));
+    seedKept({ contactId: "theirs" });
+    state.docs.set("contacts/theirs", { subAccountId: "sa_other" });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    vi.useRealTimers();
+    expect(event().googleSyncError).toBeTruthy();
+    expect([...state.docs.keys()].filter((p) => p.startsWith("contacts/theirs/activities/"))).toEqual([]);
+  });
+
+  it("no warning for an upcoming booking without a Meet link", async () => {
+    connect("host_a");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at(8));
+    seedKept({ meetingUrl: "https://zoom.example/x" });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    vi.useRealTimers();
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", "g_a", expect.any(AbortSignal));
+    expect(event().googleSyncError ?? null).toBeNull();
+  });
+
+  it("an owner with no copy left just has the owner cleared", async () => {
+    connect("host_a");
+    seedKept({ googleEventIds: { host_b: "g_b" } });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    expect(provider.deleteEvent).not.toHaveBeenCalled();
+    expect(event()).toMatchObject({ googleMeetOwnerUid: null, googleEventIds: { host_b: "g_b" } });
+  });
+
+  it("another member's removal leaves the kept copy and its owner alone", async () => {
+    connect("host_c");
+    seedKept();
+    await removeMemberGoogleCopies(SUB, "host_c");
+    expect(provider.deleteEvent).not.toHaveBeenCalled();
+    expect(event()).toMatchObject({ googleMeetOwnerUid: "host_a", googleEventIds: { host_a: "g_a", host_b: "g_b" } });
+  });
+});
+
 describe("removeBookingFromGoogleBeforeDelete", () => {
   it("reports a copy it could not remove, naming the host, and records it", async () => {
     connect("host_a");

@@ -76,16 +76,49 @@ function escapeIcsText(s: string): string {
     .replace(/\\/g, "\\\\")
     .replace(/;/g, "\\;")
     .replace(/,/g, "\\,")
-    .replace(/\r?\n/g, "\\n");
+    // Every line break (CRLF, a lone CR, a lone LF) becomes the escaped \n;
+    // every other control character (C0, DEL, C1 — NEL included) and the
+    // Unicode line / paragraph separators are dropped: a raw break would end
+    // the content line, and the text after it would be read as a property.
+    .replace(/\r\n|\r|\n/g, "\\n")
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "");
+}
+
+/**
+ * A parameter value (`CN=`), RFC 5545 §3.2: always a quoted-string, which
+ * may hold `:` `;` `,` but never a DQUOTE or a control character — TEXT
+ * backslash-escaping doesn't apply inside parameters. Unquoted, a name like
+ * `x:mailto:evil@example.com` would end the parameters early and change
+ * the address a calendar app reads.
+ */
+function icsParamValue(s: string): string {
+  return `"${s.replace(/["\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "")}"`;
+}
+
+/** An email address in `mailto:` — nothing that could end the line or the value. */
+function icsMailto(email: string): string {
+  return `mailto:${email.replace(/[\u0000-\u0020\u007f-\u009f\u2028\u2029]/g, "")}`;
 }
 
 /** Soft-fold a long line to 75 octets per RFC 5545 §3.1. */
 function foldLine(line: string): string {
-  if (line.length <= 75) return line;
+  // 75 OCTETS of UTF-8 per line, the continuation's leading space included;
+  // `for…of` walks code points, so no character (or surrogate pair) splits.
   const out: string[] = [];
-  for (let i = 0; i < line.length; i += 73) {
-    out.push((i === 0 ? "" : " ") + line.slice(i, i + 73));
+  let current = "";
+  let octets = 0;
+  for (const ch of line) {
+    const cp = ch.codePointAt(0) ?? 0;
+    const n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    if (octets + n > 75) {
+      out.push(current);
+      current = " ";
+      octets = 1;
+    }
+    current += ch;
+    octets += n;
   }
+  out.push(current);
   return out.join("\r\n");
 }
 
@@ -119,16 +152,16 @@ export function generateIcs(input: IcsInput): string {
   }
   if (input.organizerEmail) {
     const cn = input.organizerName
-      ? `;CN=${escapeIcsText(input.organizerName)}`
+      ? `;CN=${icsParamValue(input.organizerName)}`
       : "";
-    lines.push(`ORGANIZER${cn}:mailto:${input.organizerEmail}`);
+    lines.push(`ORGANIZER${cn}:${icsMailto(input.organizerEmail)}`);
   }
   if (input.attendeeEmail) {
     const cn = input.attendeeName
-      ? `;CN=${escapeIcsText(input.attendeeName)}`
+      ? `;CN=${icsParamValue(input.attendeeName)}`
       : "";
     lines.push(
-      `ATTENDEE${cn};RSVP=TRUE;PARTSTAT=NEEDS-ACTION:mailto:${input.attendeeEmail}`,
+      `ATTENDEE${cn};RSVP=TRUE;PARTSTAT=NEEDS-ACTION:${icsMailto(input.attendeeEmail)}`,
     );
   }
   lines.push("END:VEVENT", "END:VCALENDAR");
