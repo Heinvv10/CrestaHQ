@@ -169,6 +169,8 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["start_voice_call",                           "sub-account", "subAccountMember",false, ["agent"]],
   ["watchdog_status",                            "sub-account", "subAccountAdmin", true, ["chat", "agent"]],
   ["configure_watchdog",                         "sub-account", "subAccountAdmin", false, ["chat"]],
+  ["stale_deals_status",                         "sub-account", "subAccountAdmin", true, ["chat", "agent"]],
+  ["configure_stale_deals_monitor",              "sub-account", "subAccountAdmin", false, ["chat"]],
   ["find_contacts_in_sub_account",              "agency",      "agencyOwner",      true, ["chat"]],
   ["find_deals_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],
   ["find_tasks_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],

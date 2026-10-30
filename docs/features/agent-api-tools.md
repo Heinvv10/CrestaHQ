@@ -114,6 +114,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `create_broadcast` | `outbound` | admin | Send an email template to every contact matching an audience (all; a tag; or a pipeline stage), skipping opted-out contacts. | channel, audience and matched count, exact subject and message, merge tags, what is checked at send |
 | `start_voice_call` | `outbound` | member | Have the Voice channel's AI assistant phone a contact now, as the contact card's Call button does. | the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time |
 | `watchdog_status` | read | admin | Show the Labs Inbox Follow-up Watchdog's settings (on/off, waiting threshold, quiet hours, extra criteria) and its recent runs: how many conversations it scanned, which contacts it flagged and why. |  |
+| `stale_deals_status` | read | admin | Show the Stale deals monitor's settings (on/off, days-in-stage threshold, watched pipelines, ignored stages, quiet hours, guidance) and its recent runs: how many deals sat past the threshold and which got a follow-up task with a suggested next step. |  |
 
 ## Agency-key tools
 
