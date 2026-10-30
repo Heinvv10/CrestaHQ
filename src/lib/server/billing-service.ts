@@ -39,6 +39,7 @@ import {
 import { runAfterResponse } from "@/lib/server/after-response";
 import { usageChargeId } from "@/lib/billing/usage";
 import { billingRecipient } from "@/lib/server/usage-billing-recipient";
+import { refreshUsageOverdue } from "@/lib/server/usage-overdue";
 import type { SubAccountDoc } from "@/types";
 
 /**
@@ -1134,6 +1135,19 @@ export async function listChargesForSubAccount(
     .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
 }
 
+/** Every charge in the agency, newest first; single-field query, no index needed. */
+export async function listChargesForAgency(
+  agencyId: string,
+): Promise<BillingChargeResponse[]> {
+  const snap = await chargesCollection()
+    .where("agencyId", "==", agencyId)
+    .limit(1000)
+    .get();
+  return snap.docs
+    .map((d) => serializeCharge(d.id, d.data()))
+    .sort((a, b) => (b.createdAt ?? "").localeCompare(a.createdAt ?? ""));
+}
+
 async function getChargeInAgencyOrThrow(
   agencyId: string,
   chargeId: string,
@@ -1233,6 +1247,8 @@ export async function cancelOneTimeCharge(input: {
     event: "charge.canceled",
     detail: { chargeId: input.chargeId, description: data.description },
   });
+  // Waiving a usage charge lifts the banner or paywall it caused.
+  if (data.kind === "usage") await refreshUsageOverdue(data.subAccountId);
 }
 
 /**

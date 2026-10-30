@@ -5,7 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { invalidateAgencyPolicyCache } from "@/lib/agency/policy";
 import { activeOwnerRefusal } from "@/lib/auth/require-active-agency-owner";
-import { setAgencyUsageRebilling } from "@/lib/server/usage-rebilling";
+import { setAgencyUsagePaywall, setAgencyUsageRebilling } from "@/lib/server/usage-rebilling";
 import { MIN_CONTRAST, contrastOnWhite, isUsableBrandColor } from "@/lib/branding/brand-color";
 import type { MemberStatus, Role } from "@/types";
 
@@ -36,6 +36,7 @@ interface PatchBody {
   agencyAssistantModel?: "opus" | "sonnet";
   agentApiEnabled?: boolean;
   usageRebillingEnabled?: boolean;
+  usagePaywallEnabled?: boolean;
 }
 
 const APP_THEMES = new Set(["leadstack", "green", "neutral"]);
@@ -238,6 +239,21 @@ export async function PATCH(request: Request) {
     }
   }
 
+  // Usage paywall (off by default; read `=== true`): lets an overdue usage
+  // charge wall a client workspace, so turning it on re-checks the live owner.
+  if (body.usagePaywallEnabled !== undefined) {
+    if (typeof body.usagePaywallEnabled !== "boolean") {
+      return NextResponse.json(
+        { error: "usagePaywallEnabled must be a boolean." },
+        { status: 400 },
+      );
+    }
+    if (body.usagePaywallEnabled) {
+      const refusal = await activeOwnerRefusal(access.uid, access.agencyId);
+      if (refusal) return refusal;
+    }
+  }
+
   // Agency Assistant model tier ("opus" | "sonnet"; unset docs read as
   // opus — matching pre-picker behavior).
   if (body.agencyAssistantModel !== undefined) {
@@ -271,7 +287,8 @@ export async function PATCH(request: Request) {
   }
 
   const wantsRebilling = body.usageRebillingEnabled !== undefined;
-  if (Object.keys(update).length === 1 && !wantsRebilling) {
+  const wantsPaywall = body.usagePaywallEnabled !== undefined;
+  if (Object.keys(update).length === 1 && !wantsRebilling && !wantsPaywall) {
     return NextResponse.json(
       { error: "No fields to update." },
       { status: 400 },
@@ -285,6 +302,14 @@ export async function PATCH(request: Request) {
     await setAgencyUsageRebilling(
       access.agencyId,
       body.usageRebillingEnabled === true,
+      access.uid,
+    );
+  }
+
+  if (wantsPaywall) {
+    await setAgencyUsagePaywall(
+      access.agencyId,
+      body.usagePaywallEnabled === true,
       access.uid,
     );
   }

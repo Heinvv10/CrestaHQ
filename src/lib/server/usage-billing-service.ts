@@ -12,6 +12,7 @@ import { usageChargeId } from "@/lib/server/billing-service";
 import { recordBillingEvent } from "@/lib/server/billing-lifecycle";
 import { processPendingCharges } from "@/lib/server/usage-billing-dispatch";
 import { sendDueReminders } from "@/lib/server/usage-billing-reminders";
+import { sweepUsageOverdue } from "@/lib/server/usage-overdue";
 import {
   inPool,
   PENDING_COLLECTION,
@@ -116,6 +117,8 @@ export async function runUsageClose(now: Date = new Date()): Promise<{
   });
   const pending = await processPendingCharges(now);
   const reminders = await sendDueReminders(now);
+  // After the reminders, so a charge that has just gone overdue is flagged the same day.
+  await sweepUsageOverdue(now);
   return {
     closed,
     charged: pending.charged,

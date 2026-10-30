@@ -52,6 +52,7 @@ import {
 import { mysteryShopCap } from "@/lib/prospecting/mystery-shop/model";
 import { SubAccountBillingSection } from "@/components/agency/sub-account-billing-section";
 import { SubAccountUsageSection } from "@/components/agency/sub-account-usage-section";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { effectiveBillingState } from "@/lib/billing/status";
 import type { SubAccountDoc } from "@/types";
 
@@ -105,6 +106,7 @@ function ManageDialogBody({
   open,
   onOpenChange,
 }: Props & { subAccount: SubAccountDoc }) {
+  const [tab, setTab] = useState<"features" | "billing">("features");
   const initialEmail = subAccount.emailDomainEnabledByAgency === true;
   const initialApi = subAccount.apiAccessEnabledByAgency === true;
   const initialBroadcasts = subAccount.broadcastsEnabledByAgency === true;
@@ -847,18 +849,36 @@ function ManageDialogBody({
           </DialogDescription>
         </DialogHeader>
 
-        {/* Client Billing v1 — plan assignment + checkout links. Lives above
-            the gates because an assigned plan MANAGES the gates below (they
-            re-apply from the plan bundle at activation and on plan edits). */}
-        <SubAccountBillingSection
-          subAccount={subAccount}
-          disabled={saving || deleting}
-        />
+        <Tabs value={tab} onValueChange={(v) => setTab(v === "billing" ? "billing" : "features")}>
+          <TabsList>
+            <TabsTrigger value="features">Features</TabsTrigger>
+            <TabsTrigger value="billing">
+              Billing &amp; usage
+              {(subAccount.usageOverdue || subAccount.billing?.status === "pending") && (
+                <span
+                  className="ml-1.5 inline-block h-1.5 w-1.5 rounded-full bg-amber-500"
+                  role="img"
+                  aria-label="Needs attention"
+                />
+              )}
+            </TabsTrigger>
+          </TabsList>
 
-        {/* Usage Metering v1 — current-month usage vs quotas. Agency-eyes-
-            only by design (the workspace sees only enforcement messages). */}
-        <SubAccountUsageSection subAccountId={subAccount.id} />
+          <TabsContent value="billing" className="mt-4 space-y-4">
+            {/* Client Billing v1 — plan assignment + checkout links. An assigned
+                plan MANAGES the gates on the Features tab (they re-apply from
+                the plan bundle at activation and on plan edits). */}
+            <SubAccountBillingSection
+              subAccount={subAccount}
+              disabled={saving || deleting}
+            />
 
+            {/* Usage Metering v1 — current-month usage vs quotas. Agency-eyes-
+                only by design (the workspace sees only enforcement messages). */}
+            <SubAccountUsageSection subAccountId={subAccount.id} />
+          </TabsContent>
+
+          <TabsContent value="features" className="mt-4 space-y-4">
         {(() => {
           const billingState = effectiveBillingState(subAccount.billing);
           if (billingState === "comped") return null;
@@ -1567,6 +1587,8 @@ function ManageDialogBody({
             section; nothing is torn down.
           </GateToggle>
         </div>
+          </TabsContent>
+        </Tabs>
 
         {willTearDown && (
           <div className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-sm text-amber-700 dark:text-amber-400">
