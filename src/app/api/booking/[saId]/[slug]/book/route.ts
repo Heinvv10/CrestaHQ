@@ -716,7 +716,10 @@ export async function POST(
         }
       }
     }
-    if (meetLinkMissing && !hostToldMeetMissing) {
+    // A pending link always gets a row, host emailed or not: if the
+    // detached push then ends without a room, that row is what gets
+    // corrected (the host's "being created" email can't be).
+    if (meetLinkMissing && (!hostToldMeetMissing || meetPending)) {
       await recordMeetLinkMissing({
         contactId: created.contactId,
         eventId: created.eventDocRef.id,

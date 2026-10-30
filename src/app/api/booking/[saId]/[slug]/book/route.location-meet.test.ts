@@ -42,6 +42,7 @@ vi.mock("@/lib/google-calendar/push", () => ({
 }));
 
 const { POST } = await import("./route");
+const { meetLinkMissingNote, settleMeetLinkPending } = await import("@/lib/booking/meet-link-missing");
 
 const book = (extra: Record<string, unknown> = {}) =>
   POST(post({ name: "Visitor", email: "v@example.com", phone: "+27 60 000 0000", slot: slot("09:00", "09:30"), ...extra }), {
@@ -121,6 +122,19 @@ describe("Google Meet pages", () => {
     const host = m.sent.find((s) => s.to === "ann@example.com")!;
     expect(host.text).toContain("being created and will appear on the booking");
     expect(host.text).not.toContain("check Settings");
+  });
+
+  it("pending with the host emailed: the row is still written, so a push that ends with no room corrects it", async () => {
+    seedPage("p", { hosts: HOSTS, location: { type: "google_meet", value: null }, googleMeet: true });
+    m.meet.mockResolvedValueOnce({ meetUrl: null, pending: true });
+    const res = await book();
+    const { eventId } = (await res.json()) as { eventId: string };
+    expect(m.sent.some((s) => s.to === "ann@example.com")).toBe(true);
+    const [row] = mem.list("contacts/c1/activities");
+    expect(row).toMatchObject({ type: "meet_link_missing", meta: { eventId, pending: true } });
+    // The detached push ends without a room (what its continuation calls):
+    await settleMeetLinkPending(eventId);
+    expect(mem.list("contacts/c1/activities")[0]).toMatchObject({ content: meetLinkMissingNote(false), meta: { pending: false } });
   });
 
   it("…and with no host to email, the timeline row says the same", async () => {

@@ -45,6 +45,17 @@ describe("settleMeetLinkPending", () => {
   });
 });
 
+describe("the 'on the booking' wording names no provider", () => {
+  it("an operator's own (non-Meet) link reached the booking: the row doesn't claim a Google Meet link was made", async () => {
+    mem.seed("events/e1", { contactId: "c1", subAccountId: "sa1", meetingUrl: "https://zoom.example/operator" });
+    row("a1", { eventId: "e1", pending: true });
+    await settleMeetLinkPending("e1");
+    const content = (mem.read("contacts/c1/activities/a1") as { content: string }).content;
+    expect(content).toBe(MEET_LINK_ON_BOOKING_NOTE);
+    expect(content).not.toMatch(/Google Meet/);
+  });
+});
+
 describe("settleMeetLinkRows", () => {
   it("rewrites only this booking's OPEN rows; a resolved one stays resolved", async () => {
     row("a1", { eventId: "e1", pending: true });

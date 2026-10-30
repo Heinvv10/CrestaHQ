@@ -24,6 +24,7 @@ import type { CalendarEvent, EventNotifySkipReason } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { findEmailSuppression } from "@/lib/comms/email-suppression";
 import { meetUrlOf } from "@/lib/google-calendar/provider/types";
 import { settleMeetLinkRows } from "@/lib/booking/meet-link-missing";
 import { isLongEvent } from "@/lib/booking/long-event";
@@ -132,7 +133,11 @@ export async function rescheduleWithoutAvailabilityCheck(
   });
 }
 
-/** Whether the "Updated:" mail has someone to go to (the checks below, before the push). */
+/**
+ * Whether the "Updated:" mail has someone to go to (the checks below, plus
+ * the suppression list sendEmail applies), before the push. A send that
+ * then fails at the SMTP server is not foreseen here (accepted).
+ */
 async function updatedMailWillSend(event: CalendarEvent): Promise<boolean> {
   if (!event.contactId) return false;
   try {
@@ -141,7 +146,8 @@ async function updatedMailWillSend(event: CalendarEvent): Promise<boolean> {
       getAdminDb().doc(`subAccounts/${event.subAccountId}`).get(),
     ]);
     const sub = subSnap.exists ? (subSnap.data() as SubAccountDoc) : null;
-    return !!contact?.email && !contact.emailOptedOut && !!sub && emailIsConfigured(sub);
+    if (!contact?.email || contact.emailOptedOut || !sub || !emailIsConfigured(sub)) return false;
+    return !(await findEmailSuppression(event.subAccountId, contact.email));
   } catch (err) {
     console.warn("[booking/reschedule] pre-push mail check failed", err instanceof Error ? err.message : String(err));
     return false;

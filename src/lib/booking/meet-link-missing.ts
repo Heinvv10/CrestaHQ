@@ -19,9 +19,12 @@ export function meetLinkMissingNote(pending: boolean): string {
 /** The row once the late link went out by email. */
 export const MEET_LINK_SENT_NOTE =
   "The Google Meet link was made after the booking and has been emailed to the customer.";
-/** The row when the late link reached the booking before the row was written. */
+/**
+ * The row when a link reached the booking another way (a late room, or an
+ * operator's own link — so it names no provider).
+ */
 export const MEET_LINK_ON_BOOKING_NOTE =
-  "The Google Meet link was made after the booking and is on it now; the customer was told the joining link will follow.";
+  "A meeting link is now on the booking; the customer was told the joining link will follow — check they have it.";
 /** The row once the late link exists but could not be emailed. */
 export const MEET_LINK_NOT_EMAILED_NOTE =
   "The Google Meet link now exists on the booking, but it couldn't be emailed to the customer — send it to them.";

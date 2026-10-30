@@ -29,7 +29,7 @@ vi.mock("@/lib/google-calendar/push", () => ({
 }));
 vi.mock("@/lib/google-calendar/busy", () => ({ loadGoogleBusyForEvent: async () => [] }));
 
-const { SA, AGENCY, mem, resetSeam, smtpSend } = await s();
+const { SA, AGENCY, mem, resetSeam, smtpSend, suppressionSeed } = await s();
 const { markBookingPaidServerSide } = await import("@/lib/server/bookings-service");
 const { rescheduleWithoutAvailabilityCheck, runRescheduleSideEffects } = await import("./reschedule");
 
@@ -199,6 +199,7 @@ describe("a reschedule's push may replace the fallback only when its \"Updated:\
     ["the contact opted out", () => mem.seed("contacts/c1", { ...(mem.read("contacts/c1") as object), emailOptedOut: true })],
     ["the contact has no address", () => mem.seed("contacts/c1", { ...(mem.read("contacts/c1") as object), email: null })],
     ["sending isn't configured", () => mem.seed(`subAccounts/${SA}`, { agencyId: AGENCY })],
+    ["the address is on the suppression list", () => mem.seed(...suppressionSeed("thandi@example.co.za", SA))],
   ])("%s: fill-only", async (_l, setup) => {
     seed(MEET_PAGE, { status: "scheduled" });
     setup();
