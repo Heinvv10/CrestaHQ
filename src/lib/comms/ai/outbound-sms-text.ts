@@ -75,7 +75,7 @@ const OPT_OUT_WORDS = new Set(["stop", "quit", "cancel", "unsubscribe", "unsub",
  *  digits and number words refused, no destination can follow them. */
 const ROUTE_WORDS = new Set([
   "whatsapp", "facebook", "instagram", "insta", "telegram", "tiktok", "twitter", "linkedin", "messenger",
-  "snapchat", "viber", "wechat", "skype", "discord", "signal", "email", "e-mail", "dm", "inbox",
+  "snapchat", "viber", "wechat", "skype", "discord", "email", "e-mail", "dm", "inbox",
   "www", "http", "https", "com", "co", "za", "net", "org", "dot", "slash", "url", "link", "website",
 ]);
 

@@ -37,8 +37,7 @@ describe("templateProblem", () => {
 describe("slotProblem (after normaliseSlot)", () => {
   const problem = (raw: string) => slotProblem(normaliseSlot(raw));
 
-  // The breaker's typical personalised lines: none may be refused. (Its "Is
-  // your signal giving you trouble?" now is: "signal" is a channel word.)
+  // The breaker's 32 typical personalised lines: none may be refused.
   it.each([
     "Hope your new home is settling in well!",
     "Hope you're having a great week.",
@@ -46,6 +45,7 @@ describe("slotProblem (after normaliseSlot)", () => {
     "Hope load shedding isn't giving you grief",
     "Thanks for your interest in our uncapped packages.",
     "Great options for your family are available",
+    "Is your signal giving you trouble?",
     "Optical fibre is now live on your street",
     "Fast, reliable fibre is now available in Centurion.",
     "Happy Heritage Day to you and your family!",
@@ -98,7 +98,7 @@ describe("slotProblem (after normaliseSlot)", () => {
     ["optout", "optout anytime", /opt-out word/],
     ["opt out as a phrase", "you can opt out anytime", /"opt out"/],
     ["a route word", "find us on whatsapp", /channel or a destination/],
-    ...["linkedin", "messenger", "snapchat", "viber", "wechat", "skype", "discord", "signal"].map(
+    ...["linkedin", "messenger", "snapchat", "viber", "wechat", "skype", "discord"].map(
       (w): [string, string, RegExp] => [`channel ${w}`, `find us on ${w} today`, /channel or a destination/],
     ),
     ["a route word inside a hyphenated word", "join our insta-friends", /channel or a destination/],
