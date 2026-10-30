@@ -17,16 +17,18 @@ import type { SubAccountDoc } from "@/types/tenancy";
  * (the detached continuation of pushBookingAndGetMeetUrlWithin stored it on
  * an event that had no link): email the booker the link once, through the
  * sub-account's own sending (SMTP or Resend, suppression-checked), and mark
- * the booking's meet_link_missing timeline row resolved. When it can't be
- * emailed (sending off, no address, opted out, suppressed, or not the
- * address an approver pinned — `pinnedEmail`) the row says so instead.
- * Claimed once per event, so a second detached push can't send twice; a
- * send that fails in a way a retry could fix releases the claim. Never throws.
+ * the booking's meet_link_missing timeline row resolved. Whenever it is NOT
+ * emailed — sending off, no address, opted out, suppressed, not the address
+ * an approver pinned (`pinnedEmail`; null = nobody), a failed send, or the
+ * booking now holding another link — the row says the link couldn't be
+ * emailed, so an operator sends it. There is no retry: one attempt, claimed
+ * once per event so a second detached push can't send twice. Only a booking
+ * no longer confirmed (cancelled, finished) leaves its rows alone. Never throws.
  */
 export async function sendMeetLinkFollowUp(
   eventId: string,
   meetUrl: string,
-  opts: { pinnedEmail?: string } = {},
+  opts: { pinnedEmail?: string | null } = {},
 ): Promise<void> {
   try {
     const db = getAdminDb();
@@ -36,11 +38,12 @@ export async function sendMeetLinkFollowUp(
     // Only for a confirmed booking still holding this very link — not a paid
     // hold (its confirmation, with the link, comes at mark-paid), not a
     // cancelled or finished one.
-    if (eventStatus(event) !== "scheduled" || event.meetingUrl !== meetUrl || !event.contactId) return;
+    if (eventStatus(event) !== "scheduled" || !event.contactId) return;
     const contactId = event.contactId;
+    const notEmailed = () => settleMeetLinkRows(contactId, eventId, "not_emailed");
     const startAt = (event.startAt as { toDate?: () => Date } | null)?.toDate?.();
     const endAt = (event.endAt as { toDate?: () => Date } | null)?.toDate?.();
-    if (!(startAt instanceof Date) || !(endAt instanceof Date)) return;
+    if (event.meetingUrl !== meetUrl || !(startAt instanceof Date) || !(endAt instanceof Date)) return notEmailed();
 
     const [contact, subSnap, pageSnap] = await Promise.all([
       loadEventContact(event),
@@ -55,8 +58,7 @@ export async function sendMeetLinkFollowUp(
     const pinnedAway = opts.pinnedEmail !== undefined && to !== opts.pinnedEmail;
     if (!sub || !emailIsConfigured(sub) || !to || contact?.emailOptedOut || pinnedAway) {
       if (pinnedAway) console.warn(`[booking/meet-link] follow-up withheld event=${eventId}: not the address the approver reviewed`);
-      await settleMeetLinkRows(contactId, eventId, "not_emailed");
-      return;
+      return notEmailed();
     }
 
     const claim = db.doc(meetLinkFollowUpClaimPath(eventId));
@@ -67,10 +69,9 @@ export async function sendMeetLinkFollowUp(
         claimedAt: FieldValue.serverTimestamp(),
       });
     } catch (err) {
-      if ((err as { code?: unknown } | null)?.code !== 6) {
-        console.warn(`[booking/meet-link] follow-up claim failed event=${eventId}`, err instanceof Error ? err.message : String(err));
-      }
-      return; // 6 = ALREADY_EXISTS: already sent
+      if ((err as { code?: unknown } | null)?.code === 6) return; // ALREADY_EXISTS: already sent
+      console.warn(`[booking/meet-link] follow-up claim failed event=${eventId}`, err instanceof Error ? err.message : String(err));
+      return notEmailed();
     }
 
     const rendered = renderMeetLinkFollowUpEmail({
@@ -100,14 +101,9 @@ export async function sendMeetLinkFollowUp(
         what: "Google Meet link",
         createdBy: "booking",
       });
-      if (suppressed) {
-        await settleMeetLinkRows(contactId, eventId, "not_emailed");
-        return;
-      }
-      // A failure a retry could fix: release the claim, leave the row open.
-      console.warn(`[booking/meet-link] follow-up send failed event=${eventId}`, err instanceof Error ? err.message : String(err));
-      await claim.delete().catch((e) => console.warn(`[booking/meet-link] claim release failed event=${eventId}`, e instanceof Error ? e.message : String(e)));
-      return;
+      // No retry exists: the claim stays and the row tells an operator to send it.
+      if (!suppressed) console.warn(`[booking/meet-link] follow-up send failed event=${eventId}`, err instanceof Error ? err.message : String(err));
+      return notEmailed();
     }
     await settleMeetLinkRows(contactId, eventId, "sent");
   } catch (err) {

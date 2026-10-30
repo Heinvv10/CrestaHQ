@@ -29,11 +29,11 @@ describe("settleMeetLinkPending", () => {
     expect(mem.read("contacts/c1/activities/a3")).toMatchObject({ content: "earlier note" });
   });
 
-  it("leaves them when a link reached the booking meanwhile", async () => {
+  it("a link reached the booking another way meanwhile: the rows say it is on the booking now", async () => {
     mem.seed("events/e1", { contactId: "c1", meetingUrl: "https://meet.google.com/x" });
     row("a1", { eventId: "e1", pending: true });
     await settleMeetLinkPending("e1");
-    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ meta: { pending: true } });
+    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_ON_BOOKING_NOTE, meta: { pending: false } });
   });
 });
 

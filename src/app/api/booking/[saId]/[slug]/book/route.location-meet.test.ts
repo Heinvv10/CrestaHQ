@@ -9,6 +9,8 @@ import { SA, mem, post, resetBookingHarness, seedPage, slot } from "@/test/booki
 
 const m = vi.hoisted(() => ({
   order: [] as string[],
+  emailThrows: false,
+  after: undefined as Promise<void> | undefined,
   sent: [] as Array<{ to: string; text: string; html: string; attachments?: Array<{ content: string }> }>,
   meet: vi.fn(async (_id: string): Promise<{ meetUrl: string | null; pending: boolean }> => ({ meetUrl: null, pending: false })),
   later: vi.fn(),
@@ -17,7 +19,10 @@ const m = vi.hoisted(() => ({
 const h = () => import("@/test/booking-harness");
 vi.mock("@/lib/firebase/admin", async () => (await h()).bookingMocks.admin());
 vi.mock("@/lib/comms/resend", () => ({
-  emailIsConfigured: () => true,
+  emailIsConfigured: () => {
+    if (m.emailThrows) throw new Error("boom");
+    return true;
+  },
   tenantFrom: () => "x@example.com",
   sendEmail: async (input: (typeof m.sent)[number]) => {
     m.order.push(`email:${input.to}`);
@@ -28,8 +33,9 @@ vi.mock("@/lib/booking/lifecycle", async () => (await h()).bookingMocks.lifecycl
 vi.mock("@/lib/booking/contact-reconcile", async () => (await h()).bookingMocks.reconcile());
 vi.mock("@/lib/google-calendar/busy", () => ({ loadGoogleBusyForPage: async () => [] }));
 vi.mock("@/lib/google-calendar/push", () => ({
-  pushBookingAndGetMeetUrlWithin: async (id: string) => {
+  pushBookingAndGetMeetUrlWithin: async (id: string, opts?: { after?: Promise<void> }) => {
     m.order.push("push");
+    m.after = opts?.after;
     return m.meet(id);
   },
   pushBookingToGoogleAfterResponse: m.later,
@@ -49,6 +55,8 @@ const HOSTS = [{ uid: "host_a", name: "Ann" }];
 beforeEach(() => {
   resetBookingHarness();
   m.order.length = 0;
+  m.emailThrows = false;
+  m.after = undefined;
   m.sent.length = 0;
   m.meet.mockReset();
   m.meet.mockResolvedValue({ meetUrl: null, pending: false });
@@ -130,6 +138,15 @@ describe("Google Meet pages", () => {
     m.meet.mockResolvedValueOnce({ meetUrl: "https://meet.google.com/abc-defg-hij", pending: false });
     expect((await book()).status).toBe(200);
     expect(mem.list("contacts/c1/activities")).toEqual([]);
+  });
+
+  it("the confirmation block throwing still releases the late-link follow-up (`after` resolves)", async () => {
+    seedPage("p", { hosts: HOSTS, location: { type: "google_meet", value: null }, googleMeet: true });
+    m.emailThrows = true;
+    await expect(book()).rejects.toThrow("boom");
+    expect(m.after).toBeDefined();
+    const outcome = await Promise.race([m.after!.then(() => "released"), new Promise((r) => setTimeout(() => r("stuck"), 200))]);
+    expect(outcome).toBe("released");
   });
 
   it("push made no room: the page's fallback link goes out instead", async () => {

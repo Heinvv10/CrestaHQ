@@ -285,6 +285,28 @@ describe("removeMemberGoogleCopies: copies kept for a Google Meet room", () => {
     expect(state.docs.get("events/past")!.googleSyncError ?? null).toBeNull();
   });
 
+  it("the warning also goes on the contact's timeline, where a later push can't overwrite it", async () => {
+    connect("host_a");
+    connect("host_b");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at(8));
+    seedKept({ contactId: "c1" });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    expect(event().googleSyncError).toBeTruthy();
+    // e.g. the reassign the warning asks for:
+    await pushBookingToGoogle("ev_1");
+    vi.useRealTimers();
+    expect(event().googleSyncError).toBeNull();
+    const rows = [...state.docs.entries()].filter(([p]) => p.startsWith("contacts/c1/activities/")).map(([, d]) => d);
+    expect(rows).toEqual([
+      expect.objectContaining({
+        type: "meet_room_owner_removed",
+        content: expect.stringMatching(/^The Google Meet room belonged to HOST_A, who was removed/),
+        meta: { eventId: "ev_1" },
+      }),
+    ]);
+  });
+
   it("no warning for an upcoming booking without a Meet link", async () => {
     connect("host_a");
     vi.useFakeTimers({ toFake: ["Date"] });

@@ -65,16 +65,18 @@ export async function settleMeetLinkRows(
 
 /**
  * A detached push ended without storing a room: a "being created" row was
- * wrong, so it now says no link could be made — unless a link reached the
- * booking some other way meanwhile. Never throws.
+ * wrong. It now says no link could be made — or, when a link reached the
+ * booking some other way meanwhile, that the link is on the booking now.
+ * Never throws.
  */
 export async function settleMeetLinkPending(eventId: string): Promise<void> {
   try {
     const snap = await getAdminDb().collection("events").doc(eventId).get();
     const e = snap.data() as { contactId?: string | null; meetingUrl?: string | null } | undefined;
-    if (!e?.contactId || e.meetingUrl) return;
+    if (!e?.contactId) return;
+    const content = e.meetingUrl ? MEET_LINK_ON_BOOKING_NOTE : meetLinkMissingNote(false);
     const rows = (await rowsFor(e.contactId, eventId)).filter((d) => d.data().meta?.pending === true);
-    await Promise.all(rows.map((d) => d.ref.update({ content: meetLinkMissingNote(false), "meta.pending": false })));
+    await Promise.all(rows.map((d) => d.ref.update({ content, "meta.pending": false })));
   } catch (err) {
     console.warn(`[booking/meet-link] pending row settle failed event=${eventId}`, err instanceof Error ? err.message : String(err));
   }

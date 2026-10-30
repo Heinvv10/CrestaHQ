@@ -567,162 +567,167 @@ export async function POST(
   // or failing that a row on the contact's timeline.
   let hostToldMeetMissing = false;
 
-  // Confirmation / payment-pending email.
-  if (emailIsConfigured(sub)) {
-    try {
-      const rendered = paymentRequired
-        ? renderBookingPaymentPendingEmail({
-            recipientName: name,
-            businessName: sub.name ?? "Booking",
-            businessLogoUrl: sub.logoUrl,
-            page: {
-              name: bookedName,
-              durationMinutes,
-              timezone: page.timezone,
-              payment: page.payment,
-              confirmationMessage: page.confirmationMessage,
-            },
-            startAt: slotStart,
-            endAt: slotEnd,
-            publicEventUrl,
-            paymentUrl: created.paymentLinkUrl,
-          })
-        : renderBookingConfirmationEmail({
-            recipientName: name,
-            businessName: sub.name ?? "Booking",
-            businessLogoUrl: sub.logoUrl,
-            page: {
-              name: bookedName,
-              durationMinutes,
-              timezone: page.timezone,
-              payment: page.payment,
-              confirmationMessage: page.confirmationMessage,
-            },
-            startAt: slotStart,
-            endAt: slotEnd,
-            meetingUrl,
-            location: bookerLocation || undefined,
-            publicEventUrl,
-            // Name the host the customer chose (null in single/pooled mode).
-            hostName: created.assignedToName,
-          });
-
-      // ICS only for confirmed bookings (not awaiting_payment) so we
-      // don't pollute attendee calendars with holds.
-      const attachments = !paymentRequired
-        ? buildIcsAttachment({
-            eventId: created.eventDocRef.id,
-            startAt: slotStart,
-            endAt: slotEnd,
-            domain: appHost,
-            title: created.title,
-            // Name the chosen host in the calendar invite body too.
-            description: [
-              page.confirmationMessage || "",
-              created.assignedToName ? `With ${created.assignedToName}` : "",
-            ]
-              .filter(Boolean)
-              .join("\n\n"),
-            // Calendar apps render a clickable "Join" affordance when
-            // LOCATION is a URL — Zoom / Meet / Whereby all auto-detect.
-            location: meetingUrl || bookerLocation,
-            organizerEmail: sub.replyToEmail ?? undefined,
-            organizerName: sub.name ?? undefined,
-            attendeeEmail: email,
-            attendeeName: name,
-          })
-        : undefined;
-
-      await sendEmailWithIcs({
-        to: email,
-        subject: rendered.subject,
-        text: rendered.text,
-        html: rendered.html,
-        replyTo: sub.replyToEmail ?? undefined,
-        from: tenantFrom(sub),
-        subAccount: sub,
-        icsAttachment: attachments,
-        meterSubAccountId: saId,
-      });
-    } catch (err) {
-      const suppressed = await recordSuppressedEmail(err, {
-        contactId: created.contactId,
-        eventId: created.eventDocRef.id,
-        what: "Booking confirmation",
-        createdBy: "booking",
-      });
-      if (!suppressed) console.warn("[booking/book] confirmation send failed", err);
-    }
-  }
-
-  // Notify the assigned host — team-mode confirmed bookings only. Best-effort:
-  // a missing host email or a send failure never affects the visitor's
-  // confirmed booking. Skipped for unpaid holds (notify on the actual
-  // confirmation, i.e. when the slot isn't payment-pending). A collective
-  // booking notifies every host in the meeting.
-  if (
-    !paymentRequired &&
-    created.assignedToUid &&
-    created.assignedToName &&
-    emailIsConfigured(sub)
-  ) {
-    for (const hostUid of created.hostUids ?? [created.assignedToUid]) {
+  // The confirmation, the host notification and the timeline row: whatever
+  // happens in them, a late link's follow-up must not wait the full cap.
+  try {
+    // Confirmation / payment-pending email.
+    if (emailIsConfigured(sub)) {
       try {
-        const hostContact = await loadHostNotifyContact(saId, hostUid);
-        if (hostContact) {
-          const rendered = renderBookingHostNotificationEmail({
-            hostName: hostContact.name,
-            businessName: sub.name ?? "Booking",
-            businessLogoUrl: sub.logoUrl,
-            page: {
-              name: bookedName,
-              durationMinutes,
-              timezone: page.timezone,
-            },
-            startAt: slotStart,
-            endAt: slotEnd,
-            customerName: name,
-            customerEmail: email,
-            customerPhone: phone,
-            notes:
-              [
-                locationText ? `Where: ${locationText}` : "",
-                meetLinkMissing ? meetLinkMissingNote(meetPending) : "",
-                ...Object.entries(extras).map(
-                  ([k, v]) => `${labelForField(page, k)}: ${v}`,
-                ),
+        const rendered = paymentRequired
+          ? renderBookingPaymentPendingEmail({
+              recipientName: name,
+              businessName: sub.name ?? "Booking",
+              businessLogoUrl: sub.logoUrl,
+              page: {
+                name: bookedName,
+                durationMinutes,
+                timezone: page.timezone,
+                payment: page.payment,
+                confirmationMessage: page.confirmationMessage,
+              },
+              startAt: slotStart,
+              endAt: slotEnd,
+              publicEventUrl,
+              paymentUrl: created.paymentLinkUrl,
+            })
+          : renderBookingConfirmationEmail({
+              recipientName: name,
+              businessName: sub.name ?? "Booking",
+              businessLogoUrl: sub.logoUrl,
+              page: {
+                name: bookedName,
+                durationMinutes,
+                timezone: page.timezone,
+                payment: page.payment,
+                confirmationMessage: page.confirmationMessage,
+              },
+              startAt: slotStart,
+              endAt: slotEnd,
+              meetingUrl,
+              location: bookerLocation || undefined,
+              publicEventUrl,
+              // Name the host the customer chose (null in single/pooled mode).
+              hostName: created.assignedToName,
+            });
+
+        // ICS only for confirmed bookings (not awaiting_payment) so we
+        // don't pollute attendee calendars with holds.
+        const attachments = !paymentRequired
+          ? buildIcsAttachment({
+              eventId: created.eventDocRef.id,
+              startAt: slotStart,
+              endAt: slotEnd,
+              domain: appHost,
+              title: created.title,
+              // Name the chosen host in the calendar invite body too.
+              description: [
+                page.confirmationMessage || "",
+                created.assignedToName ? `With ${created.assignedToName}` : "",
               ]
                 .filter(Boolean)
-                .join("\n") || null,
-            manageUrl: publicEventUrl,
-          });
-          await sendEmail({
-            archive: false,
-            to: hostContact.email,
-            subject: rendered.subject,
-            text: rendered.text,
-            html: rendered.html,
-            from: tenantFrom(sub),
-            subAccount: sub,
-            meter: { subAccountId: saId },
-          });
-          if (meetLinkMissing) hostToldMeetMissing = true;
-        }
+                .join("\n\n"),
+              // Calendar apps render a clickable "Join" affordance when
+              // LOCATION is a URL — Zoom / Meet / Whereby all auto-detect.
+              location: meetingUrl || bookerLocation,
+              organizerEmail: sub.replyToEmail ?? undefined,
+              organizerName: sub.name ?? undefined,
+              attendeeEmail: email,
+              attendeeName: name,
+            })
+          : undefined;
+
+        await sendEmailWithIcs({
+          to: email,
+          subject: rendered.subject,
+          text: rendered.text,
+          html: rendered.html,
+          replyTo: sub.replyToEmail ?? undefined,
+          from: tenantFrom(sub),
+          subAccount: sub,
+          icsAttachment: attachments,
+          meterSubAccountId: saId,
+        });
       } catch (err) {
-        console.warn("[booking/book] host notification send failed", err);
+        const suppressed = await recordSuppressedEmail(err, {
+          contactId: created.contactId,
+          eventId: created.eventDocRef.id,
+          what: "Booking confirmation",
+          createdBy: "booking",
+        });
+        if (!suppressed) console.warn("[booking/book] confirmation send failed", err);
       }
     }
+
+    // Notify the assigned host — team-mode confirmed bookings only. Best-effort:
+    // a missing host email or a send failure never affects the visitor's
+    // confirmed booking. Skipped for unpaid holds (notify on the actual
+    // confirmation, i.e. when the slot isn't payment-pending). A collective
+    // booking notifies every host in the meeting.
+    if (
+      !paymentRequired &&
+      created.assignedToUid &&
+      created.assignedToName &&
+      emailIsConfigured(sub)
+    ) {
+      for (const hostUid of created.hostUids ?? [created.assignedToUid]) {
+        try {
+          const hostContact = await loadHostNotifyContact(saId, hostUid);
+          if (hostContact) {
+            const rendered = renderBookingHostNotificationEmail({
+              hostName: hostContact.name,
+              businessName: sub.name ?? "Booking",
+              businessLogoUrl: sub.logoUrl,
+              page: {
+                name: bookedName,
+                durationMinutes,
+                timezone: page.timezone,
+              },
+              startAt: slotStart,
+              endAt: slotEnd,
+              customerName: name,
+              customerEmail: email,
+              customerPhone: phone,
+              notes:
+                [
+                  locationText ? `Where: ${locationText}` : "",
+                  meetLinkMissing ? meetLinkMissingNote(meetPending) : "",
+                  ...Object.entries(extras).map(
+                    ([k, v]) => `${labelForField(page, k)}: ${v}`,
+                  ),
+                ]
+                  .filter(Boolean)
+                  .join("\n") || null,
+              manageUrl: publicEventUrl,
+            });
+            await sendEmail({
+              archive: false,
+              to: hostContact.email,
+              subject: rendered.subject,
+              text: rendered.text,
+              html: rendered.html,
+              from: tenantFrom(sub),
+              subAccount: sub,
+              meter: { subAccountId: saId },
+            });
+            if (meetLinkMissing) hostToldMeetMissing = true;
+          }
+        } catch (err) {
+          console.warn("[booking/book] host notification send failed", err);
+        }
+      }
+    }
+    if (meetLinkMissing && !hostToldMeetMissing) {
+      await recordMeetLinkMissing({
+        contactId: created.contactId,
+        eventId: created.eventDocRef.id,
+        agencyId,
+        subAccountId: saId,
+        pending: meetPending,
+      });
+    }
+  } finally {
+    confirmationWritten();
   }
-  if (meetLinkMissing && !hostToldMeetMissing) {
-    await recordMeetLinkMissing({
-      contactId: created.contactId,
-      eventId: created.eventDocRef.id,
-      agencyId,
-      subAccountId: saId,
-      pending: meetPending,
-    });
-  }
-  confirmationWritten();
 
   // Reminder schedule (no-op when payment is pending — gets scheduled
   // on mark-paid in Slice 8).

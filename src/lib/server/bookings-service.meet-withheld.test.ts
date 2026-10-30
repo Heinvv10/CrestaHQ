@@ -39,6 +39,7 @@ vi.mock("@/lib/google-calendar/push", async (orig) => {
 const { SA, AGENCY, mem, resetSeam, smtpSend } = await s();
 const { markBookingPaidServerSide } = await import("./bookings-service");
 const { flushAfterResponse } = await import("@/lib/server/after-response");
+const { MEET_LINK_NOT_EMAILED_NOTE } = await import("@/lib/booking/meet-link-missing");
 
 const MEET_LINK = "https://meet.google.com/late-room-xyz";
 const ts = (d: Date) => ({ toDate: () => d, toMillis: () => d.getTime() });
@@ -102,14 +103,19 @@ async function payThenLandRoom(expectEmailTo?: string | null, beforeRoom?: () =>
 }
 
 describe("mark-paid + a Meet link that lands after the deadline", () => {
-  it("withheld by the approver's pin: neither the confirmation nor the late link is emailed", async () => {
+  it("withheld by the approver's pin: neither the confirmation nor the late link is emailed — and the row says so", async () => {
     await payThenLandRoom("reviewed@example.co.za");
     expect(recipients()).toEqual([]);
+    const rows = mem.list("contacts/c1/activities").filter((a) => a.type === "meet_link_missing");
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ content: MEET_LINK_NOT_EMAILED_NOTE, meta: expect.objectContaining({ pending: false }) });
   });
 
-  it("the approver reviewed no address (pin null): nobody gets the late link", async () => {
+  it("the approver reviewed no address (pin null): nobody gets the late link, and the row says it wasn't emailed", async () => {
     await payThenLandRoom(null);
     expect(recipients()).toEqual([]);
+    const rows = mem.list("contacts/c1/activities").filter((a) => a.type === "meet_link_missing");
+    expect(rows).toEqual([expect.objectContaining({ content: MEET_LINK_NOT_EMAILED_NOTE })]);
   });
 
   it("the contact's address changes after mark-paid, before the room lands: the late link stays with the pin", async () => {

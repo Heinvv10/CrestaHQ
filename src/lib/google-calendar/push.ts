@@ -26,6 +26,43 @@ import { meetUrlOf, type GcalEventInput } from "./provider/types";
 import { runAfterResponse } from "@/lib/server/after-response";
 import { sendMeetLinkFollowUp } from "@/lib/booking/meet-link-follow-up";
 import { settleMeetLinkPending } from "@/lib/booking/meet-link-missing";
+import type { ActivityType } from "@/types/contacts";
+
+/**
+ * The P4c warning, kept where a later push can't overwrite it: a row on the
+ * booking's contact timeline. Never throws.
+ */
+async function recordMeetRoomOwnerRemoved(e: SyncedEvent, eventId: string, message: string): Promise<void> {
+  if (!e.contactId || e.contactId.includes("/")) return;
+  try {
+    await getAdminDb()
+      .collection(`contacts/${e.contactId}/activities`)
+      .add({
+        type: "meet_room_owner_removed" satisfies ActivityType,
+        content: message,
+        createdBy: "booking",
+        agencyId: e.agencyId,
+        subAccountId: e.subAccountId,
+        meta: { eventId },
+        createdAt: FieldValue.serverTimestamp(),
+      });
+  } catch (err) {
+    console.warn(`[google-calendar] room-owner-removed row failed event=${eventId}`, err instanceof Error ? err.message : String(err));
+  }
+}
+
+/** `p`'s value (false if it rejects), or "timeout" after `ms`. */
+async function settledWithin(p: Promise<boolean>, ms: number): Promise<boolean | "timeout"> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p.catch(() => false),
+      new Promise<"timeout">((r) => (timer = setTimeout(() => r("timeout"), Math.max(0, ms)))),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /** Resolves when `p` settles or after `ms`, whichever is first; never rejects. */
 async function waitAtMost(p: Promise<void> | undefined, ms: number): Promise<void> {
@@ -582,19 +619,17 @@ export async function removeMemberGoogleCopies(subAccountId: string, uid: string
           // left alone until a live walk shows what Google does.
           const roomGone =
             e.googleMeetOwnerUid === uid && !!meetUrlOf(e.meetingUrl) && (toDate(e.startAt)?.getTime() ?? 0) > Date.now();
+          const warning = roomGone
+            ? `The Google Meet room belonged to ${await nameIn(d)}, who was removed. The link may stop working: reassign the booking and send the booker a new link.`
+            : null;
           await d.ref.update({
             [`googleEventIds.${uid}`]: FieldValue.delete(),
             ...(e.googleMeetOwnerUid === uid ? { googleMeetOwnerUid: null } : {}),
             ...(e.googleMeetKeptUid === uid ? { googleMeetKeptUid: null } : {}),
-            ...(roomGone
-              ? {
-                  googleSyncError: {
-                    message: `The Google Meet room belonged to ${await nameIn(d)}, who was removed. The link may stop working: reassign the booking and send the booker a new link.`,
-                    at: new Date(),
-                  },
-                }
-              : {}),
+            ...(warning ? { googleSyncError: { message: warning, at: new Date() } } : {}),
           });
+          // googleSyncError is the next push's to overwrite; the timeline row stays.
+          if (warning) await recordMeetRoomOwnerRemoved(e, d.id, warning);
         } catch (err) {
           const name = await nameIn(d);
           await d.ref
@@ -646,12 +681,17 @@ async function pushWithMode(eventId: string, mode: PushMode): Promise<{ meetUrl:
 /** The longest a booker-facing path waits on Google for a Meet link. */
 export const MEET_PUSH_DEADLINE_MS = 6_000;
 
+/** Past the deadline, the longest the caller waits for a store already committing. */
+export const STORE_WAIT_CAP_MS = 3_000;
+
 /** The longest a detached push's follow-up waits for its caller's `after`. */
 export const FOLLOW_UP_WAIT_CAP_MS = 30_000;
 
 export interface MeetPushWithinOptions {
   /** Deadline; MEET_PUSH_DEADLINE_MS unless a test shortens it. */
   ms?: number;
+  /** How long past the deadline to wait for a store already committing; STORE_WAIT_CAP_MS unless a test shortens it. */
+  storeWaitMs?: number;
   /**
    * Who a late link may be emailed to: undefined = the booking's contact;
    * a string = only while the contact's email is still that address (an
@@ -690,7 +730,8 @@ export async function pushBookingAndGetMeetUrlWithin(
     if (!mode.detached) return;
     await waitAtMost(opts.after, FOLLOW_UP_WAIT_CAP_MS);
     if (r.stored && r.meetUrl) {
-      if (opts.followUpTo !== null) await sendMeetLinkFollowUp(eventId, r.meetUrl, { pinnedEmail: opts.followUpTo });
+      // Always: even with nobody to email (null), it settles the row.
+      await sendMeetLinkFollowUp(eventId, r.meetUrl, { pinnedEmail: opts.followUpTo });
     } else {
       await settleMeetLinkPending(eventId);
     }
@@ -702,8 +743,14 @@ export async function pushBookingAndGetMeetUrlWithin(
     if (first !== "timeout") return { meetUrl: first.meetUrl, pending: false };
     // Past the deadline. A store already under way decides it one way only:
     // the caller gets the stored link, or (refused) the push goes detached.
+    const waitUntil = Date.now() + (opts.storeWaitMs ?? STORE_WAIT_CAP_MS);
     for (let storing = mode.storing; storing; storing = mode.storing) {
-      if (await storing.done.catch(() => false)) return { meetUrl: storing.meetUrl, pending: false };
+      const outcome = await settledWithin(storing.done, waitUntil - Date.now());
+      if (outcome === true) return { meetUrl: storing.meetUrl, pending: false };
+      // Stalled past the cap: answer "pending" and go detached. A store
+      // that already passed its check may still commit; fill-only governs
+      // every store after this point.
+      if (outcome === "timeout") break;
       if (mode.storing === storing) break; // refused, and no newer store began meanwhile
     }
     // `pending`: the push is still running — a room may yet land on the

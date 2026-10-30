@@ -81,10 +81,11 @@ describe("sendMeetLinkFollowUp", () => {
     expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
   });
 
-  it("the booking holds another link than the one made: no email, no claim (guard on its own)", async () => {
+  it("the booking holds another link than the one made: no email, no claim, the row says not emailed (guard on its own)", async () => {
     await sendMeetLinkFollowUp("e1", "https://meet.google.com/some-other-room");
     expect(mails()).toHaveLength(0);
     expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
+    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_NOT_EMAILED_NOTE });
   });
 
   it("pinned to the reviewed address: sent when it still matches, withheld (row says so) when it doesn't", async () => {
@@ -109,15 +110,19 @@ describe("sendMeetLinkFollowUp", () => {
     expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
   });
 
-  it("a send that fails transiently releases the claim and leaves the row open; the next attempt sends", async () => {
+  it("a failed send: there is no retry, so the row tells an operator to send it, and nothing sends twice", async () => {
     smtpSend.mockRejectedValueOnce(Object.assign(new Error("421 try again later"), { responseCode: 421 }));
     await sendMeetLinkFollowUp("e1", MEET_LINK);
-    expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
-    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: "owed" });
+    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_NOT_EMAILED_NOTE, meta: { pending: false } });
+    expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeDefined();
     await sendMeetLinkFollowUp("e1", MEET_LINK);
-    // One failed attempt on the wire, then the one that went out.
-    expect(smtpSend).toHaveBeenCalledTimes(2);
-    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ meta: { resolved: true } });
+    expect(smtpSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("nobody to email (pinnedEmail null): no email, and the row says the link couldn't be emailed", async () => {
+    await sendMeetLinkFollowUp("e1", MEET_LINK, { pinnedEmail: null });
+    expect(mails()).toHaveLength(0);
+    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_NOT_EMAILED_NOTE, meta: { pending: false } });
   });
 
   it("a suppressed address: no email, the refusal on the timeline, the row left open", async () => {

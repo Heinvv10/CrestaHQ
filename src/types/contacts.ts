@@ -290,6 +290,9 @@ export type ActivityType =
   // A Google Meet booking's booker was told "the joining link will follow"
   // and no host could be emailed about it. lib/booking/meet-link-missing.ts.
   | "meet_link_missing"
+  // A removed member's Google copy owned a booking's Meet room: the booker's
+  // link may stop working (lib/google-calendar/push.ts member removal).
+  | "meet_room_owner_removed"
   // Card payment through the sub-account's OWN Stripe (Payments v1). Written
   // by the order reconciler, NOT by any client. `order_paid` is distinct from
   // `quote_marked_paid` (manual, off-system) — this one means Stripe confirmed

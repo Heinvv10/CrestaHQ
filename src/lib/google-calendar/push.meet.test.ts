@@ -279,6 +279,21 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
     expect(settle).not.toHaveBeenCalled();
   });
 
+  it("a commit stalled past the store-wait cap: the caller is answered 'pending' instead of waiting on", async () => {
+    connect("host_a");
+    seedMeetBooking();
+    let commit: () => void = () => {};
+    const paused = new Promise<void>((r) => (commit = r));
+    state.afterWrite = async (w) => {
+      if (w.data && "meetingUrl" in w.data) await paused;
+    };
+    const started = Date.now();
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 30, storeWaitMs: 50 })).toEqual({ meetUrl: null, pending: true });
+    expect(Date.now() - started).toBeLessThan(1_000);
+    commit();
+    await flushAfterResponse();
+  });
+
   it("detached: the follow-up waits for the caller's confirmation and row (`after`)", async () => {
     connect("host_a");
     seedMeetBooking();
@@ -298,9 +313,9 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
   });
 
   it.each([
-    ["withheld (null): nobody", null, 0],
-    ["pinned: that address only", "pinned@example.com", 1],
-  ])("detached, followUpTo %s", async (_l, followUpTo, calls) => {
+    ["withheld (null): nobody — still called, so it settles the row", null],
+    ["pinned: that address only", "pinned@example.com"],
+  ])("detached, followUpTo %s", async (_l, followUpTo) => {
     connect("host_a");
     seedMeetBooking();
     let release: (v: { created: boolean; meetUrl: string | null }) => void = () => {};
@@ -308,8 +323,8 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
     await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 50, followUpTo });
     release({ created: true, meetUrl: MEET_LINK });
     await flushAfterResponse();
-    expect(followUp).toHaveBeenCalledTimes(calls);
-    if (calls) expect(followUp).toHaveBeenCalledWith("ev_1", MEET_LINK, { pinnedEmail: "pinned@example.com" });
+    expect(followUp).toHaveBeenCalledTimes(1);
+    expect(followUp).toHaveBeenCalledWith("ev_1", MEET_LINK, { pinnedEmail: followUpTo });
   });
 
   it("detached and ended with no room: the 'being created' row is corrected; in time, it isn't touched", async () => {
