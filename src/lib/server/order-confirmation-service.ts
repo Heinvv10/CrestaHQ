@@ -5,7 +5,6 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
 import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
-import { runAfterResponse } from "@/lib/server/after-response";
 import { isSafeSocialUrl } from "@/lib/website/premium";
 import type { Order, OrderConfirmationStatus } from "@/types/orders";
 import type { SubAccountDoc } from "@/types/tenancy";
@@ -43,12 +42,19 @@ export function orderReference(orderId: string): string {
   return orderId.slice(0, 8).toUpperCase();
 }
 
-function nextSteps(order: Order): string {
-  const downloads = (order.deliveries ?? []).flatMap((d) =>
+/** Download links this email carries itself; the delivery step then skips its own email for them. */
+export function confirmationDownloads(
+  order: Order,
+): { productId: string; label: string; url: string }[] {
+  return (order.deliveries ?? []).flatMap((d) =>
     d.delivery.type === "download" && isSafeSocialUrl(d.delivery.url)
-      ? [{ label: d.delivery.label?.trim() || "Download", url: d.delivery.url }]
+      ? [{ productId: d.productId, label: d.delivery.label?.trim() || "Download", url: d.delivery.url }]
       : [],
   );
+}
+
+function nextSteps(order: Order): string {
+  const downloads = confirmationDownloads(order);
   if (downloads.length === 0) return "We'll be in touch soon about next steps.";
   return [
     downloads.length === 1 ? "Your download:" : "Your downloads:",
@@ -189,11 +195,4 @@ export async function sendOrderConfirmation(orderId: string): Promise<boolean> {
   }
   await record(order, true, null);
   return true;
-}
-
-/** Fire-and-forget from the webhook: a slow mailbox must not delay Stripe's 200. */
-export function sendOrderConfirmationAfterResponse(orderId: string): void {
-  runAfterResponse(async () => {
-    await sendOrderConfirmation(orderId);
-  });
 }

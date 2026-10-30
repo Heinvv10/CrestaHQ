@@ -14,6 +14,7 @@ import {
 import { markQuotePaidServerSide } from "@/lib/server/quotes-service";
 import { markBookingPaidServerSide } from "@/lib/server/bookings-service";
 import { markPurchasePaidServerSide } from "@/lib/server/community-purchase-service";
+import { orderDelivers, revokeForOrder } from "@/lib/server/entitlements-service";
 import {
   centsToStripeAmount,
   stripeAmountToCents,
@@ -380,6 +381,15 @@ async function handleChargeRefunded(
       )}${updated.status === "partially_refunded" ? " (partial)" : ""}.`,
     },
   });
+
+  // Only a full refund revokes; community access stays until staff remove it.
+  if (updated.status === "refunded" && orderDelivers(updated)) {
+    await revokeForOrder(updated).catch((err: unknown) =>
+      console.error(
+        `[order-reconciler] revoke failed order=${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
+      ),
+    );
+  }
 
   return { handled: true, detail: `order ${updated.id} ${updated.status}` };
 }

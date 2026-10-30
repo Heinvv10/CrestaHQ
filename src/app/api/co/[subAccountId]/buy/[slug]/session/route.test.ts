@@ -121,6 +121,15 @@ describe("happy path", () => {
     expect(orders()[0]).toMatchObject({ totalCents: 49_900, currency: "usd" });
   });
 
+  it("a community-access product is sold, with its delivery snapshotted on the order", async () => {
+    const delivery = { type: "community", communityGroupId: "g1", courseId: null };
+    mem.seed("products/p1", { ...PRODUCT, delivery });
+    mem.seed(`subAccounts/${SA}/communityGroups/g1`, { subAccountId: SA, agencyId: "ag1", name: "Fibre Club" });
+    const res = await post();
+    expect(res.status).toBe(200);
+    expect(orders()).toEqual([expect.objectContaining({ deliveries: [{ productId: "p1", delivery }] })]);
+  });
+
   it("a linked checkout page that is no longer published is ignored: express sells", async () => {
     mem.seed("products/p1", { ...PRODUCT, checkoutPageId: "cp1" });
     mem.seed(`subAccounts/${SA}/checkoutPages/cp1`, { slug: "guide", productId: "p1", status: "draft" });
@@ -188,11 +197,10 @@ describe("refusals: nothing written, Stripe never called", () => {
     await refused(await post(), 409);
   });
 
-  it("community delivery: group deleted → 404; group present → 503 until F4 grants access", async () => {
+  it("community delivery: group deleted → 404; Community switched off → 404", async () => {
     mem.seed("products/p1", { ...PRODUCT, delivery: { type: "community", communityGroupId: "g1", courseId: null } });
     await refused(await post(), 404);
     mem.seed(`subAccounts/${SA}/communityGroups/g1`, { name: "Members" });
-    await refused(await post(), 503);
     mem.seed(`subAccounts/${SA}`, { ...SUB, communityEnabledByAgency: false });
     await refused(await post(), 404);
   });

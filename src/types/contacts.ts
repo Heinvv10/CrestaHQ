@@ -293,6 +293,11 @@ export type ActivityType =
   // the money. See src/lib/stripe/order-reconciler.ts.
   | "order_paid"
   | "order_refunded"
+  // A paid product order's delivery (community access or a download link).
+  // Written by lib/server/entitlements-service.ts.
+  | "product_delivered"
+  | "delivery_failed"
+  | "delivery_revoked"
   // Webinar1 integration lifecycle. `webinar_registered` is written both by
   // the inbound `registration.created` webhook and by the CRM-side push
   // (/api/sub-accounts/[id]/webinar1/register). The rest come only from

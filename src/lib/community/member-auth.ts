@@ -112,11 +112,13 @@ export function signMemberMagicLinkToken(
   subAccountId: string,
   email: string,
   joinGroupId?: string,
+  /** Longer for purchase emails, which are often opened hours later. */
+  ttlMs: number = MAGIC_LINK_TTL_MS,
 ): string {
   return encodeToken({
     sa: subAccountId,
     e: email.trim().toLowerCase(),
-    exp: Date.now() + MAGIC_LINK_TTL_MS,
+    exp: Date.now() + ttlMs,
     k: "ml",
     n: randomBytes(12).toString("hex"),
     ...(joinGroupId ? { j: joinGroupId } : {}),

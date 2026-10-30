@@ -18,7 +18,9 @@ import {
   markOrderExpired,
   settleProductLinkPayment,
 } from "@/lib/server/product-link-orders";
-import { sendOrderConfirmationAfterResponse } from "@/lib/server/order-confirmation-service";
+import { runAfterResponse } from "@/lib/server/after-response";
+import { grantForOrder } from "@/lib/server/entitlements-service";
+import { sendOrderConfirmation } from "@/lib/server/order-confirmation-service";
 import type { Order } from "@/types/orders";
 
 /**
@@ -90,7 +92,9 @@ async function flag(order: Order, note: string): Promise<void> {
  *     emit after the claim is not retried. A persistent contact failure
  *     delays them until a delivery links it, and an order fully refunded
  *     before that never fires them.
- *  4. The order confirmation email (claimed once, after the response).
+ *  4. The order confirmation email (claimed once, after the response), then
+ *     the delivery (community access or a download link, `grantForOrder`),
+ *     which re-reads the order and refuses a held, flagged or refunded one.
  */
 export async function handleProductLinkCompleted(
   order: Order,
@@ -141,7 +145,9 @@ export async function handleProductLinkCompleted(
  * Steps 2-4 of a paid `product_link` order, shared by every rail (Stripe here,
  * Paystack in `paystack/product-order-reconciler.ts`) so there is exactly one
  * contact path, one `order.paid` claim and one confirmation email. Each step
- * is claimed or compare-and-set, so a redelivery repeats none of them.
+ * is claimed or compare-and-set, so a redelivery repeats none of them. The
+ * confirmation goes first so it lands before any delivery email, and tells the
+ * delivery whether it already carried the download links.
  */
 export async function finishPaidProductLinkOrder(
   order: Order,
@@ -190,7 +196,10 @@ export async function finishPaidProductLinkOrder(
       },
     });
   }
-  sendOrderConfirmationAfterResponse(paid.id);
+  runAfterResponse(async () => {
+    await sendOrderConfirmation(paid.id);
+    await grantForOrder({ orderId: paid.id, subAccountId: paid.subAccountId });
+  });
 }
 
 /** `checkout.session.expired`: the buyer never paid; close a pending buy-link order. */

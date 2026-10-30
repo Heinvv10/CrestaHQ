@@ -84,10 +84,11 @@ export async function requestPurchaseServerSide(opts: {
     .where("scope", "==", opts.scope)
     .where("targetId", "==", opts.targetId)
     .where("status", "==", "pending")
-    .limit(1)
+    .limit(5)
     .get();
-  if (!existing.empty) {
-    const doc = existing.docs[0];
+  // Order-backed purchases are granted by the order, never paid here.
+  const doc = existing.docs.find((d) => !d.data().orderId);
+  if (doc) {
     return {
       purchaseId: doc.id,
       paypalUrl: (doc.data().paypalUrl as string) ?? "",
@@ -128,6 +129,49 @@ export async function requestPurchaseServerSide(opts: {
     currency,
     cardAvailable: cardReady,
   };
+}
+
+/**
+ * A pending purchase for access bought with a product order. Same shape as
+ * requestPurchaseServerSide, minus the payment-rail checks (the order already
+ * paid). Deterministic id, so a re-run finds the existing doc.
+ */
+export async function createPurchaseForOrderServerSide(opts: {
+  subAccountId: string;
+  agencyId: string;
+  groupId: string;
+  scope: PurchaseScope;
+  targetId: string;
+  memberId: string;
+  currency: string;
+  orderId: string;
+  purchaseId: string;
+}): Promise<string> {
+  const ref = purchasesCol(opts.subAccountId, opts.groupId).doc(opts.purchaseId);
+  try {
+    await ref.create({
+      subAccountId: opts.subAccountId,
+      agencyId: opts.agencyId,
+      groupId: opts.groupId,
+      memberId: opts.memberId,
+      scope: opts.scope,
+      targetId: opts.targetId,
+      // The money lives on the order; a zero here keeps webhook totals from
+      // counting it twice and stops the pay route charging for it.
+      amountCents: 0,
+      currency: opts.currency.toUpperCase(),
+      paypalUrl: "",
+      status: "pending",
+      grantedByUid: null,
+      requestedAt: FieldValue.serverTimestamp(),
+      paidAt: null,
+      orderId: opts.orderId,
+    });
+  } catch (err) {
+    // 6 = ALREADY_EXISTS: an earlier run created it.
+    if ((err as { code?: number }).code !== 6) throw err;
+  }
+  return ref.id;
 }
 
 /** Has this member paid for this course? (Drives the unlock check.) */

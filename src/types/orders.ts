@@ -56,6 +56,14 @@ export interface OrderDeliverySnapshot {
   delivery: Exclude<ProductDelivery, { type: "none" }>;
 }
 
+export interface OrderDeliveryStatus {
+  /** "failed" when any delivery on the order failed. */
+  state: "done" | "failed";
+  error: string | null;
+  /** Epoch ms. */
+  at: number;
+}
+
 export interface OrderConfirmationStatus {
   state: "sending" | "sent" | "failed";
   error: string | null;
@@ -102,6 +110,8 @@ export interface Order {
   /** Set for `product_link`: what the buyer gets once paid (download link,
    *  community access). Shown on the thanks page only once paid. */
   deliveries?: OrderDeliverySnapshot[];
+  /** Roll-up of the order's entitlements, for the Payments report. */
+  deliveryStatus?: OrderDeliveryStatus | null;
   /** SHA-256 (hex) of the token in a `product_link` order's thanks-page URL.
    *  The page shows the order only to a holder of that token. */
   thanksTokenHash?: string;
