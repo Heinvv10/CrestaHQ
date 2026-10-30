@@ -54,7 +54,7 @@
     "api/co": {
       "exclude": {
         "category": "public-unauth",
-        "reason": "A visitor's checkout-page session on a published checkout page."
+        "reason": "A visitor's checkout session: on a published checkout page, or a product's express buy link."
       }
     },
     "api/comms": {

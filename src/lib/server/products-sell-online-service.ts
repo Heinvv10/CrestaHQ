@@ -210,7 +210,7 @@ async function mintSlug(
   return `${root.slice(0, 50)}-${Date.now().toString(36)}`;
 }
 
-async function checkDeliveryTargets(
+export async function checkDeliveryTargets(
   db: Firestore,
   subAccountId: string,
   sub: Partial<SubAccountDoc>,
@@ -238,7 +238,7 @@ async function checkDeliveryTargets(
   }
 }
 
-async function checkCheckoutPage(
+export async function checkCheckoutPage(
   db: Firestore,
   subAccountId: string,
   pageId: string,

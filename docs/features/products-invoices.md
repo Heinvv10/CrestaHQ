@@ -27,9 +27,9 @@ A reusable product catalog plus an Invoice document type that shares the Quotes 
 
 **Orders needing attention.** When a card payment arrives but cannot settle what it paid for (invoice already paid, total changed, booking no longer waiting), the reconciler writes `order.attention` and sets `attentionOpen: true`. Reports → Payments lists open ones at the top for sub-account admins and the agency owner (collaborators don't see it), with **Mark resolved** (`GET/POST /api/sub-accounts/[id]/order-attention`), which sets `attentionOpen: false` + `attentionResolvedAt/ByUid/ByEmail` on the order; the orders table then shows the note as resolved. One flag per order + source, whatever the note's wording, so a redelivery neither re-emails nor reopens it. The sub-account's admins get one email per flag. Orders flagged before this shipped have no `attentionOpen` and are not listed. Details: [client-billing.md → Flagged payments](client-billing.md#flagged-payments-attention).
 
-## Sell online (upstream 1.0.54 F1 — model + editor only, NOT runtime-verified)
+## Sell online (upstream 1.0.54 F1 model + editor, F2 buy pages on Stripe — NOT runtime-verified)
 
-A product can be put on sale with its own buy link (`/co/[sa]/buy/[slug]`). **F1 ships only the data model, the server validation and the editor**: the public buy pages and payment sessions land in F2/F3, so a buy link shown in the editor 404s until then. Gated by `sellOnlineEnabledByAgency` (default off, [feature-gates.md](../architecture/feature-gates.md)); while off the Products dialog shows no Sell online block and the request is unchanged. NOT runtime-verified: no tenant has the gate on and nothing can be bought yet.
+A product can be put on sale with its own buy link (`/co/[sa]/buy/[slug]`). F1 shipped the data model, the server validation and the editor; F2 the public pages and the Stripe payment path (below). Paystack (F3) and community access (F4) are not buyable yet. Gated by `sellOnlineEnabledByAgency` (default off, [feature-gates.md](../architecture/feature-gates.md)); while off the Products dialog shows no Sell online block and the request is unchanged. NOT runtime-verified: no tenant has the gate on and no buy link has taken a real payment.
 
 - **Fields** (optional on `products/{id}`, absent = catalog-only): `sellOnline`, `slug`, `publicDescription`, `checkoutPageId` (a published checkout page selling this product, for the Buy button), `delivery` (`none` / `community` group+course / `download` link), `publicVersion` (bumped on public-facing edits and archive).
 - **Validation** (`lib/server/products-sell-online-service.ts`, used by `POST …/products`, `PATCH …/products/[productId]` and the agent `update_product`):
@@ -46,9 +46,26 @@ A product can be put on sale with its own buy link (`/co/[sa]/buy/[slug]`). **F1
 - **Checkout pages** created from a product skip reserved slugs.
 - `listSellableProducts` (`lib/server/products-catalog-service.ts`) is the public catalog builder for F2/F6: on sale, valid price, and a rail for the currency right now.
 
-**What F2 (buy pages + sessions) must do — F1 checks only at save time, and the world moves after it:**
-- Slug lookup fails closed: more than one product with the slug in the sub-account → 404 (uniqueness is a query, not a claim doc).
-- At render AND at session creation, re-check everything the save checked, from the stored docs: the product is `active`, `sellOnline`, its price passes `sellOnlinePriceError`, and `chooseProductPayRail(sub, currency)` is ok; a `checkoutPageId` still names a checkout page whose `productId` is this product and whose `status` is `published` (otherwise never send the buyer to that page); a `community` delivery's group (and course) still exists and Community is still on. The amount always comes from the product doc, never the request.
+### Buy pages and the Stripe path (F2)
+
+F1 checks a product only when it is saved, and the world moves after it, so every public surface re-checks it from the stored docs (`loadBuyContext`, `lib/server/product-buy-service.ts`), at render AND at session creation:
+- the sub-account id passes `isDocId` before any read; the slug is product-slug shaped;
+- the agency gate, Payments and a rail for the currency right now (`chooseProductPayRail`), and email sending configured (`emailIsConfigured(sub)`, for F3's confirmation);
+- exactly one product with the slug in the sub-account — more than one fails closed (404), since uniqueness is a query, not a claim doc;
+- the product is `active`, `sellOnline`, in this sub-account, and its price passes `sellOnlinePriceError`;
+- a `community` delivery's group (and course) still exists with Community on (`checkDeliveryTargets`, the save-time check);
+- a `checkoutPageId` is followed only while that page is published and sells this product (`checkCheckoutPage`); otherwise the express page sells it.
+
+**Pages** (all `noindex`; `/co` is already a middleware public prefix):
+- `/co/[sa]/buy` — the catalog: `listSellableProducts`, minus a slug two products share; 404 with the gate off. A checkout page slugged `buy` from before S1 reserved the slug renders here instead (this static folder shadows `/co/[sa]/[slug]`), and `/co/[sa]/buy/thanks` is its thank-you page. New checkout pages can't take `buy` (`checkoutSlugError`).
+- `/co/[sa]/buy/[slug]` — 404 for anything not for sale; redirects to the linked checkout page when that page owns the sale; "not available yet" (no button) when the rail is Paystack or the delivery is community (`canBuyExpressNow`). The button creates the session on click, never on load.
+- `/co/[sa]/buy/[slug]/thanks?order=…&t=…` — shows the order only to the holder of its thanks token (random 32 bytes; only its SHA-256 is stored, as `orders.thanksTokenHash`, compared in constant time). Paid state is the order doc's `status`, never the URL: pending → "processing", refunded/failed → "no longer active", paid → item, amount, buyer email and the download link from the order's own `deliveries` snapshot (re-checked as public https at the sink). Wrong, missing or foreign token → a generic thank-you with nothing about any order. `Referrer-Policy: no-referrer`.
+
+**Session** (`POST /api/co/[sa]/buy/[slug]/session`): the per-IP checkout rate limit (shared with checkout pages) → body capped at 4 KB and not read → `loadBuyContext` (404) → linked checkout page (409) → `canBuyExpressNow` (503, no order, no session) → Stripe connection pre-check (503) → **pending order written first** (`source: "product_link"`, amount and currency from the product doc, `productLinkProductId`, `deliveries`, `thanksTokenHash`, empty `stripeCheckoutSessionId`) → Stripe Checkout Session (`centsToStripeAmount`, `leadstackOrderId` in metadata, success URL = the thanks page with the token) → `attachCheckoutSession` puts the session id on the order in a transaction (pending + no session only) → the URL goes to the browser. A failed session call marks the order `failed`.
+
+**Reconcile** (`lib/stripe/order-reconciler.ts`): `markOrderPaid` as for every order (Stripe's buyer email lower-cased and capped at 254, name at 200); on the delivery that paid it, a `product_link` order with no contact finds or creates the buyer's contact from that email (`reconcileContactFromCapture`, email-first) before the order's events fire; a session that collected a different amount or currency than the order flags it (`order.attention`).
+
+**Not in F2:** the Paystack rail (F3), the order confirmation email (F3), community grants and download delivery by email (F4), product images (F5), the website `?site=&page=` return link (`websiteRef`, F6 with the website picker).
 
 ## Key files
 

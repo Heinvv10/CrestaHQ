@@ -34,6 +34,7 @@ const SOURCE_LABELS: Record<OrderSource, string> = {
   quote: "Invoice",
   booking_deposit: "Booking deposit",
   community: "Community",
+  product_link: "Buy link",
 };
 
 const SOURCE_COLORS: Record<OrderSource, string> = {
@@ -41,6 +42,7 @@ const SOURCE_COLORS: Record<OrderSource, string> = {
   quote: "#10b981",
   booking_deposit: "#f59e0b",
   community: "#a855f7",
+  product_link: "#0ea5e9",
 };
 
 const STATUS_STYLES: Record<OrderStatus, string> = {

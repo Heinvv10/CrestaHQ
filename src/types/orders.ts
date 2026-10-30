@@ -1,5 +1,6 @@
 import type { Timestamp, FieldValue } from "firebase/firestore";
 import type { ContactAttribution } from "@/types/contacts";
+import type { ProductDelivery } from "@/types/products";
 
 /**
  * Orders — Payments v1. One doc per attempted card payment through the
@@ -31,7 +32,8 @@ export type OrderSource =
   | "checkout_page"
   | "quote"
   | "booking_deposit"
-  | "community";
+  | "community"
+  | "product_link";
 
 export interface OrderLineItem {
   /** Back-reference. Null for ad-hoc items with no catalog entry. */
@@ -43,6 +45,13 @@ export interface OrderLineItem {
   /** True when this line came from an order bump rather than the main offer.
    *  Drives bump take-rate reporting — the whole point of the feature. */
   isBump: boolean;
+}
+
+/** What a product promised the buyer, copied onto the order at checkout so a
+ *  later product edit can't change what was bought. */
+export interface OrderDeliverySnapshot {
+  productId: string;
+  delivery: Exclude<ProductDelivery, { type: "none" }>;
 }
 
 export interface Order {
@@ -79,7 +88,18 @@ export interface Order {
   totalCents: number;
   refundedCents: number;
 
+  /** The product an express buy link sold, when `source === "product_link"`. */
+  productLinkProductId?: string | null;
+  /** Set for `product_link`: what the buyer gets once paid (download link,
+   *  community access). Shown on the thanks page only once paid. */
+  deliveries?: OrderDeliverySnapshot[];
+  /** SHA-256 (hex) of the token in a `product_link` order's thanks-page URL.
+   *  The page shows the order only to a holder of that token. */
+  thanksTokenHash?: string;
+
   // ── Stripe linkage (the client's own account, in BOTH tiers) ──────
+  /** Empty on a `product_link` order between its write and the session
+   *  creation that follows (the order is written first). */
   stripeCheckoutSessionId: string;
   stripePaymentIntentId: string | null;
   /** False when the connection was a test-mode key — keeps play money out of
