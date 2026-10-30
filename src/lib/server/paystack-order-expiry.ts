@@ -58,11 +58,12 @@ export { isPastOrderLifetime, PAYSTACK_ORDER_LIFETIME_MS, STUCK_ATTEMPT_LIFETIME
  * three unresolved asks the rest of its attempts wait for the next run.
  *
  * Throws (so the housekeeping route answers 500 and QStash retries) only for a
- * Paystack-wide failure across at least two workspaces: every ask failed with a
- * network, timeout or 5xx error, or every ask was refused with 401/403. A
- * workspace whose key Paystack rejects (401/403) is listed in `keyRejected` and
- * its admins are emailed once per key; one workspace's trouble never fails the
- * job. Firestore write failures are counted apart (`writeErrors`) and never make
+ * Paystack outage across at least two workspaces: every ask failed with a
+ * network, timeout or 5xx error. A workspace whose key Paystack rejects
+ * (401/403) is listed in `keyRejected` and its admins are emailed once per key;
+ * rejections in several workspaces are logged at error level but never thrown:
+ * they are each tenant's own problem, and a 500 retries the whole job for all
+ * of them. Firestore write failures are counted apart (`writeErrors`) and never make
  * it look like a Paystack outage.
  */
 
@@ -111,7 +112,6 @@ export async function expireStalePaystackOrders(
   const unresolved = new Map<string, number>();
   const askedWorkspaces = new Set<string>();
   const connections = new Map<string, PaystackConnectionSecret | null>();
-  let rejectedAsks = 0;
   // "open" attempts, then "flagged" ones (a connection change flagged them):
   // a flagged attempt whose key is again the workspace's, with its order still
   // pending and unheld, is asked about like an open one.
@@ -153,7 +153,6 @@ export async function expireStalePaystackOrders(
         if (answer === null) {
           summary.errors += 1;
         } else if ("rejected" in answer) {
-          rejectedAsks += 1;
           // This workspace's own key: its problem, not Paystack's. Reported once per key.
           if (!summary.keyRejected.includes(sa)) {
             summary.keyRejected.push(sa);
@@ -173,14 +172,18 @@ export async function expireStalePaystackOrders(
       cursor = snap.docs[snap.docs.length - 1];
     }
   }
-  // A Paystack-wide failure: every ask failed on the network or with a 5xx, or
-  // every ask was refused (401/403), across more than one workspace. One
-  // workspace's trouble is reported, not thrown: a 500 makes QStash retry ALL of
-  // daily-housekeeping.
-  if (askedWorkspaces.size >= 2 && (summary.errors === summary.checked || rejectedAsks === summary.checked)) {
-    const what = rejectedAsks === summary.checked ? "were refused (401/403)" : "failed";
-    console.error(`[paystack/order-expiry] all ${summary.checked} Paystack ask(s) ${what} across ${askedWorkspaces.size} workspaces`);
-    throw new Error(`paystack-order-expiry: all ${summary.checked} Paystack ask(s) ${what} across ${askedWorkspaces.size} workspaces`);
+  // Keys rejected in several workspaces: logged loudly and reported in the
+  // summary, never thrown. It is each tenant's own problem, and a 500 makes
+  // QStash retry ALL of daily-housekeeping for every tenant.
+  if (summary.keyRejected.length >= 2) {
+    console.error(`[paystack/order-expiry] Paystack rejected keys in ${summary.keyRejected.length} workspaces`);
+  }
+  // A Paystack-wide failure: every ask failed on the network or with a 5xx,
+  // across more than one workspace. One workspace's trouble is reported, not
+  // thrown.
+  if (askedWorkspaces.size >= 2 && summary.errors === summary.checked) {
+    console.error(`[paystack/order-expiry] all ${summary.checked} Paystack ask(s) failed across ${askedWorkspaces.size} workspaces`);
+    throw new Error(`paystack-order-expiry: all ${summary.checked} Paystack ask(s) failed across ${askedWorkspaces.size} workspaces`);
   }
   return summary;
 }

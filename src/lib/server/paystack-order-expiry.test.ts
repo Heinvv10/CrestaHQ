@@ -472,12 +472,15 @@ describe("the run's summary", () => {
       await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/failed across 2 workspaces/);
     });
 
-    it("every ask refused (401/403) across two workspaces is Paystack-wide: logged at error level and thrown", async () => {
+    it("every ask refused (401/403) across two workspaces never throws: logged at error level, reported in the summary", async () => {
       seedBuy(1);
       seedBuy(2, OLD, {}, B);
       verifyAnswer = (_ref, auth) => (auth === `Bearer ${KEY}` ? refused(401, "Invalid key") : refused(403, "Forbidden"));
-      await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/were refused \(401\/403\) across 2 workspaces/);
-      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("were refused (401/403) across 2 workspaces"));
+      const summary = await expireStalePaystackOrders(NOW);
+      expect(summary).toMatchObject({ checked: 2, errors: 0 });
+      expect(summary.keyRejected.sort()).toEqual([SA, OTHER_SA].sort());
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("Paystack rejected keys in 2 workspaces"));
+      expect(order(1)).toMatchObject({ status: "pending" });
     });
 
     it("every ask refused in ONE workspace is just that workspace's key", async () => {
