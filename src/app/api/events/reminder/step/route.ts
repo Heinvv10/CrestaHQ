@@ -17,6 +17,8 @@ import {
   hashEventToken,
 } from "@/lib/booking/event-token";
 import { renderBookingReminderEmail } from "@/lib/booking/email";
+import { deliverReminderSms, type ReminderChannels } from "@/lib/booking/sms-reminder";
+import { REMINDER_STEP_RETRIES } from "@/lib/booking/reminder-step";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventStatus, eventOccupiesSlot, isImportedEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
@@ -25,7 +27,8 @@ import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
 
 /**
- * QStash callback for a single reminder dispatch. Scheduled at booking
+ * QStash callback for a single reminder dispatch (email and/or text, per
+ * the page's live toggles). Scheduled at booking
  * time by `scheduleEventReminders()` (or at mark-paid for previously
  * payment-pending events). Security: QStash signature verification.
  *
@@ -44,12 +47,24 @@ import type { SubAccountDoc } from "@/types/tenancy";
  * A send failure that a retry could fix releases the claim and answers
  * 503 so QStash retries; a suppressed address or a refused recipient
  * keeps the claim and answers 200 — retrying cannot help.
+ *
+ * The text has its own claim and never answers 503 (a text twice is worse
+ * than none). A text held by quiet hours is published again for the end of
+ * the window with `smsOnly` (the email already went), or dropped when the
+ * window ends after the start — see lib/booking/sms-reminder.ts.
  */
 
 interface ReminderBody {
   eventId?: string;
   offsetMinutes?: number;
   token?: string;
+  /** Channel snapshot from scheduling time; absent on older callbacks. */
+  channels?: ReminderChannels;
+  /** Set by a quiet-hours republish: the email was already handled. */
+  smsOnly?: boolean;
+  /** Quiet-hours republish: when the window it waited for ends (ms; informational), and how many holds led here. */
+  heldUntil?: number;
+  attempt?: number;
 }
 
 export async function POST(request: Request) {
@@ -139,13 +154,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, skipped: "tenancy_missing" });
   }
   const contact = contactSnap.data() as Contact;
-  if (!contact.email || contact.emailOptedOut) {
-    return NextResponse.json({ ok: true, skipped: "opt_out_or_no_email" });
-  }
   const sub = subSnap.data() as SubAccountDoc;
-  if (!emailIsConfigured(sub)) {
-    return NextResponse.json({ ok: true, skipped: "email_not_configured" });
-  }
 
   // Booking-page may have been deleted since the schedule landed. Fall
   // back to event-level defaults so the reminder still sends sensibly.
@@ -153,6 +162,58 @@ export async function POST(request: Request) {
   const endAt = (
     event.endAt as { toDate?: () => Date } | null
   )?.toDate?.() ?? new Date(startAt.getTime() + 30 * 60_000);
+
+  // Live page toggles win, so switching a channel off stops reminders already
+  // scheduled. A deleted page falls back to the snapshot taken at scheduling,
+  // then (older callbacks with no snapshot) to email only.
+  const snap = body.channels;
+  const emailOn =
+    body.smsOnly !== true &&
+    (page ? page.remindersEnabled !== false : (snap?.email ?? true));
+  // `sms: false` in the snapshot is a veto the live page cannot lift (an agent
+  // mark-paid: the approver never reviewed the phone). Absent = no veto.
+  // The veto also lives on the event (`smsVetoedAt`, set by an agent-approved
+  // mark-paid), so a later reschedule's fresh snapshot cannot lift it.
+  const smsOn =
+    !event.smsVetoedAt &&
+    (page ? page.smsRemindersEnabled === true && snap?.sms !== false : snap?.sms === true);
+
+  let smsResult: string | undefined;
+  if (smsOn) {
+    smsResult = await deliverReminderSms({
+      event,
+      eventId,
+      offsetMinutes,
+      token,
+      sub,
+      page,
+      channels: snap,
+      startAt,
+      endAt,
+      attempt: typeof body.attempt === "number" && body.attempt >= 0 ? Math.floor(body.attempt) : 0,
+      finalAttempt: Number(request.headers.get("upstash-retried") ?? "0") >= REMINDER_STEP_RETRIES,
+    });
+  }
+  const withSms = smsResult === undefined ? {} : { sms: smsResult };
+  // The text's cap slot could not be taken and nothing was claimed: QStash
+  // delivers this again. The email below does not wait for that (it has its
+  // own claim, so the redelivery does not repeat it); the 503 is answered last.
+  // On the final delivery the text was noted instead (see sendBookingSms).
+  const retrySms = (smsResult === "cap_unavailable" || smsResult === "in_flight") && Number(request.headers.get("upstash-retried") ?? "0") < REMINDER_STEP_RETRIES;
+  const reply = (extra: Record<string, unknown>) =>
+    retrySms
+      ? NextResponse.json({ error: "Text could not be queued; retry", ...withSms, ...extra }, { status: 503 })
+      : NextResponse.json({ ok: true, ...withSms, ...extra });
+
+  if (!emailOn) {
+    return reply({ email: "disabled" });
+  }
+  if (!contact.email || contact.emailOptedOut) {
+    return reply({ skipped: "opt_out_or_no_email" });
+  }
+  if (!emailIsConfigured(sub)) {
+    return reply({ skipped: "email_not_configured" });
+  }
 
   const rendered = renderBookingReminderEmail(
     {
@@ -191,7 +252,7 @@ export async function POST(request: Request) {
     });
   } catch (err) {
     if ((err as { code?: unknown } | null)?.code === 6) {
-      return NextResponse.json({ ok: true, skipped: "already_sent" });
+      return reply({ skipped: "already_sent" });
     }
     throw err;
   }
@@ -231,5 +292,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return NextResponse.json({ ok: true });
+  return reply({});
 }

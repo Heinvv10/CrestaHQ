@@ -51,7 +51,7 @@ const PAGES: Record<string, (stored: Record<string, unknown>) => Promise<ReactEl
   },
 };
 
-const PAGE_KEYS = ["description", "durationMinutes", "intakeFields", "isServicePage", "location", "name", "payment", "services", "slug", "themePreset", "timezone", "visibleDays"];
+const PAGE_KEYS = ["description", "durationMinutes", "intakeFields", "isServicePage", "location", "name", "payment", "services", "slug", "textsBooker", "themePreset", "timezone", "visibleDays"];
 const BRANDING_KEYS = ["accentColor", "logoUrl", "name"];
 /** The exact props each page gives its client component. */
 const PROP_KEYS: Record<string, string[]> = {
@@ -157,7 +157,17 @@ describe.each(Object.keys(PAGES))("what %s sends to the browser", (name) => {
       themePreset: "ocean",
       // Derived from the stored meeting link — its type only, never the link.
       location: { type: "video_link", value: null },
+      // Whether the booker's phone gets texts — the flag only, not the reminder settings.
+      textsBooker: false,
     });
+  });
+
+  it("sends only the boolean when the page texts its bookers", async () => {
+    if (name === "/e") return;
+    const el = await open({ ...STORED, smsRemindersEnabled: true });
+    expect(el.props.page?.textsBooker).toBe(true);
+    expect(JSON.stringify(el.props.page)).not.toContain("smsRemindersEnabled");
+    expect(JSON.stringify(el.props.page)).not.toContain("1439");
   });
 
   it("sends the location's type and the business's own address or number, nothing else", async () => {

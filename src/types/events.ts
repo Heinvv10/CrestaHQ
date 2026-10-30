@@ -92,6 +92,12 @@ export interface CalendarEvent {
    * for a read-only "payment received" view — never for manage actions.
    */
   paidFromTokenHash?: string | null;
+  /**
+   * Set by an agent-approved mark-paid, whose approver reviewed the email
+   * address and not the phone: no text goes for this booking, however it is
+   * rescheduled later. Server-set only (locked in firestore.rules).
+   */
+  smsVetoedAt?: Timestamp | FieldValue | null;
   /** The Stripe order whose payment confirmed this booking, when one did. */
   paidOrderId?: string | null;
   /** Auto-expire deadline for unpaid holds. Used to schedule the QStash callback. */

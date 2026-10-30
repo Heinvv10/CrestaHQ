@@ -1403,6 +1403,8 @@ service cloud.firestore {
       // icsSequence / paidFromTokenHash are written by mark-paid and
       // reschedule only: one orders calendar-invite updates, the other
       // opens the read-only "payment received" page for a stale token.
+      // smsVetoedAt is written by an agent-approved mark-paid only: it keeps
+      // text reminders off a phone nobody reviewed, so no client may clear it.
       allow create: if canSeeScopedDoc(
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
@@ -1410,7 +1412,7 @@ service cloud.firestore {
       )
         // Server-set only — the dashboard creates through /api/events. `mode`
         // decides v1 exposure and whether status changes fire side effects.
-        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "googleMeetOwnerUid", "googleMeetKeptUid", "assignedToUid", "assignedToName", "source", "bookingPageSlug", "icsSequence", "paidFromTokenHash"])
+        && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "googleMeetOwnerUid", "googleMeetKeptUid", "assignedToUid", "assignedToName", "source", "bookingPageSlug", "icsSequence", "paidFromTokenHash", "smsVetoedAt"])
         && linkInTenant("contactId", "contacts");
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
@@ -1424,7 +1426,7 @@ service cloud.firestore {
         // Server-set only. `mode` also decides v1 exposure and whether a
         // status change fires real triggers/email.
         && !request.resource.data.diff(resource.data).affectedKeys()
-          .hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "googleMeetOwnerUid", "googleMeetKeptUid", "assignedToUid", "assignedToName", "source", "bookingPageSlug", "icsSequence", "paidFromTokenHash"])
+          .hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "googleMeetOwnerUid", "googleMeetKeptUid", "assignedToUid", "assignedToName", "source", "bookingPageSlug", "icsSequence", "paidFromTokenHash", "smsVetoedAt"])
         && linkInTenant("contactId", "contacts");
       // An event still mirrored in a Google calendar can't be deleted from
       // the client — its Google copy would be orphaned. Cancel it instead.

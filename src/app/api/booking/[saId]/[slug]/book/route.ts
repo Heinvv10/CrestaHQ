@@ -49,6 +49,7 @@ import {
 } from "@/lib/booking/event-token";
 import { generateIcs } from "@/lib/booking/ics";
 import { reconcileBookingContact } from "@/lib/booking/contact-reconcile";
+import { bookingConfirmationSmsBody, noteConfirmationHeld, sendBookingSms } from "@/lib/booking/sms";
 import {
   emitBookingWebhook,
   fireBookingTrigger,
@@ -536,6 +537,7 @@ export async function POST(
   }
 
   // ── Post-write side effects (best-effort) ──────────────────────
+  const bookedAt = new Date();
   const publicEventUrl = buildEventPublicUrl(created.rawToken);
   const appHost =
     process.env.NEXT_PUBLIC_APP_URL?.replace(/^https?:\/\//, "")
@@ -734,13 +736,14 @@ export async function POST(
 
   // Reminder schedule (no-op when payment is pending — gets scheduled
   // on mark-paid in Slice 8).
-  if (page.remindersEnabled) {
+  if (page.remindersEnabled || page.smsRemindersEnabled) {
     await scheduleEventReminders({
       eventId: created.eventDocRef.id,
       startAt: slotStart,
       reminderOffsetsMinutes: page.reminderOffsetsMinutes,
       rawToken: created.rawToken,
       pendingPayment: paymentRequired,
+      page,
     });
   }
 
@@ -795,6 +798,34 @@ export async function POST(
     subAccountId: saId,
     type: "booking_page_booked",
   }));
+
+  // The confirmation text goes after the response (it must not delay the
+  // booker), once the reminders, the activity row and the triggers are done.
+  // The customer's own booking: exempt from quiet hours for a few minutes,
+  // counted from `bookedAt`, not from when this runs. Holds get their text
+  // at mark-paid instead, alongside the confirmation email.
+  if (page.smsRemindersEnabled && !paymentRequired) {
+    runAfterResponse(async () => {
+      const sms = await sendBookingSms({
+        subAccountId: saId,
+        sub,
+        contactId: created.contactId,
+        label: "booking confirmation",
+        claimPath: `events/${created.eventDocRef.id}/reminderSends/sms_confirm`,
+        selfTriggeredBookingAt: bookedAt,
+        body: bookingConfirmationSmsBody({
+          recipientName: name,
+          businessName: sub.name ?? "us",
+          pageName: bookedName,
+          startAt: slotStart,
+          timezone: page.timezone,
+          meetingUrl,
+          publicEventUrl,
+        }),
+      });
+      await noteConfirmationHeld(sms, created.contactId, `bsms_${created.eventDocRef.id}_confirm`);
+    });
+  }
 
   // Post-booking redirect — confirmed (free) bookings only. Paid holds
   // stay on the in-app confirmation so the PayPal CTA is always shown.

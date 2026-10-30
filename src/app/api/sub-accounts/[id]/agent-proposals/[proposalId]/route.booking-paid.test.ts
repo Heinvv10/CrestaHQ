@@ -65,6 +65,18 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("mark_booking_paid", () => {
+  it("a text-reminders page: the preview lists only the email reminders and says no texts are sent", async () => {
+    mem.seed("subAccounts/sa1/bookingPages/bp1", { ...PAGE, remindersEnabled: false, smsRemindersEnabled: true, reminderOffsetsMinutes: [60] });
+    const id = await propose();
+    expect(rowOf(id, "Reminders")).toBe("None");
+    expect(rowOf(id, "Texts")).toContain("no confirmation text and no text reminders");
+  });
+
+  it("a page with texts off shows no texts row", async () => {
+    const id = await propose();
+    expect(rowOf(id, "Texts")).toBeUndefined();
+  });
+
   it("an outbound proposal naming the recipient, reminders and workflows; nothing written or sent until approve, which confirms and emails exactly once", async () => {
     workflow();
     const id = await propose();

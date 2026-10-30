@@ -677,6 +677,12 @@ export function validateRemindersEnabled(input: unknown): Validated<boolean> {
   return { ok: false, error: "Reminders toggle must be true or false." };
 }
 
+export function validateSmsRemindersEnabled(input: unknown): Validated<boolean> {
+  if (input === undefined || input === null) return { ok: true, value: false };
+  if (typeof input === "boolean") return { ok: true, value: input };
+  return { ok: false, error: "Text reminders toggle must be true or false." };
+}
+
 export function validateReminderOffsets(
   input: unknown,
 ): Validated<number[]> {
@@ -706,6 +712,22 @@ export function validateReminderOffsets(
   // Sort descending so the executor schedules in chronological order.
   cleaned.sort((a, b) => b - a);
   return { ok: true, value: cleaned };
+}
+
+/** Reminder texts go at most one per half hour per booking, so with texts on the reminder times must be more than that apart. */
+export const MIN_TEXT_REMINDER_GAP_MINUTES = 30;
+
+export function validateTextReminderSpacing(offsets: number[]): Validated<number[]> {
+  const sorted = [...offsets].sort((a, b) => b - a);
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i - 1] - sorted[i] <= MIN_TEXT_REMINDER_GAP_MINUTES) {
+      return {
+        ok: false,
+        error: `With text reminders on, reminder times must be more than ${MIN_TEXT_REMINDER_GAP_MINUTES} minutes apart (only one text goes per half hour): ${sorted[i - 1]} and ${sorted[i]} minutes before are too close.`,
+      };
+    }
+  }
+  return { ok: true, value: offsets };
 }
 
 export function validateTerritoryId(
@@ -992,10 +1014,17 @@ export function validateBookingPageFormData(
   if (!redirectAppendParams.ok) return redirectAppendParams;
   const remindersEnabled = validateRemindersEnabled(b.remindersEnabled);
   if (!remindersEnabled.ok) return remindersEnabled;
+  const smsRemindersEnabled = validateSmsRemindersEnabled(b.smsRemindersEnabled);
+  if (!smsRemindersEnabled.ok) return smsRemindersEnabled;
   const reminderOffsetsMinutes = validateReminderOffsets(
     b.reminderOffsetsMinutes,
   );
   if (!reminderOffsetsMinutes.ok) return reminderOffsetsMinutes;
+  // A page's existing offsets are only checked when its texts are on.
+  if (smsRemindersEnabled.value) {
+    const spaced = validateTextReminderSpacing(reminderOffsetsMinutes.value);
+    if (!spaced.ok) return spaced;
+  }
 
   const payment = validatePayment(b.payment);
   if (!payment.ok) return payment;
@@ -1035,6 +1064,7 @@ export function validateBookingPageFormData(
       redirectUrl: redirectUrl.value,
       redirectAppendParams: redirectAppendParams.value,
       remindersEnabled: remindersEnabled.value,
+      smsRemindersEnabled: smsRemindersEnabled.value,
       reminderOffsetsMinutes: reminderOffsetsMinutes.value,
       payment: payment.value,
       defaultTerritoryId: defaultTerritoryId.value,

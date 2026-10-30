@@ -1,5 +1,6 @@
 "use client";
 
+import { hasExplicitPhoneCountry } from "@/lib/contacts/phone";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { hasCardRail, hasPaypalRail } from "@/lib/payments/can-take-payment";
 import { useRouter } from "next/navigation";
@@ -166,6 +167,7 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
         redirectUrl: initial.redirectUrl ?? null,
         redirectAppendParams: initial.redirectAppendParams ?? true,
         remindersEnabled: initial.remindersEnabled,
+        smsRemindersEnabled: initial.smsRemindersEnabled ?? false,
         reminderOffsetsMinutes: initial.reminderOffsetsMinutes,
         payment: initial.payment,
         defaultTerritoryId: initial.defaultTerritoryId,
@@ -957,6 +959,49 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
             </p>
           </div>
         </label>
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border bg-background p-3">
+          <input
+            type="checkbox"
+            checked={form.smsRemindersEnabled === true}
+            onChange={(e) => set("smsRemindersEnabled", e.target.checked)}
+            className="mt-0.5 h-4 w-4 cursor-pointer"
+          />
+          <div>
+            <p className="text-sm font-medium">
+              Text confirmation and reminders
+            </p>
+            <p className="text-xs text-muted-foreground">
+              A text when the booking is confirmed, plus one at each
+              reminder time (the same times as the emails). Sent from this
+              workspace&apos;s SMS number (Settings → SMS), or
+              the shared sender if your agency allows it; each text is
+              billed by Twilio. Contacts with no phone number, who
+              replied STOP, or whose number is not a mobile in your
+              workspace&apos;s home country are skipped, and a number is
+              texted at most 6 times a day. The text never repeats
+              anything the booker typed except their first name. A
+              reminder that falls in your
+              quiet hours waits until they end, and is dropped if that is
+              after the appointment starts. Bookings made by phone with
+              the AI voice agent don&apos;t get texts.
+            </p>
+          </div>
+        </label>
+        {form.smsRemindersEnabled && !subLoading && !hasExplicitPhoneCountry(subAccount?.defaultPhoneCountry) && (
+          <div
+            role="alert"
+            data-testid="sms-phone-country-warning"
+            className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 text-xs text-amber-700 dark:text-amber-400"
+          >
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+            <span>
+              This workspace has no phone country saved, so only US numbers
+              could be texted and this page could not be saved with texts
+              on. Open Settings → Phone region and save your country
+              first.
+            </span>
+          </div>
+        )}
       </Section>
 
       {/* ── Payment (gated on any connected rail: card or paypal.me) ── */}

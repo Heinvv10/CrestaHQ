@@ -304,6 +304,11 @@ export interface BookingPage {
   /** Master toggle for the T-24h + T-1h reminder pipeline. */
   remindersEnabled: boolean;
   /**
+   * Text confirmation at booking plus a text at each reminder offset, from the
+   * sub-account's Twilio sender. Absent = off (texts cost money).
+   */
+  smsRemindersEnabled?: boolean;
+  /**
    * Offsets before the event when reminders fire, in minutes. v1 UI
    * exposes only the master toggle (fixed `[1440, 60]`); the doc shape
    * already supports per-page configuration so the v1.1 editor can
@@ -377,6 +382,7 @@ export type BookingPageFormData = Pick<
   | "redirectUrl"
   | "redirectAppendParams"
   | "remindersEnabled"
+  | "smsRemindersEnabled"
   | "reminderOffsetsMinutes"
   | "payment"
   | "defaultTerritoryId"

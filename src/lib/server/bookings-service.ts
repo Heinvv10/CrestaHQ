@@ -17,6 +17,7 @@ import {
   scheduleEventReminders,
 } from "@/lib/booking/lifecycle";
 import { renderBookingConfirmationEmail } from "@/lib/booking/email";
+import { bookingConfirmationSmsBody, noteConfirmationHeld, sendBookingSms } from "@/lib/booking/sms";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventStatus, isImportedEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
@@ -143,6 +144,7 @@ export async function markBookingPaidServerSide(input: {
         paidByUid: input.paidByUid,
         ...(input.paidOrderId ? { paidOrderId: input.paidOrderId } : {}),
         paidFromTokenHash: event.publicTokenHash ?? null,
+        ...(input.expect ? { smsVetoedAt: FieldValue.serverTimestamp() } : {}),
         publicTokenHash: hash,
         paymentHoldExpiresAt: null,
         icsSequence,
@@ -272,8 +274,11 @@ async function runMarkPaidSideEffects(args: {
 
 
   // Reminder pipeline + automation activity/trigger run regardless of
-  // email send success.
-  if (page?.remindersEnabled && !withheld) {
+  // email send success. An agent-approved mark-paid sends no TEXT reminders
+  // either: the approver reviewed the email address, not the phone, so the
+  // snapshot says sms:false and the step (which reads the page live) honours it.
+  const textsOk = !expect;
+  if (page && (page.remindersEnabled || (page.smsRemindersEnabled && textsOk)) && !withheld) {
     await scheduleEventReminders({
       eventId: event.id,
       startAt,
@@ -281,6 +286,7 @@ async function runMarkPaidSideEffects(args: {
       rawToken,
       pendingPayment: false,
       scheduleNonce: "paid",
+      page: { ...page, smsRemindersEnabled: page.smsRemindersEnabled && textsOk },
     });
   }
 
@@ -312,6 +318,32 @@ async function runMarkPaidSideEffects(args: {
   );
 
   if (withheld) return done(true);
+
+  // The text goes to the contact's phone, which an approver of an agent
+  // mark-paid never reviewed (only the email address is pinned): no
+  // confirmation text then. An operator's own click is not held back.
+  if (page?.smsRemindersEnabled && contact && sub && textsOk) {
+    const sms = await sendBookingSms({
+      subAccountId: event.subAccountId,
+      sub,
+      contactId: contact.id,
+      label: "booking confirmation",
+      claimPath: `events/${event.id}/reminderSends/sms_confirm_paid`,
+      body: bookingConfirmationSmsBody({
+        recipientName: contact.name ?? "",
+        businessName: sub.name ?? "us",
+        pageName: bookedEventLabel(page, event, startAt, endAt).name,
+        startAt,
+        timezone: page.timezone,
+        meetingUrl,
+        publicEventUrl: buildEventPublicUrl(rawToken),
+      }),
+    });
+    // Not a customer-caused booking, so quiet hours hold it, and a
+    // confirmation that late is dropped rather than parked.
+    await noteConfirmationHeld(sms, contact.id, `bsms_${event.id}_confirm`);
+  }
+
   if (!contact || !sub || !emailIsConfigured(sub)) return done(false);
   if (!contact.email || contact.emailOptedOut) return done(false);
 

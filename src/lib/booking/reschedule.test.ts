@@ -250,6 +250,29 @@ describe("runRescheduleSideEffects", () => {
     );
   });
 
+  it("re-schedules reminders for a text-only page, carrying the page so the step knows the channels", async () => {
+    await runRescheduleSideEffects({
+      ...args,
+      page: { remindersEnabled: false, smsRemindersEnabled: true, reminderOffsetsMinutes: [60] } as never,
+      actor: "operator",
+    } as never);
+    expect(m.scheduleEventReminders).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventId: "evt1",
+        page: expect.objectContaining({ remindersEnabled: false, smsRemindersEnabled: true }),
+      }),
+    );
+  });
+
+  it("skips reminders when both the email and the text channel are off", async () => {
+    await runRescheduleSideEffects({
+      ...args,
+      page: { remindersEnabled: false, smsRemindersEnabled: false, reminderOffsetsMinutes: [60] } as never,
+      actor: "operator",
+    } as never);
+    expect(m.scheduleEventReminders).not.toHaveBeenCalled();
+  });
+
   it("no-ops the activity/trigger/email for an event with no contact", async () => {
     await runRescheduleSideEffects({
       ...args,

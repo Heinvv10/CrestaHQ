@@ -54,6 +54,7 @@ export function defaultBookingPageFormData(
     redirectUrl: null,
     redirectAppendParams: true,
     remindersEnabled: true,
+    smsRemindersEnabled: false,
     reminderOffsetsMinutes: [...DEFAULT_REMINDER_OFFSETS_MINUTES],
     payment: null,
     defaultTerritoryId: null,

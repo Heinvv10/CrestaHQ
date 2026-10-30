@@ -81,6 +81,9 @@ async function paidPlan(event: CalendarEvent) {
       value: emailTo ? `Sent to ${oneLine(contact!.name) || "(unnamed)"} (${masked("email", emailTo)}) with a calendar invite and a new manage link` : `None: ${why}`,
     },
     { label: "Reminders", value: reminders?.length ? `Scheduled ${reminders.map((m) => `${m} min`).join(", ")} before the start, as the booking page sets` : "None" },
+    ...(page?.smsRemindersEnabled
+      ? [{ label: "Texts", value: "None: no confirmation text and no text reminders are sent on an approval. They go to the contact's phone, which an approval does not review" }]
+      : []),
     { label: "Workflows that start", value: started.map((w) => `${w.name} (${w.id})`).join(", ") || "none" },
     { label: "Then", value: "The booking is confirmed: its payment hold stops expiring, the payment is recorded on the contact's timeline, and the old link in the payment email stops working." },
   ];

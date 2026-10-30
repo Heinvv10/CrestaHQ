@@ -7,6 +7,7 @@ import { resolveBookingHosts } from "@/lib/booking/hosts";
 import { readConnection } from "@/lib/google-calendar/connection";
 import { googleCalendarGateOn } from "@/lib/google-calendar/gate";
 import { effectiveBookingLocation } from "@/lib/booking/location";
+import { hasExplicitPhoneCountry } from "@/lib/contacts/phone";
 import type { BookingHost, BookingLocation, BookingPage, BookingPageFormData, CalendarType } from "@/types/booking";
 
 /**
@@ -16,10 +17,14 @@ import type { BookingHost, BookingLocation, BookingPage, BookingPageFormData, Ca
  * delete.
  */
 
+/** Shown by the save and, in short, by the editor. */
+export const NO_PHONE_COUNTRY_MESSAGE =
+  "Text reminders need this workspace's phone country: open Settings → Phone region and save it. Until then only US numbers could be texted, so a workspace elsewhere would text nobody.";
+
 export type PageWriteFailure = { ok: false; status: number; error: string };
 
 /** What an edit needs of the stored page to judge a Google Meet change. */
-export type StoredMeetFields = Pick<BookingPage, "location" | "googleMeet" | "meetingUrl" | "status">;
+export type StoredMeetFields = Pick<BookingPage, "location" | "googleMeet" | "meetingUrl" | "status" | "smsRemindersEnabled">;
 
 /**
  * Validate a create (no `edit`) or full-replace edit body (`edit`, with the
@@ -45,11 +50,19 @@ export async function prepareBookingPage(
   const create = edit === undefined;
 
   // An edit reads the sub-account only for the payment gate, as the route did.
-  const subSnap = create || data.payment ? await getAdminDb().doc(`subAccounts/${subAccountId}`).get() : null;
+  const turningOnSms = data.smsRemindersEnabled === true && (create || edit?.stored?.smsRemindersEnabled !== true);
+  const subSnap = create || data.payment || turningOnSms ? await getAdminDb().doc(`subAccounts/${subAccountId}`).get() : null;
   if (create && !subSnap?.exists) return { ok: false, status: 404, error: "Sub-account not found" };
   const sub = subSnap?.data() ?? {};
   const agencyId = (sub.agencyId as string | undefined) ?? null;
   if (create && !agencyId) return { ok: false, status: 500, error: "Sub-account is missing tenancy metadata." };
+
+  // Texts go only to numbers in the workspace's home country, and an unset
+  // phone country reads as US: a non-US workspace would switch texts on and
+  // reach nobody, silently. Turning them on needs the country chosen.
+  if (turningOnSms && !hasExplicitPhoneCountry(sub.defaultPhoneCountry as string | undefined)) {
+    return { ok: false, status: 400, error: NO_PHONE_COUNTRY_MESSAGE };
+  }
 
   // A deposit needs a payment rail - the public page would render a Pay
   // button that goes nowhere.
