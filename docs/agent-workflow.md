@@ -93,12 +93,22 @@ the PR's individual commits stay readable in history.
 
 ### CI runner
 
-CI runs on a **self-hosted runner** (`velo-crestahq-u`, labels
-`self-hosted, linux, velo, crestahq`) because GitHub-hosted runner billing is
-paused on this account. It runs as its own unix user (`gha-crestahq`) under
-`actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`, matching the four
-sibling runners on the same box. If PRs sit queued forever, check that service
-first — a stopped runner looks exactly like a slow CI.
+CI (`ci.yml`, `e2e-smoke.yml`, `agent-coverage-shrink.yml`) runs on
+**GitHub-hosted `ubuntu-latest`**. If jobs never start or fail instantly with a
+billing/spending-limit annotation, check the account's Actions billing first.
+
+E2E touches one shared set of fixture sub-accounts in the production Firestore
+(global setup purges them wholesale), so every E2E run — PR, push, and the
+production smoke — queues in the repo-wide `crestahq-e2e-fixtures` concurrency
+group with `cancel-in-progress: false`. GitHub holds only one *pending* run per
+group, so a third run queuing behind a running one cancels the older pending
+one; a cancelled E2E check needs a re-run, not a fix.
+
+Only the Go workflows (`wa-manager.yml`, `wa-agent-bridge.yml`) are still on the
+self-hosted runner (`velo-crestahq-u`, labels `self-hosted, linux, velo,
+crestahq`, service
+`actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`). If *those* sit
+queued forever, check that service first.
 
 ### Deploy
 
