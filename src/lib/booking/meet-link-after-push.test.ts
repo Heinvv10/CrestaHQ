@@ -138,6 +138,13 @@ describe("mark-paid on a Google Meet page", () => {
   });
 });
 
+it("mark-paid with a foreign contact on the event (legacy): no timeline row on that contact", async () => {
+  seed(MEET_PAGE, { contactId: "theirs" });
+  mem.seed("contacts/theirs", { name: "Other", email: "other@example.com", agencyId: AGENCY, subAccountId: "sa_other" });
+  expect((await paid()).ok).toBe(true);
+  expect(mem.list("contacts/theirs/activities")).toEqual([]);
+});
+
 it("mark-paid on any other page: confirmation first, then the usual push", async () => {
   seed({ location: { type: "in_person", value: "12 Main Rd" }, googleMeet: false }, { location: "12 Main Rd" });
   expect((await paid()).ok).toBe(true);
@@ -198,5 +205,48 @@ describe("a reschedule's push may replace the fallback only when its \"Updated:\
     await reschedule();
     expect(g.push).toHaveBeenCalledTimes(1);
     expect(g.push.mock.calls[0]).toEqual(["e1"]);
+  });
+});
+
+describe("a reschedule whose \"Updated:\" mail carries a Meet link settles the open row as sent", () => {
+  const reschedule = async () => {
+    const again = slotAt(5, 11);
+    const op = await rescheduleWithoutAvailabilityCheck("e1", again.startAt, again.endAt);
+    return runRescheduleSideEffects({
+      event: op.event,
+      page: op.page,
+      newRawToken: op.newToken,
+      publicEventUrl: "",
+      startAt: again.startAt,
+      endAt: again.endAt,
+      actor: "operator",
+    });
+  };
+  const openRow = () =>
+    mem.seed("contacts/c1/activities/r1", { type: "meet_link_missing", content: "being created", meta: { eventId: "e1", pending: true } });
+
+  it("the push stores the room, the mail carries it: the row says it was emailed", async () => {
+    seed(MEET_PAGE, { status: "scheduled" });
+    openRow();
+    g.push.mockImplementation(async () => {
+      mem.seed("events/e1", { ...(mem.read("events/e1") as object), meetingUrl: MEET_LINK });
+    });
+    expect((await reschedule()).emailSent).toBe(true);
+    expect(mem.read("contacts/c1/activities/r1")).toMatchObject({ meta: { eventId: "e1", pending: false, resolved: true } });
+  });
+
+  it("no Meet link in the mail: the row is left as it is", async () => {
+    seed(MEET_PAGE, { status: "scheduled", meetingUrl: "https://zoom.example/f" });
+    openRow();
+    expect((await reschedule()).emailSent).toBe(true);
+    expect(mem.read("contacts/c1/activities/r1")).toMatchObject({ content: "being created", meta: { pending: true } });
+  });
+
+  it("the mail doesn't go out: the row is not marked sent", async () => {
+    seed(MEET_PAGE, { status: "scheduled", meetingUrl: MEET_LINK });
+    openRow();
+    mem.seed("contacts/c1", { ...(mem.read("contacts/c1") as object), emailOptedOut: true });
+    expect((await reschedule()).emailSent).toBe(false);
+    expect((mem.read("contacts/c1/activities/r1") as { meta: object }).meta).not.toHaveProperty("resolved");
   });
 });

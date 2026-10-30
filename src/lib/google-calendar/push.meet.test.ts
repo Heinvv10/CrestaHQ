@@ -165,7 +165,7 @@ describe("a Google Meet booking", () => {
     seedMeetBooking({ meetingUrl: null, contactId: "c1" });
     await pushBookingToGoogle("ev_1");
     expect(event()).toMatchObject({ meetingUrl: MEET_LINK, googleMeetOwnerUid: "host_a" });
-    expect(settleRows).toHaveBeenCalledWith("c1", "ev_1", "not_emailed");
+    expect(settleRows).toHaveBeenCalledWith(expect.objectContaining({ contactId: "c1" }), "ev_1", "not_emailed");
   });
 
   it("a push that emails the link (in-time booking push) doesn't settle rows as not emailed", async () => {

@@ -27,6 +27,7 @@ import { runAfterResponse } from "@/lib/server/after-response";
 import { sendMeetLinkFollowUp } from "@/lib/booking/meet-link-follow-up";
 import { settleMeetLinkPending, settleMeetLinkRows } from "@/lib/booking/meet-link-missing";
 import type { ActivityType } from "@/types/contacts";
+import { loadEventContact } from "@/lib/server/tenant-ref";
 
 /**
  * The P4c warning, kept where a later push can't overwrite it: a row on the
@@ -35,6 +36,11 @@ import type { ActivityType } from "@/types/contacts";
 async function recordMeetRoomOwnerRemoved(e: SyncedEvent, eventId: string, message: string): Promise<void> {
   if (!e.contactId || e.contactId.includes("/")) return;
   try {
+    // Never onto another tenant's timeline (a legacy event's foreign contact id).
+    if (!(await loadEventContact(e))) {
+      console.warn(`[google-calendar] room-owner-removed row skipped event=${eventId}: contact not in sub-account ${e.subAccountId}`);
+      return;
+    }
     await getAdminDb()
       .collection(`contacts/${e.contactId}/activities`)
       .add({
@@ -436,7 +442,7 @@ async function convergeOnce(
     stored = await done;
     // A fill-only push (Retry sync, reassign…) emails nobody: an open
     // "link missing" row now says the link is on the booking, not emailed.
-    if (stored && !mode.replaceFallback && e.contactId) await settleMeetLinkRows(e.contactId, eventId, "not_emailed");
+    if (stored && !mode.replaceFallback && e.contactId) await settleMeetLinkRows(e, eventId, "not_emailed");
   }
   if (room && !stored && room !== e.meetingUrl && !mayStore(e.meetingUrl, fallback, mode)) {
     console.warn(`[google-calendar] Meet room kept off event=${eventId}: it holds its own meeting link`);

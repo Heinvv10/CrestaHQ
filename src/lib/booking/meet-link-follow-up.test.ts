@@ -15,7 +15,7 @@ vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(
 
 const { SA, AGENCY, mem, resetSeam, smtpSend, suppressionSeed } = await s();
 const { sendMeetLinkFollowUp } = await import("./meet-link-follow-up");
-const { MEET_LINK_NOT_EMAILED_NOTE } = await import("./meet-link-missing");
+const { MEET_LINK_CHANGED_NOTE, MEET_LINK_NOT_EMAILED_NOTE } = await import("./meet-link-missing");
 
 const MEET_LINK = "https://meet.google.com/abc-defg-hij";
 const ts = (d: Date) => ({ toDate: () => d, toMillis: () => d.getTime() });
@@ -85,7 +85,8 @@ describe("sendMeetLinkFollowUp", () => {
     await sendMeetLinkFollowUp("e1", "https://meet.google.com/some-other-room");
     expect(mails()).toHaveLength(0);
     expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
-    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_NOT_EMAILED_NOTE });
+    // Worded so it doesn't claim the late link is on the booking.
+    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_CHANGED_NOTE });
   });
 
   it("pinned to the reviewed address: sent when it still matches, withheld (row says so) when it doesn't", async () => {
@@ -123,6 +124,15 @@ describe("sendMeetLinkFollowUp", () => {
     await sendMeetLinkFollowUp("e1", MEET_LINK, { pinnedEmail: null });
     expect(mails()).toHaveLength(0);
     expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_NOT_EMAILED_NOTE, meta: { pending: false } });
+  });
+
+  it("a legacy event whose contact is in another sub-account: no email, nothing written on that contact", async () => {
+    mem.seed("contacts/theirs", { name: "Other", email: "other@example.com", agencyId: AGENCY, subAccountId: "sa_other" });
+    mem.seed("contacts/theirs/activities/t1", { type: "meet_link_missing", content: "theirs", meta: { eventId: "e1", pending: true } });
+    mem.seed("events/e1", { ...(mem.read("events/e1") as object), contactId: "theirs" });
+    await sendMeetLinkFollowUp("e1", MEET_LINK);
+    expect(mails()).toHaveLength(0);
+    expect(mem.list("contacts/theirs/activities")).toEqual([expect.objectContaining({ content: "theirs", meta: { eventId: "e1", pending: true } })]);
   });
 
   it("a suppressed address: no email, the refusal on the timeline, the row left open", async () => {

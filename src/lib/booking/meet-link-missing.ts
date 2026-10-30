@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
+import { loadEventContact } from "@/lib/server/tenant-ref";
 import type { ActivityType } from "@/types/contacts";
 
 /**
@@ -24,6 +25,26 @@ export const MEET_LINK_ON_BOOKING_NOTE =
 /** The row once the late link exists but could not be emailed. */
 export const MEET_LINK_NOT_EMAILED_NOTE =
   "The Google Meet link now exists on the booking, but it couldn't be emailed to the customer — send it to them.";
+/** The row when the late link was made but the booking's link had been changed meanwhile. */
+export const MEET_LINK_CHANGED_NOTE =
+  "A Google Meet link was made after the booking, but the booking's meeting link had been changed meanwhile, so it wasn't emailed — check the customer has the booking's current link.";
+
+/** Whose timeline a booking's rows go on: the event's contact, only inside the event's sub-account. */
+export interface BookingContactRef {
+  contactId?: string | null;
+  subAccountId: string;
+}
+
+/**
+ * The contact id to write a booking's timeline rows under, or null — never
+ * a contact from another tenant (a legacy event's foreign id reads as none).
+ */
+async function tenantContactId(ref: BookingContactRef, eventId: string): Promise<string | null> {
+  if (!ref.contactId) return null;
+  if (await loadEventContact(ref)) return ref.contactId;
+  console.warn(`[booking/meet-link] timeline write skipped event=${eventId}: contact is not in sub-account ${ref.subAccountId}`);
+  return null;
+}
 
 /** The once-only claim for the late link's email (reminder claims live beside it). */
 export const meetLinkFollowUpClaimPath = (eventId: string) => `events/${eventId}/reminderSends/meet-link-follow-up`;
@@ -41,20 +62,22 @@ async function rowsFor(contactId: string, eventId: string) {
   ).docs;
 }
 
-/** Rewrite the booking's OPEN rows: the late link was emailed, or couldn't be. Never throws. */
+/** Rewrite the booking's OPEN rows: the late link was emailed, couldn't be, or was overtaken by a changed link. Never throws. */
 export async function settleMeetLinkRows(
-  contactId: string,
+  ref: BookingContactRef,
   eventId: string,
-  outcome: "sent" | "not_emailed",
+  outcome: "sent" | "not_emailed" | "link_changed",
 ): Promise<void> {
   try {
+    const contactId = await tenantContactId(ref, eventId);
+    if (!contactId) return;
     const rows = (await rowsFor(contactId, eventId)).filter((d) => d.data().meta?.resolved !== true);
     await Promise.all(
       rows.map((d) =>
         d.ref.update(
           outcome === "sent"
             ? { content: MEET_LINK_SENT_NOTE, "meta.pending": false, "meta.resolved": true, "meta.resolvedAt": FieldValue.serverTimestamp() }
-            : { content: MEET_LINK_NOT_EMAILED_NOTE, "meta.pending": false },
+            : { content: outcome === "link_changed" ? MEET_LINK_CHANGED_NOTE : MEET_LINK_NOT_EMAILED_NOTE, "meta.pending": false },
         ),
       ),
     );
@@ -72,10 +95,11 @@ export async function settleMeetLinkRows(
 export async function settleMeetLinkPending(eventId: string): Promise<void> {
   try {
     const snap = await getAdminDb().collection("events").doc(eventId).get();
-    const e = snap.data() as { contactId?: string | null; meetingUrl?: string | null } | undefined;
-    if (!e?.contactId) return;
+    const e = snap.data() as { contactId?: string | null; subAccountId: string; meetingUrl?: string | null } | undefined;
+    const contactId = e ? await tenantContactId(e, eventId) : null;
+    if (!e || !contactId) return;
     const content = e.meetingUrl ? MEET_LINK_ON_BOOKING_NOTE : meetLinkMissingNote(false);
-    const rows = (await rowsFor(e.contactId, eventId)).filter((d) => d.data().meta?.pending === true);
+    const rows = (await rowsFor(contactId, eventId)).filter((d) => d.data().meta?.pending === true);
     await Promise.all(rows.map((d) => d.ref.update({ content, "meta.pending": false })));
   } catch (err) {
     console.warn(`[booking/meet-link] pending row settle failed event=${eventId}`, err instanceof Error ? err.message : String(err));
@@ -99,6 +123,7 @@ export async function recordMeetLinkMissing(input: {
 }): Promise<void> {
   if (!input.contactId) return;
   try {
+    if (!(await tenantContactId(input, input.eventId))) return;
     const db = getAdminDb();
     const [claim, event] = await Promise.all([
       db.doc(meetLinkFollowUpClaimPath(input.eventId)).get(),

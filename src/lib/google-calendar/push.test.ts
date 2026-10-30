@@ -291,6 +291,7 @@ describe("removeMemberGoogleCopies: copies kept for a Google Meet room", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(at(8));
     seedKept({ contactId: "c1" });
+    state.docs.set("contacts/c1", { subAccountId: SUB });
     await removeMemberGoogleCopies(SUB, "host_a");
     expect(event().googleSyncError).toBeTruthy();
     // e.g. the reassign the warning asks for:
@@ -305,6 +306,18 @@ describe("removeMemberGoogleCopies: copies kept for a Google Meet room", () => {
         meta: { eventId: "ev_1" },
       }),
     ]);
+  });
+
+  it("the timeline row is never written onto a contact in another sub-account", async () => {
+    connect("host_a");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at(8));
+    seedKept({ contactId: "theirs" });
+    state.docs.set("contacts/theirs", { subAccountId: "sa_other" });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    vi.useRealTimers();
+    expect(event().googleSyncError).toBeTruthy();
+    expect([...state.docs.keys()].filter((p) => p.startsWith("contacts/theirs/activities/"))).toEqual([]);
   });
 
   it("no warning for an upcoming booking without a Meet link", async () => {

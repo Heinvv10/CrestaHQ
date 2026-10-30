@@ -24,6 +24,8 @@ import type { CalendarEvent, EventNotifySkipReason } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { meetUrlOf } from "@/lib/google-calendar/provider/types";
+import { settleMeetLinkRows } from "@/lib/booking/meet-link-missing";
 import { isLongEvent } from "@/lib/booking/long-event";
 
 /**
@@ -130,18 +132,6 @@ export async function rescheduleWithoutAvailabilityCheck(
   });
 }
 
-/**
- * The side effects of ANY successful reschedule, regardless of actor or
- * which route wrote the new time: re-publish reminders with a fresh nonce,
- * record the activity row, fire `booking.rescheduled`, and mail the
- * visitor an updated confirmation + ICS. Extracted from the public
- * reschedule route so the operator route gets the identical bookkeeping
- * instead of a raw field write.
- *
- * Returns whether the "Updated:" email went out. It matters more than for
- * other notifications: the token was just rotated, so a visitor who isn't
- * emailed is left holding a dead manage link — the operator must be told.
- */
 /** Whether the "Updated:" mail has someone to go to (the checks below, before the push). */
 async function updatedMailWillSend(event: CalendarEvent): Promise<boolean> {
   if (!event.contactId) return false;
@@ -158,6 +148,18 @@ async function updatedMailWillSend(event: CalendarEvent): Promise<boolean> {
   }
 }
 
+/**
+ * The side effects of ANY successful reschedule, regardless of actor or
+ * which route wrote the new time: re-publish reminders with a fresh nonce,
+ * record the activity row, fire `booking.rescheduled`, and mail the
+ * visitor an updated confirmation + ICS. Extracted from the public
+ * reschedule route so the operator route gets the identical bookkeeping
+ * instead of a raw field write.
+ *
+ * Returns whether the "Updated:" email went out. It matters more than for
+ * other notifications: the token was just rotated, so a visitor who isn't
+ * emailed is left holding a dead manage link — the operator must be told.
+ */
 export async function runRescheduleSideEffects(args: {
   event: CalendarEvent;
   page: BookingPage | undefined;
@@ -184,6 +186,12 @@ export async function runRescheduleSideEffects(args: {
   } catch (err) {
     console.warn("[booking/reschedule] post-push read failed", err instanceof Error ? err.message : String(err));
   }
+
+  // The "Updated:" mail carried a Meet link: an open "link missing" row on
+  // the booking's contact is settled as sent.
+  const linkMailed = async () => {
+    if (meetUrlOf(meetingUrl)) await settleMeetLinkRows(event, event.id, "sent");
+  };
 
   // Re-publish reminder callbacks with a fresh schedule nonce so the
   // QStash dedup key doesn't collapse onto the previous ones.
@@ -302,6 +310,7 @@ export async function runRescheduleSideEffects(args: {
         subAccount: sub,
         meter: { subAccountId: event.subAccountId },
       });
+      await linkMailed();
       return { emailSent: true };
     }
 
@@ -323,6 +332,7 @@ export async function runRescheduleSideEffects(args: {
         },
       ],
     });
+    await linkMailed();
     return { emailSent: true };
   } catch (err) {
     console.warn("[booking/reschedule] confirmation send failed", err);

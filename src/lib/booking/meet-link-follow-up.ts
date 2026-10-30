@@ -40,10 +40,12 @@ export async function sendMeetLinkFollowUp(
     // cancelled or finished one.
     if (eventStatus(event) !== "scheduled" || !event.contactId) return;
     const contactId = event.contactId;
-    const notEmailed = () => settleMeetLinkRows(contactId, eventId, "not_emailed");
+    const notEmailed = () => settleMeetLinkRows(event, eventId, "not_emailed");
+    // The booking holds another link now: this one is not on it, don't say it is.
+    if (event.meetingUrl !== meetUrl) return settleMeetLinkRows(event, eventId, "link_changed");
     const startAt = (event.startAt as { toDate?: () => Date } | null)?.toDate?.();
     const endAt = (event.endAt as { toDate?: () => Date } | null)?.toDate?.();
-    if (event.meetingUrl !== meetUrl || !(startAt instanceof Date) || !(endAt instanceof Date)) return notEmailed();
+    if (!(startAt instanceof Date) || !(endAt instanceof Date)) return notEmailed();
 
     const [contact, subSnap, pageSnap] = await Promise.all([
       loadEventContact(event),
@@ -105,7 +107,7 @@ export async function sendMeetLinkFollowUp(
       if (!suppressed) console.warn(`[booking/meet-link] follow-up send failed event=${eventId}`, err instanceof Error ? err.message : String(err));
       return notEmailed();
     }
-    await settleMeetLinkRows(contactId, eventId, "sent");
+    await settleMeetLinkRows(event, eventId, "sent");
   } catch (err) {
     console.warn(`[booking/meet-link] follow-up failed event=${eventId}`, err instanceof Error ? err.message : String(err));
   }

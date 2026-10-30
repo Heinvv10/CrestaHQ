@@ -62,6 +62,8 @@ beforeEach(() => {
   m.meet.mockResolvedValue({ meetUrl: null, pending: false });
   m.later.mockClear();
   mem.seed(`subAccounts/${SA}/subAccountMembers/host_a`, { uid: "host_a", status: "active", email: "ann@example.com", displayName: "Ann" });
+  // The reconcile mock's contact, in this sub-account.
+  mem.seed("contacts/c1", { subAccountId: SA, agencyId: "ag1" });
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 
