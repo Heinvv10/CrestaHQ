@@ -95,6 +95,9 @@ export function eventLocationText(
   booker: { phone?: string | null; address?: string | null },
 ): string {
   if (!location) return "";
+  // The booker's own values are only used as plain one-line text.
+  const plain = (v: string | null | undefined) => (v && isPlainLocationText(v) ? v : null);
+  booker = { phone: plain(booker.phone), address: plain(booker.address) };
   switch (location.type) {
     case "video_link":
       return "Video call";

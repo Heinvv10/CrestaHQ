@@ -144,6 +144,15 @@ describe("other locations", () => {
     expect(event().location).toBe("At your address: 7 Oak Ave, Pretoria");
   });
 
+  it("a phone carrying a line break or markup is refused before anything is written", async () => {
+    seedPage("p", { location: { type: "we_call", value: null } });
+    for (const phone of ["+27 60\r\nATTENDEE:mailto:evil@example.com", "+27 60\rX", "<b>+27</b>"]) {
+      expect((await book({ phone })).status).toBe(400);
+    }
+    expect(mem.list("events")).toHaveLength(0);
+    expect(m.sent).toHaveLength(0);
+  });
+
   it("an address sent to a page that doesn't ask for one is ignored", async () => {
     seedPage("p", { location: { type: "we_call", value: null } });
     expect((await book({ address: "<script>x</script>" })).status).toBe(200);

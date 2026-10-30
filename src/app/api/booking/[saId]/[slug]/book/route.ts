@@ -195,6 +195,13 @@ export async function POST(
       { status: 400 },
     );
   }
+  // The phone reaches the event's location text, emails and the invite.
+  if (!isPlainLocationText(phone)) {
+    return NextResponse.json(
+      { error: "Enter the phone number on one line, without < or >." },
+      { status: 400 },
+    );
+  }
   const slot = body.slot;
   if (!slot?.startAt || !slot?.endAt) {
     return NextResponse.json(

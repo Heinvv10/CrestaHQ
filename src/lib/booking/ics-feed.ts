@@ -63,7 +63,11 @@ function escapeIcsText(s: string): string {
     .replace(/\\/g, "\\\\")
     .replace(/;/g, "\\;")
     .replace(/,/g, "\\,")
-    .replace(/\r?\n/g, "\\n");
+    // Every line break (CRLF, a lone CR, a lone LF) becomes the escaped \n
+    // and every other control character is dropped: a raw CR or LF would end
+    // the content line, and the text after it would be read as a property.
+    .replace(/\r\n|\r|\n/g, "\\n")
+    .replace(/[\u0000-\u001f\u007f]/g, "");
 }
 
 function foldLine(line: string): string {
