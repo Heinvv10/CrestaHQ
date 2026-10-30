@@ -206,7 +206,9 @@ describe("an attempt whose key is no longer the workspace's", () => {
     const at = (hoursAfterOpen: number) => new Date(NOW.getTime() - 2 * HOUR + hoursAfterOpen * HOUR);
     expect(await expireStalePaystackOrders(at(25))).toMatchObject({ expired: 0, retired: 0 });
     expect(await expireStalePaystackOrders(at(71))).toMatchObject({ expired: 0, retired: 0 });
-    expect(attempt(1)).toMatchObject({ state: "open" });
+    // Not retirable yet: flagged on sight (the connection change should have), out of the open read.
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
+    expect(order(1)).toMatchObject({ status: "pending", attentionOpen: true });
     expect(await expireStalePaystackOrders(at(72))).toMatchObject({ expired: 1, retired: 1 });
     expect(order(1)).toMatchObject({ status: "expired" });
   });
@@ -271,8 +273,8 @@ describe("an attempt whose key is no longer the workspace's", () => {
 });
 
 describe("a flagged buy whose key is the workspace's again", () => {
-  /** Opened 2 h before NOW, flagged by a disconnect, same key reconnected: 25 h old at this time. */
-  const AT = new Date(NOW.getTime() + 23 * HOUR);
+  /** Opened 2 h before NOW, flagged by a disconnect, same key reconnected: 73 h old at this time. */
+  const AT = new Date(NOW.getTime() + 71 * HOUR);
   async function disconnectAndReconnectSameKey() {
     seedBuy(1, new Date(NOW.getTime() - 2 * HOUR));
     await mem.db.doc(`subAccounts/${SA}/private/paystackConnection`).delete();
@@ -282,7 +284,7 @@ describe("a flagged buy whose key is the workspace's again", () => {
     seedSub(SA, KEY);
   }
 
-  it.each(["abandoned", "failed"])("%s at 25 h: the order expires (its flag kept) and the attempt closes", async (status) => {
+  it.each(["abandoned", "failed"])("%s at 73 h: the order expires (its flag kept) and the attempt closes", async (status) => {
     await disconnectAndReconnectSameKey();
     const flag = order(1).attention;
     verifyAnswer = (reference) => verified({ reference, status });
@@ -292,7 +294,7 @@ describe("a flagged buy whose key is the workspace's again", () => {
     expect(attempt(1).reason).toContain(`Paystack: ${status}`);
   });
 
-  it("not_found at 25 h closes it too", async () => {
+  it("not_found at 73 h closes it too", async () => {
     await disconnectAndReconnectSameKey();
     verifyAnswer = () => refused(404, "Transaction reference not found");
     await expireStalePaystackOrders(AT);
@@ -300,7 +302,7 @@ describe("a flagged buy whose key is the workspace's again", () => {
     expect(attempt(1)).toMatchObject({ state: "refused" });
   });
 
-  it("success at 25 h reconciles it: paid, the flag lifted, one email", async () => {
+  it("success at 73 h reconciles it: paid, the flag lifted, one email", async () => {
     await disconnectAndReconnectSameKey();
     verifyAnswer = (reference) => verified({ reference, status: "success", amount: 49_900 });
     expect(await expireStalePaystackOrders(AT)).toMatchObject({ checked: 1, reconciled: 1 });
@@ -310,9 +312,9 @@ describe("a flagged buy whose key is the workspace's again", () => {
     expect(sendEmail).toHaveBeenCalledTimes(1);
   });
 
-  it("under 24 h it is not asked", async () => {
+  it("under 72 h it is not asked (and not even read)", async () => {
     await disconnectAndReconnectSameKey();
-    expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 20 * HOUR))).toMatchObject({ checked: 0 });
+    expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 68 * HOUR))).toMatchObject({ checked: 0 });
     expect(attempt(1)).toMatchObject({ state: "flagged" });
   });
 
@@ -330,7 +332,7 @@ describe("a flagged buy whose key is the workspace's again", () => {
   it("a held order's flagged attempt is not asked about (the money is already accounted for)", async () => {
     seedBuy(1, OLD, { heldAt: new Date(), attention: "Held", attentionOpen: true });
     mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Held" });
-    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 0, expired: 0 });
+    expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 48 * HOUR))).toMatchObject({ checked: 0, expired: 0 });
     expect(calls).toHaveLength(0);
     expect(order(1)).toMatchObject({ status: "pending" });
   });
@@ -375,6 +377,64 @@ describe("a rejected key reaches the operator", () => {
     verifyAnswer = (reference) => verified({ reference, status: "abandoned" });
     await expireStalePaystackOrders(NOW);
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+});
+
+describe("a pile of buys on a replaced key cannot push another workspace out", () => {
+  const B = { sa: OTHER_SA, key: OTHER_KEY };
+
+  const pile = (n: number, sa: string) => {
+    // Opened 1 h before NOW, so 31 h old at NOW + 30 h; the other workspace's buy is the newest of all.
+    for (let i = 1; i <= n; i += 1) seedBuy(i, new Date(NOW.getTime() - HOUR - (2000 - i) * 1000), {}, { sa, key: KEY });
+  };
+  const AT = new Date(NOW.getTime() + 30 * HOUR);
+
+  it("1200 buys, the key changed and flagged, the sweep at +30 h: the other workspace's abandoned buy still expires on that run", async () => {
+    seedSub(OTHER_SA, OTHER_KEY);
+    pile(1200, SA);
+    seedBuy(5000, new Date(NOW.getTime() - HOUR), {}, B);
+    seedSub(SA, "sk_test_k9");
+    await flagStaleAttempts(SA, paystackKeyFingerprint("sk_test_k9"));
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
+
+    const summary = await expireStalePaystackOrders(AT);
+    expect(order(5000)).toMatchObject({ status: "expired" });
+    expect(summary).toMatchObject({ expired: 1, retired: 0 });
+    expect(order(1)).toMatchObject({ status: "pending" });
+  }, 120_000);
+
+  it("1200 buys on a replaced key that were NEVER flagged (the change missed them): still expires the other workspace's buy on the first run", async () => {
+    seedSub(OTHER_SA, OTHER_KEY);
+    pile(1200, SA);
+    seedBuy(5000, new Date(NOW.getTime() - HOUR), {}, B);
+    seedSub(SA, "sk_test_k9");
+    expect(attempt(1)).toMatchObject({ state: "open" });
+
+    const summary = await expireStalePaystackOrders(AT);
+    expect(order(5000)).toMatchObject({ status: "expired" });
+    expect(summary).toMatchObject({ retired: 0 });
+    // The whole pile left the open read in one go.
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
+    expect(attempt(1200)).toMatchObject({ state: "flagged" });
+  }, 120_000);
+
+  it("the read restarted after flagging asks nothing twice in one run", async () => {
+    seedSub(OTHER_SA, OTHER_KEY);
+    // The other workspace's still-ongoing buy is the oldest, so it is asked before the pile is met.
+    seedBuy(5000, new Date(NOW.getTime() - 5 * HOUR), {}, B);
+    for (let i = 1; i <= 150; i += 1) seedBuy(i, new Date(NOW.getTime() - HOUR - (2000 - i) * 1000 + 4 * HOUR));
+    seedSub(SA, "sk_test_k9");
+    verifyAnswer = (reference) => verified({ reference, status: "ongoing" });
+    await expireStalePaystackOrders(AT);
+    expect(calls.filter((c) => c.path.endsWith("/po-ord5000"))).toHaveLength(1);
+  });
+
+  it("open attempts on a gone key that the connection change somehow missed are flagged on sight, leaving the open read", async () => {
+    seedBuy(1);
+    seedSub(SA, OTHER_KEY);
+    await expireStalePaystackOrders(NOW);
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
+    expect(order(1)).toMatchObject({ status: "pending", attentionOpen: true });
   });
 });
 

@@ -15,9 +15,11 @@ import {
   EXPIRY_MAX_PAGES,
   EXPIRY_PAGE,
   isPastOrderLifetime,
+  OLD_KEY_RETIRE_MS,
   PAYSTACK_ORDER_LIFETIME_MS,
   STUCK_ATTEMPT_LIFETIME_MS,
 } from "@/lib/server/paystack-order-lifetime";
+import { flagStaleAttempts } from "@/lib/server/payment-attempts";
 import { markOrderExpired } from "@/lib/server/product-link-orders";
 import { expireOrderKeepingFlag, isOrderPendingUnheld } from "@/lib/server/product-link-paystack-orders";
 import type { PaymentAttempt } from "@/types/payment-attempts";
@@ -93,6 +95,7 @@ export async function expireStalePaystackOrders(
 ): Promise<PaystackOrderExpirySummary> {
   const startedAt = Date.now();
   const cutoff = new Date(now.getTime() - PAYSTACK_ORDER_LIFETIME_MS);
+  const flaggedCutoff = new Date(now.getTime() - OLD_KEY_RETIRE_MS);
   const summary: PaystackOrderExpirySummary = {
     checked: 0,
     expired: 0,
@@ -112,28 +115,55 @@ export async function expireStalePaystackOrders(
   const unresolved = new Map<string, number>();
   const askedWorkspaces = new Set<string>();
   const connections = new Map<string, PaystackConnectionSecret | null>();
+  const healed = new Set<string>();
+  const seen = new Set<string>();
   // "open" attempts, then "flagged" ones (a connection change flagged them):
   // a flagged attempt whose key is again the workspace's, with its order still
   // pending and unheld, is asked about like an open one.
   for (const state of ["open", "flagged"] as const) {
+    // A flagged row is actionable only from OLD_KEY_RETIRE_MS on (asked if its
+    // key is the workspace's again, retired if the key is gone), so that is
+    // where its read starts: rows that can't be acted on yet never sit in the
+    // read window, and one workspace's pile of flagged buys can't push the
+    // others out of it.
     const query = getAdminDb()
       .collection("paymentAttempts")
       .where("state", "==", state)
       .where("paymentLinkId", "==", "")
-      .where("createdAt", "<=", cutoff)
+      .where("createdAt", "<=", state === "open" ? cutoff : flaggedCutoff)
       .orderBy("createdAt");
     let cursor: QueryDocumentSnapshot | null = null;
     pages: for (let page = 0; page < EXPIRY_MAX_PAGES; page += 1) {
       const snap = await (cursor ? query.startAfter(cursor) : query).limit(EXPIRY_PAGE).get();
+      let healedThisPage = false;
       for (const doc of snap.docs) {
         const attempt = { ...doc.data(), id: doc.id } as PaymentAttempt;
-        if (!attempt.orderId) continue;
+        if (!attempt.orderId || seen.has(attempt.id)) continue;
+        seen.add(attempt.id);
         const sa = attempt.subAccountId;
         if (!connections.has(sa)) connections.set(sa, await readPaystackConnectionSecret(sa));
         const conn = connections.get(sa);
         // Opened with a key this workspace no longer holds: Paystack can't be asked.
         if (!conn || paystackKeyFingerprint(conn.secretKey) !== attempt.keyFingerprint) {
-          await retireOldKeyAttempt(attempt, summary, now.getTime());
+          if (state === "open" && !isPastOrderLifetime(attempt.createdAt, now.getTime(), OLD_KEY_RETIRE_MS)) {
+            // An open attempt on a gone key should have been flagged by the
+            // connection change (it is, normally). If one was missed, flag all
+            // of this workspace's now, once per run: they leave the open read,
+            // where they would sit until they can be retired and push the other
+            // workspaces out of the window.
+            if (!healed.has(sa)) {
+              healed.add(sa);
+              healedThisPage = true;
+              try {
+                await flagStaleAttempts(sa, conn ? paystackKeyFingerprint(conn.secretKey) : null);
+              } catch (err) {
+                summary.writeErrors += 1;
+                console.error(`[paystack/order-expiry] sa=${sa} old-key attempts not flagged: ${err instanceof Error ? err.message : String(err)}`);
+              }
+            }
+          } else {
+            await retireOldKeyAttempt(attempt, summary, now.getTime());
+          }
           continue;
         }
         if (summary.checked >= EXPIRY_BATCH) break pages;
@@ -169,7 +199,10 @@ export async function expireStalePaystackOrders(
         if (!resolved) unresolved.set(sa, (unresolved.get(sa) ?? 0) + 1);
       }
       if (snap.size < EXPIRY_PAGE) break;
-      cursor = snap.docs[snap.docs.length - 1];
+      // Rows just flagged left the query, so a cursor on one of them would
+      // point outside it: read again from the start (rows already handled are
+      // skipped through `seen`).
+      cursor = healedThisPage ? null : snap.docs[snap.docs.length - 1];
     }
   }
   // Keys rejected in several workspaces: logged loudly and reported in the
