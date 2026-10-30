@@ -253,9 +253,8 @@ jobs:
   #
   # Pinned to the one runner labelled crestahq-e2e. Every run binds
   # 127.0.0.1:3100 and seeds + purges the same fixture sub-accounts, so two
-  # E2E jobs on two runners would collide on both. The other jobs share no
-  # port or tenant; they do share the runner user's pnpm store and Go caches,
-  # which both tools lock for concurrent use.
+  # E2E jobs on two runners would collide on both. The other jobs run on
+  # GitHub-hosted runners and share no port, tenant or cache with this one.
   #
   # e2e-smoke.yml's "smoke" job runs on the SAME runner label for the same
   # reason (same fixture tenants, same port 3100). The single labelled runner
