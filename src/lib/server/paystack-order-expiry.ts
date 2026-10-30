@@ -26,13 +26,23 @@ import type { PaymentAttempt } from "@/types/payment-attempts";
  *                                              webhook was never registered);
  *   abandoned / failed / reversed / unknown  → the order is expired and the
  *                                              attempt refused;
- *   anything else, or no answer              → left for the next run.
+ *   anything else (ongoing, pending, queued…) → left for the next run, until the
+ *                                              attempt is 7 days old, then closed
+ *                                              the same way, so a stuck one
+ *                                              cannot hold a place for ever;
+ *   no answer                                → left for the next run.
  * An expired order is terminal: a payment that still lands is flagged by the
  * reconciler, never dropped. Bounded: at most `EXPIRY_BATCH` Paystack calls and
- * `BUDGET_MS` per run; the oldest go first.
+ * `BUDGET_MS` per run; the oldest go first. An attempt skipped for its key or
+ * connection costs only a place in the page read, not one of the calls.
+ *
+ * Throws (so the housekeeping route answers 500 and QStash retries) when every
+ * ask of a run failed: Paystack or Firestore is down, not "nothing to do".
  */
 
 export const PAYSTACK_ORDER_LIFETIME_MS = 24 * 60 * 60 * 1000;
+/** An attempt Paystack still calls ongoing/pending after this long will not be paid. */
+export const STUCK_ATTEMPT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 export const EXPIRY_BATCH = 25;
 /** The page read is larger: attempts skipped without asking Paystack do not count. */
 const PAGE = 100;
@@ -40,9 +50,9 @@ const BUDGET_MS = 40_000;
 const CLOSED = new Set(["abandoned", "failed", "reversed", "not_found"]);
 
 /** Whether `attempt` (a buy-page one) is past the order lifetime at `now`. */
-export function isPastOrderLifetime(createdAt: unknown, now = Date.now()): boolean {
+export function isPastOrderLifetime(createdAt: unknown, now = Date.now(), lifetimeMs = PAYSTACK_ORDER_LIFETIME_MS): boolean {
   const at = toDate(createdAt);
-  return !!at && now - at.getTime() >= PAYSTACK_ORDER_LIFETIME_MS;
+  return !!at && now - at.getTime() >= lifetimeMs;
 }
 
 /** Only ever open → refused: a payment may have settled the attempt meanwhile. */
@@ -56,9 +66,15 @@ async function refuseAttempt(reference: string, reason: string): Promise<void> {
 }
 
 export interface PaystackOrderExpirySummary {
+  /** Paystack asks made (at most `EXPIRY_BATCH`). */
   checked: number;
+  /** Orders this run actually moved pending → expired. */
   expired: number;
   reconciled: number;
+  /** Asks that got no answer, or whose follow-up write failed. */
+  errors: number;
+  /** Skipped for a key the workspace no longer holds, or no connection. */
+  skipped: number;
   /** Not started because the run's time budget was spent. */
   overBudget: number;
 }
@@ -76,7 +92,14 @@ export async function expireStalePaystackOrders(
     .orderBy("createdAt")
     .limit(PAGE)
     .get();
-  const summary: PaystackOrderExpirySummary = { checked: 0, expired: 0, reconciled: 0, overBudget: 0 };
+  const summary: PaystackOrderExpirySummary = {
+    checked: 0,
+    expired: 0,
+    reconciled: 0,
+    errors: 0,
+    skipped: 0,
+    overBudget: 0,
+  };
   for (const doc of stale.docs) {
     if (summary.checked >= EXPIRY_BATCH) break;
     const attempt = { ...doc.data(), id: doc.id } as PaymentAttempt;
@@ -84,7 +107,10 @@ export async function expireStalePaystackOrders(
     // Opened with a key this workspace no longer holds: a connection change
     // flags those, it is not this sweep's to judge.
     const conn = await readPaystackConnectionSecret(attempt.subAccountId);
-    if (!conn || paystackKeyFingerprint(conn.secretKey) !== attempt.keyFingerprint) continue;
+    if (!conn || paystackKeyFingerprint(conn.secretKey) !== attempt.keyFingerprint) {
+      summary.skipped += 1;
+      continue;
+    }
     if (Date.now() - startedAt >= budgetMs) {
       summary.overBudget += 1;
       continue;
@@ -92,17 +118,23 @@ export async function expireStalePaystackOrders(
     summary.checked += 1;
     try {
       const status = await paystackStatus(attempt.id, conn.secretKey);
-      if (status === "success") {
-        await reconcilePaystackCharge({ subAccountId: attempt.subAccountId, secretKey: conn.secretKey, reference: attempt.id });
-        summary.reconciled += 1;
-      } else if (status && CLOSED.has(status)) {
-        await markOrderExpired(attempt.orderId);
+      if (status === null) {
+        summary.errors += 1;
+      } else if (status === "success") {
+        const result = await reconcilePaystackCharge({ subAccountId: attempt.subAccountId, secretKey: conn.secretKey, reference: attempt.id });
+        if (result.retry) summary.errors += 1;
+        else summary.reconciled += 1;
+      } else if (CLOSED.has(status) || isPastOrderLifetime(attempt.createdAt, now.getTime(), STUCK_ATTEMPT_LIFETIME_MS)) {
+        if (await markOrderExpired(attempt.orderId)) summary.expired += 1;
         await refuseAttempt(attempt.id, `Checkout ended without payment (Paystack: ${status}).`);
-        summary.expired += 1;
       }
     } catch (err) {
+      summary.errors += 1;
       console.error(`[paystack/order-expiry] ref=${attempt.id} left open: ${err instanceof Error ? err.message : String(err)}`);
     }
+  }
+  if (summary.checked > 0 && summary.errors >= summary.checked) {
+    throw new Error(`paystack-order-expiry: all ${summary.checked} Paystack ask(s) failed`);
   }
   return summary;
 }

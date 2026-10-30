@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import { LIVE_KEY, SA, mem, seedAttempt, seedLink, seedSub, stubPaystack, verified } from "@/test/paystack-links-harness";
+import { LIVE_KEY, SA, mem, refused, seedAttempt, seedLink, seedSub, stubPaystack, verified } from "@/test/paystack-links-harness";
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/paystack-links-harness")).adminMock());
 
@@ -64,6 +64,22 @@ it("a buy-page order that failed is closed as refused when Paystack says abandon
 
 it("a reversed buy-page payment closes the attempt and expires the young pending order", async () => {
   const ref = orderAttempt("pending", "reversed", 1);
+  await sweepAttempts(SA, LIVE_KEY, [ref]);
+  expect(mem.read(`paymentAttempts/${ref}`)).toMatchObject({ state: "refused" });
+  expect(mem.read("orders/ord1")).toMatchObject({ status: "expired" });
+});
+
+it("a buy-page reference Paystack has never heard of: a young order stays pending, only the attempt is refused", async () => {
+  const ref = orderAttempt("pending", "abandoned", 1);
+  stubPaystack(() => refused(404, "Transaction reference not found"));
+  await sweepAttempts(SA, LIVE_KEY, [ref]);
+  expect(mem.read(`paymentAttempts/${ref}`)).toMatchObject({ state: "refused" });
+  expect(mem.read("orders/ord1")).toMatchObject({ status: "pending" });
+});
+
+it("a buy-page reference Paystack has never heard of, past 24 h: the order is expired with the attempt", async () => {
+  const ref = orderAttempt("pending", "abandoned", 25);
+  stubPaystack(() => refused(404, "Transaction reference not found"));
   await sweepAttempts(SA, LIVE_KEY, [ref]);
   expect(mem.read(`paymentAttempts/${ref}`)).toMatchObject({ state: "refused" });
   expect(mem.read("orders/ord1")).toMatchObject({ status: "expired" });

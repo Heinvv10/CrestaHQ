@@ -30,6 +30,7 @@ const { expireStalePaystackOrders, EXPIRY_BATCH, PAYSTACK_ORDER_LIFETIME_MS } = 
 const { flagStaleAttempts } = await import("@/lib/server/payment-attempts");
 
 const HOUR = 60 * 60 * 1000;
+const DAY = 24 * HOUR;
 const NOW = new Date("2026-10-30T12:00:00Z");
 const OLD = new Date(NOW.getTime() - 25 * HOUR);
 
@@ -108,7 +109,7 @@ describe("an abandoned buy", () => {
     verifyAnswer = (reference) => verified({ reference, status: "ongoing" });
     await expireStalePaystackOrders(NOW);
     verifyAnswer = () => "network-error";
-    await expireStalePaystackOrders(NOW);
+    await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/failed/);
     expect(order(1)).toMatchObject({ status: "pending" });
     expect(attempt(1)).toMatchObject({ state: "open" });
   });
@@ -133,6 +134,74 @@ describe("an abandoned buy", () => {
     calls.length = 0;
     expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 0 });
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe("a stuck attempt", () => {
+  const ongoing = (reference: string) => verified({ reference, status: "ongoing", amount: 49_900 });
+
+  it("Paystack still calls it ongoing after 7 days: closed like an abandoned one", async () => {
+    seedBuy(1, new Date(NOW.getTime() - 8 * DAY));
+    verifyAnswer = ongoing;
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 1, expired: 1 });
+    expect(order(1)).toMatchObject({ status: "expired" });
+    expect(attempt(1)).toMatchObject({ state: "refused" });
+  });
+
+  it("under 7 days it waits for the next run", async () => {
+    seedBuy(1, new Date(NOW.getTime() - 6 * DAY));
+    verifyAnswer = ongoing;
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 1, expired: 0 });
+    expect(order(1)).toMatchObject({ status: "pending" });
+    expect(attempt(1)).toMatchObject({ state: "open" });
+  });
+
+  it("30 stuck attempts no longer starve a newer abandoned one", async () => {
+    for (let i = 1; i <= 30; i += 1) seedBuy(i, new Date(NOW.getTime() - 8 * DAY - (100 - i) * 1000));
+    seedBuy(31, OLD);
+    verifyAnswer = (reference) =>
+      reference === "po-ord31" ? verified({ reference, status: "abandoned" }) : ongoing(reference);
+    await expireStalePaystackOrders(NOW);
+    expect(order(31)).toMatchObject({ status: "pending" });
+    await expireStalePaystackOrders(NOW);
+    expect(order(31)).toMatchObject({ status: "expired" });
+    for (let i = 1; i <= 30; i += 1) expect(attempt(i)).toMatchObject({ state: "refused" });
+  });
+});
+
+describe("the run's summary", () => {
+  it("counts an order expired only when the sweep actually changed it", async () => {
+    seedBuy(1, OLD, { attention: "Held, check", attentionOpen: true });
+    seedBuy(2);
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 2, expired: 1 });
+    expect(order(1)).toMatchObject({ status: "pending" });
+  });
+
+  it("counts attempts skipped for their key, apart from the Paystack calls", async () => {
+    seedBuy(1);
+    seedBuy(2);
+    seedSub(SA, OTHER_KEY);
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 0, skipped: 2, errors: 0 });
+  });
+
+  it("some asks failing is reported, not thrown", async () => {
+    seedBuy(1, new Date(OLD.getTime() - 1000));
+    seedBuy(2);
+    verifyAnswer = (reference) => (reference === "po-ord1" ? "network-error" : verified({ reference, status: "abandoned" }));
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 2, errors: 1, expired: 1 });
+  });
+
+  it("every ask failing throws, so the housekeeping route answers 500", async () => {
+    seedBuy(1);
+    seedBuy(2);
+    verifyAnswer = () => "network-error";
+    await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/all 2 Paystack ask\(s\) failed/);
+    expect(order(1)).toMatchObject({ status: "pending" });
+  });
+
+  it("nothing to ask is not a failure", async () => {
+    verifyAnswer = () => "network-error";
+    await expect(expireStalePaystackOrders(NOW)).resolves.toMatchObject({ checked: 0, errors: 0 });
   });
 });
 

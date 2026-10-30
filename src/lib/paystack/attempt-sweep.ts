@@ -107,11 +107,12 @@ async function settleOrClose(subAccountId: string, secretKey: string, reference:
 
   const db = getAdminDb();
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
-  // A buy-page order that is over (reversed/unknown, or abandoned past its
-  // lifetime) is expired first, so a crash before the attempt closes below
-  // leaves an open attempt for the next sweep rather than an order stuck pending.
+  // A buy-page order that is over (reversed, or any answer past its lifetime:
+  // a younger unknown reference only refuses the attempt) is expired first, so
+  // a crash before the attempt closes below leaves an open attempt for the
+  // next sweep rather than an order stuck pending.
   const before = (await attemptRef.get()).data() as PaymentAttempt | undefined;
-  if (before?.state === "open" && before.orderId && (CLOSED.has(status) || isPastOrderLifetime(before.createdAt))) {
+  if (before?.state === "open" && before.orderId && (status === "reversed" || isPastOrderLifetime(before.createdAt))) {
     await markOrderExpired(before.orderId);
   }
   await db.runTransaction(async (t) => {
