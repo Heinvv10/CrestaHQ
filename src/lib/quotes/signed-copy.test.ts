@@ -170,6 +170,9 @@ describe("sendSignedCopies", () => {
     await sendSignedCopies(quote());
     expect(mail.sendEmail).not.toHaveBeenCalled();
     expect(mem.read("quotes/q1")?.signedCopyEmailedAt).toBeUndefined();
+    expect(mem.list("contacts/c1/activities").map((d) => String(d.content))).toEqual([
+      expect.stringContaining("could not be emailed: render failed"),
+    ]);
     rendered.failNext = false;
     await sendSignedCopies(quote());
     expect(mail.sendEmail).toHaveBeenCalledTimes(2);

@@ -53,7 +53,10 @@ async function claimSignedCopy(quoteId: string): Promise<boolean> {
   });
 }
 
-/** Undoes a claim when nothing was sent, so a retry can still send. */
+/**
+ * Undoes a claim when nothing was sent, so a later trigger is not blocked by it.
+ * Nothing retries on its own; the failure note on the contact is how an operator learns of it.
+ */
 async function releaseSignedCopy(quoteId: string): Promise<void> {
   try {
     await getAdminDb()
@@ -203,6 +206,11 @@ export async function sendSignedCopies(quote: Quote): Promise<void> {
     console.warn(
       `[quotes/signed-copy] failed: ${err instanceof Error ? err.message : String(err)}`
     );
-    if (claimed && !attempted) await releaseSignedCopy(quote.id);
+    if (claimed && !attempted) {
+      await releaseSignedCopy(quote.id);
+      await recordQuoteActivity(quote, "quote_accepted", {
+        contentOverride: `Signed copy of ${quote.quoteNumber} could not be emailed: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    }
   }
 }
