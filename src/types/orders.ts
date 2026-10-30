@@ -1,5 +1,6 @@
 import type { Timestamp, FieldValue } from "firebase/firestore";
 import type { ContactAttribution } from "@/types/contacts";
+import type { ProductDelivery } from "@/types/products";
 
 /**
  * Orders — Payments v1. One doc per attempted card payment through the
@@ -23,7 +24,9 @@ export type OrderStatus =
   | "paid"
   | "refunded"
   | "partially_refunded"
-  | "failed";
+  | "failed"
+  /** A `product_link` order whose Stripe session expired unpaid. */
+  | "expired";
 
 /** Where the order came from. Only `checkout_page` exists in v1; the rest are
  *  Phase B adopters, declared now so the reconciler never needs widening. */
@@ -31,7 +34,8 @@ export type OrderSource =
   | "checkout_page"
   | "quote"
   | "booking_deposit"
-  | "community";
+  | "community"
+  | "product_link";
 
 export interface OrderLineItem {
   /** Back-reference. Null for ad-hoc items with no catalog entry. */
@@ -43,6 +47,20 @@ export interface OrderLineItem {
   /** True when this line came from an order bump rather than the main offer.
    *  Drives bump take-rate reporting — the whole point of the feature. */
   isBump: boolean;
+}
+
+/** What a product promised the buyer, copied onto the order at checkout so a
+ *  later product edit can't change what was bought. */
+export interface OrderDeliverySnapshot {
+  productId: string;
+  delivery: Exclude<ProductDelivery, { type: "none" }>;
+}
+
+export interface OrderConfirmationStatus {
+  state: "sending" | "sent" | "failed";
+  error: string | null;
+  /** Epoch ms. */
+  at: number;
 }
 
 export interface Order {
@@ -79,7 +97,31 @@ export interface Order {
   totalCents: number;
   refundedCents: number;
 
+  /** The product an express buy link sold, when `source === "product_link"`. */
+  productLinkProductId?: string | null;
+  /** Set for `product_link`: what the buyer gets once paid (download link,
+   *  community access). Shown on the thanks page only once paid. */
+  deliveries?: OrderDeliverySnapshot[];
+  /** SHA-256 (hex) of the token in a `product_link` order's thanks-page URL.
+   *  The page shows the order only to a holder of that token. */
+  thanksTokenHash?: string;
+  /** Set on a `product_link` order whose payment didn't match it (amount or
+   *  currency). A held order is never `paid`, never delivered and never
+   *  counted as revenue, whatever later events say. */
+  heldAt?: Timestamp | FieldValue | Date | null;
+  /** `product_link`: a delivery's claim on the contact step (epoch ms, a
+   *  60 s lease) and its token, so concurrent deliveries create one contact. */
+  contactLinkClaimedAt?: number | null;
+  contactLinkClaimToken?: string | null;
+  /** `product_link`: when its `order.paid` events were claimed (once). */
+  paidEventsFiredAt?: Timestamp | FieldValue | null;
+  /** Set for `product_link`: the order confirmation emailed to the buyer.
+   *  Claimed (`sending`) in a transaction before the send, so it goes once. */
+  confirmationEmail?: OrderConfirmationStatus | null;
+
   // ── Stripe linkage (the client's own account, in BOTH tiers) ──────
+  /** Empty on a `product_link` order between its write and the session
+   *  creation that follows (the order is written first). */
   stripeCheckoutSessionId: string;
   stripePaymentIntentId: string | null;
   /** False when the connection was a test-mode key — keeps play money out of
@@ -127,5 +169,5 @@ export function computeOrderSubtotalCents(items: OrderLineItem[]): number {
 
 /** Terminal statuses — the reconciler must not move an order out of these. */
 export function isOrderTerminal(status: OrderStatus): boolean {
-  return status === "refunded" || status === "failed";
+  return status === "refunded" || status === "failed" || status === "expired";
 }

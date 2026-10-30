@@ -11,6 +11,7 @@ import {
   computeOrderSubtotalCents,
   isOrderTerminal,
   type Order,
+  type OrderDeliverySnapshot,
   type OrderLineItem,
   type OrderSource,
 } from "@/types/orders";
@@ -120,6 +121,9 @@ export async function createPendingOrder(input: {
   buyerEmail: string | null;
   buyerName: string | null;
   attribution: ContactAttribution | null;
+  productLinkProductId?: string | null;
+  deliveries?: OrderDeliverySnapshot[];
+  thanksTokenHash?: string;
 }): Promise<string> {
   if (input.lineItems.length === 0) {
     throw new OrderError("An order needs at least one line item.");
@@ -154,6 +158,11 @@ export async function createPendingOrder(input: {
     buyerEmail: input.buyerEmail,
     buyerName: input.buyerName,
     attribution: input.attribution,
+    ...(input.productLinkProductId
+      ? { productLinkProductId: input.productLinkProductId }
+      : {}),
+    ...(input.deliveries?.length ? { deliveries: input.deliveries } : {}),
+    ...(input.thanksTokenHash ? { thanksTokenHash: input.thanksTokenHash } : {}),
     createdAt: FieldValue.serverTimestamp(),
     paidAt: null,
     updatedAt: FieldValue.serverTimestamp(),
