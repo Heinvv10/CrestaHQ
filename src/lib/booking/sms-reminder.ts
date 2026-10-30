@@ -14,6 +14,17 @@ import type { CalendarEvent } from "@/types/events";
 import type { SubAccountDoc } from "@/types/tenancy";
 
 
+/** HH:MM of an instant in the page's timezone (UTC when it has none or the runtime rejects it). */
+function clock(ms: number, timezone: string | undefined): string {
+  const fmt = (timeZone: string) =>
+    new Intl.DateTimeFormat("en-GB", { timeZone, hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(ms));
+  try {
+    return fmt(timezone || "UTC");
+  } catch {
+    return fmt("UTC");
+  }
+}
+
 /** Channel snapshot a reminder callback carries from scheduling time. */
 export interface ReminderChannels {
   email?: boolean;
@@ -66,25 +77,26 @@ export async function deliverReminderSms(input: {
     agencyId: event.agencyId,
     subAccountId: event.subAccountId,
     offsetMinutes,
+    claimPath,
     ownClaimExists: async () => (await getAdminDb().doc(claimPath).get()).exists,
     finalAttempt: input.finalAttempt === true,
   });
   if (!lock.ok) {
-    if (lock.collapsed) {
+    if (lock.reason === "already_sent" && lock.collapsed) {
+      const when = clock(lock.at, page?.timezone ?? channels?.timezone);
       await writeHoldActivity(
         event.contactId,
-        "A booking reminder text was not sent: another reminder for this booking went a moment ago.",
+        lock.outcome === "sent"
+          ? `A booking reminder text was not sent: another reminder for this booking was texted at ${when}.`
+          : `A booking reminder text was not sent: another reminder for this booking was being texted at ${when} and may have gone.`,
         `${noteId}_collapsed`,
       );
-    }
-    if (lock.reason === "still_sending" || lock.reason === "lock_contended") {
+    } else if (lock.reason === "lock_contended") {
       // The last delivery: nothing will retry, so the timeline says why there is no text.
       await writeHoldActivity(
         event.contactId,
-        lock.reason === "still_sending"
-          ? "A booking reminder text was not sent: another reminder for this booking was still sending."
-          : "A booking reminder text was not sent: another reminder for this booking was being sent at the same moment.",
-        `${noteId}_${lock.reason}`,
+        "A booking reminder text was not sent: another reminder for this booking was being sent at the same moment.",
+        `${noteId}_lock_contended`,
       );
     }
     return lock.reason;

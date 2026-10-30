@@ -13,10 +13,12 @@ import { getAdminDb } from "@/lib/firebase/admin";
  *   - free (none, or older than RECENT_MS): taken, state `sending`;
  *   - `sent` by another offset inside RECENT_MS: this one collapses onto it;
  *   - `sending` by another offset: it may still fail (then this one must send),
- *     so this one is told to try again (`in_flight`, a 503 for QStash); on QStash's
- *     last delivery it is taken as crashed and taken over, if it is at least
- *     FINAL_TAKEOVER_MS old (a younger one is left alone: `still_sending`, and the
- *     caller says so on the timeline, because nothing will retry);
+ *     so this one is told to try again (`in_flight`, a 503 for QStash). On QStash's
+ *     last delivery the lock is taken over ONLY IF the holder's own claim (its
+ *     path is stored in the lock) does not exist, which proves the holder never
+ *     reserved and nothing went out (it crashed first). If the claim exists, a
+ *     reserve happened and the outcome is unknown (a hung carrier call, a crash
+ *     after the send), so this one collapses and sends nothing;
  *   - this offset's own, `sending`: a crashed attempt or a twin delivery of this
  *     very step, taken over; the per-offset claim in sendBookingSms keeps the
  *     send exactly-once either way;
@@ -27,14 +29,14 @@ import { getAdminDb } from "@/lib/firebase/admin";
  */
 
 export const RECENT_TEXT_MS = 30 * 60_000;
-/** On the last delivery another offset's `sending` lock is taken over only once it is this old: a younger one is a send that is probably still going. */
-export const FINAL_TAKEOVER_MS = 2 * 60_000;
 
 export type TextLock =
   | { ok: true; at: number; mine: boolean; release: () => Promise<void>; markSent: () => Promise<void> }
-  | { ok: false; reason: "already_sent" | "in_flight"; collapsed: boolean }
-  /** The last delivery, and no text can be sent for it: the caller notes it (nothing will retry). */
-  | { ok: false; reason: "still_sending" | "lock_contended"; collapsed: false };
+  /** `collapsed`: another offset's text covers this one; `at` is when it started, `outcome` whether it is known to have gone. */
+  | { ok: false; reason: "already_sent"; collapsed: boolean; at: number; outcome: "sent" | "unknown" }
+  | { ok: false; reason: "in_flight"; collapsed: false }
+  /** The last delivery lost the takeover race: the caller notes it (nothing will retry). */
+  | { ok: false; reason: "lock_contended"; collapsed: false };
 
 const code = (err: unknown) => (err as { code?: unknown } | null)?.code;
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -45,6 +47,8 @@ export async function takeTextLock(input: {
   agencyId: string;
   subAccountId: string;
   offsetMinutes: number;
+  /** This text's per-offset claim doc, stored in the lock so another offset can tell whether this one ever reserved. */
+  claimPath: string;
   /** The per-offset claim doc exists: this offset's own text was claimed already. */
   ownClaimExists: () => Promise<boolean>;
   finalAttempt: boolean;
@@ -58,6 +62,7 @@ export async function takeTextLock(input: {
     subAccountId: input.subAccountId,
     offsetMinutes: input.offsetMinutes,
     state: "sending",
+    claimPath: input.claimPath,
     at,
   });
 
@@ -78,20 +83,21 @@ export async function takeTextLock(input: {
     }
     const snap = await ref.get();
     if (!snap.exists) continue; // given back between our create and read
-    const cur = snap.data() as { offsetMinutes?: number; state?: string; at?: number };
+    const cur = snap.data() as { offsetMinutes?: number; state?: string; at?: number; claimPath?: string };
     const at = typeof cur.at === "number" ? cur.at : 0;
     const mine = cur.offsetMinutes === input.offsetMinutes;
 
     if (now - at < RECENT_TEXT_MS) {
-      if (cur.state === "sent") return { ok: false, reason: "already_sent", collapsed: !mine };
+      if (cur.state === "sent") return { ok: false, reason: "already_sent", collapsed: !mine, at, outcome: "sent" };
       // `sending`
       if (mine) {
         // Our own claim exists: it is a delivery of this very text, which the claim answers.
         if (await input.ownClaimExists()) return lock(at, true);
       } else if (!input.finalAttempt) {
         return { ok: false, reason: "in_flight", collapsed: false };
-      } else if (now - at < FINAL_TAKEOVER_MS) {
-        return { ok: false, reason: "still_sending", collapsed: false };
+      } else if (typeof cur.claimPath !== "string" || (await db.doc(cur.claimPath).get()).exists) {
+        // The holder reserved (or we cannot tell): whether its text went is unknown, so no second one.
+        return { ok: false, reason: "already_sent", collapsed: true, at, outcome: "unknown" };
       }
     }
     // Stale, a crashed attempt of this offset, or (last delivery) a holder gone silent: take over.

@@ -403,9 +403,9 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     vi.setSystemTime(MORNING);
     return published().map((p) => p.body) as [Record<string, unknown>, Record<string, unknown>];
   }
-  const windowNotes = () => mem.list("contacts/c1/activities").filter((a) => String(a.content).includes("went a moment ago"));
+  const windowNotes = () => mem.list("contacts/c1/activities").filter((a) => String(a.content).includes("was texted at"));
   const lockId = () => `smsrecent_${hashEventToken(token).slice(0, 16)}`;
-  const lockDoc = () => mem.read(`events/e1/reminderSends/${lockId()}`) as { state?: string; offsetMinutes?: number } | undefined;
+  const lockDoc = () => mem.read(`events/e1/reminderSends/${lockId()}`) as { state?: string; offsetMinutes?: number; claimPath?: string } | undefined;
 
   it.each([
     ["the earlier offset first", [0, 1]],
@@ -519,7 +519,9 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 720, state: "sent", at: MORNING.getTime() - 5 * 60_000 });
     expect(await (await remind({ smsOnly: true, attempt: 1 }, 60)).json()).toMatchObject({ sms: "already_sent" });
     expect(sendSmsVia).not.toHaveBeenCalled();
-    expect(windowNotes()).toHaveLength(1);
+    expect(windowNotes()).toEqual([
+      expect.objectContaining({ content: "A booking reminder text was not sent: another reminder for this booking was texted at 07:55." }),
+    ]);
   });
 
   it("a SENDING lock of another offset makes this one wait (503), not collapse: that text may still fail", async () => {
@@ -532,26 +534,82 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     expect(windowNotes()).toEqual([]);
   });
 
-  it("...and on QStash's last delivery a lock that never resolved (2+ minutes old) is taken as crashed", async () => {
+  const HOLDER_CLAIM = () => `events/e1/reminderSends/sms_720_${hashEventToken(token).slice(0, 16)}`;
+  const seedHolder = (over: Record<string, unknown> = {}) =>
+    mem.seed(`events/e1/reminderSends/${lockId()}`, {
+      offsetMinutes: 720, state: "sending", at: MORNING.getTime() - 10 * 60_000, claimPath: HOLDER_CLAIM(), ...over,
+    });
+  const finalDelivery = () => remind({ smsOnly: true, attempt: 1 }, 60, { "upstash-retried": "3" });
+
+  it("the lock a real step takes records that step's own claim path (what a later takeover checks)", async () => {
     vi.setSystemTime(MORNING);
-    mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 720, state: "sending", at: MORNING.getTime() - 2 * 60_000 });
-    const res = await remind({ smsOnly: true, attempt: 1 }, 60, { "upstash-retried": "3" });
-    expect(await res.json()).toMatchObject({ sms: "sent" });
-    expect(lockDoc()).toMatchObject({ state: "sent", offsetMinutes: 60 });
+    await remind({ smsOnly: true, attempt: 2 }, 720);
+    expect(lockDoc()).toMatchObject({ claimPath: `events/e1/reminderSends/sms_720_${hashEventToken(token).slice(0, 16)}_a2` });
+    expect(mem.read(`events/e1/reminderSends/sms_720_${hashEventToken(token).slice(0, 16)}_a2`)).toBeTruthy();
   });
 
-  it("...but a YOUNGER one is probably still sending: no takeover, 200, and a note, since nothing will retry", async () => {
+  it("...and on QStash's last delivery, a holder that died BEFORE it reserved (no claim) is taken over, however young", async () => {
     vi.setSystemTime(MORNING);
-    const held = { offsetMinutes: 720, state: "sending", at: MORNING.getTime() - 2 * 60_000 + 1 };
-    mem.seed(`events/e1/reminderSends/${lockId()}`, held);
-    const res = await remind({ smsOnly: true, attempt: 1 }, 60, { "upstash-retried": "3" });
+    seedHolder({ at: MORNING.getTime() - 1000 });
+    expect(mem.read(HOLDER_CLAIM())).toBeFalsy();
+    expect(await (await finalDelivery()).json()).toMatchObject({ sms: "sent" });
+    expect(lockDoc()).toMatchObject({ state: "sent", offsetMinutes: 60 });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+  });
+
+  it("...but a holder that DID reserve (its claim exists) is never taken over: the outcome is unknown, so no second text, and the timeline says so", async () => {
+    vi.setSystemTime(MORNING);
+    seedHolder({ at: MORNING.getTime() - 30_000 });
+    mem.seed(HOLDER_CLAIM(), { state: "sending" });
+    const res = await finalDelivery();
     expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ sms: "still_sending" });
+    expect(await res.json()).toMatchObject({ sms: "already_sent" });
     expect(sendSmsVia).not.toHaveBeenCalled();
-    expect(lockDoc()).toMatchObject(held);
+    expect(lockDoc()).toMatchObject({ state: "sending", offsetMinutes: 720 });
     expect(mem.list("contacts/c1/activities")).toEqual([
-      expect.objectContaining({ content: "A booking reminder text was not sent: another reminder for this booking was still sending." }),
+      expect.objectContaining({ content: "A booking reminder text was not sent: another reminder for this booking was being texted at 07:59 and may have gone." }),
     ]);
+  });
+
+  it("...also when the holder is old: a claim, not an age, is the proof", async () => {
+    vi.setSystemTime(MORNING);
+    seedHolder({ at: MORNING.getTime() - 25 * 60_000 });
+    mem.seed(HOLDER_CLAIM(), { state: "sending" });
+    expect(await (await finalDelivery()).json()).toMatchObject({ sms: "already_sent" });
+    expect(sendSmsVia).not.toHaveBeenCalled();
+  });
+
+  it("a lock with no stored claim path cannot prove anything: no takeover", async () => {
+    vi.setSystemTime(MORNING);
+    seedHolder({ claimPath: undefined });
+    expect(await (await finalDelivery()).json()).toMatchObject({ sms: "already_sent" });
+    expect(sendSmsVia).not.toHaveBeenCalled();
+  });
+
+  it("a holder whose carrier call HANGS past the other offset's last delivery: still exactly one text", async () => {
+    const [earlier] = await holdBoth();
+    let finish: (v: { sid: string }) => void = () => undefined;
+    sendSmsVia.mockImplementationOnce(() => new Promise<{ sid: string }>((resolve) => (finish = resolve)));
+    const holder = remind(earlier, 720); // sits in the carrier call
+    for (let i = 0; i < 200 && sendSmsVia.mock.calls.length === 0; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+    expect(lockDoc()).toMatchObject({ state: "sending", offsetMinutes: 720 });
+    // The other offset's last delivery arrives meanwhile.
+    expect(await (await finalDelivery()).json()).toMatchObject({ sms: "already_sent" });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+    finish({ sid: "SM-hung" });
+    expect(await (await holder).json()).toMatchObject({ sms: "sent" });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+    expect(lockDoc()).toMatchObject({ state: "sent", offsetMinutes: 720 });
+  });
+
+  it("a holder that died AFTER sending but before it marked the lock sent: still exactly one text", async () => {
+    const [earlier] = await holdBoth();
+    expect(await (await remind(earlier, 720)).json()).toMatchObject({ sms: "sent" });
+    // The crash: the text went, the lock never got its "sent".
+    mem.seed(`events/e1/reminderSends/${lockId()}`, { ...lockDoc(), state: "sending" });
+    expect(await (await finalDelivery()).json()).toMatchObject({ sms: "already_sent" });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
   });
 
   it("an earlier delivery of that same step still waits (503) and writes no note", async () => {
