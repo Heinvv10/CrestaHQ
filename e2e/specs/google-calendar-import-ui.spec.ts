@@ -32,11 +32,9 @@ const SECRET_TITLE = "E2E-private-dentist";
 const SECRET_PLACE = "E2E-private-place";
 
 let ownerUid = "";
-let prior: { gate: unknown; allowed: unknown; generation: unknown } = {
-  gate: undefined,
-  allowed: undefined,
-  generation: undefined,
-};
+// Null until captured: teardown runs even when setup threw, and must then touch nothing.
+let prior: { gate: unknown; allowed: unknown; generation: unknown } | null = null;
+let startedAtMs = 0;
 /** Months ahead and day of month of the Google event, chosen in beforeAll. */
 let monthsAhead = MONTHS_AHEAD_MIN;
 let dayOfMonth = 15;
@@ -81,14 +79,20 @@ async function pickEmptyDay(): Promise<void> {
   throw new Error("No empty day found on the fixture tenant to place the imported event.");
 }
 
-/** The audit rows the allowance switch wrote (append-only in the app; the fixture tenant is ours to tidy). */
+/**
+ * The audit rows THIS run's allowance switch wrote (append-only in the app; the fixture tenant is
+ * ours to tidy). Only rows created since the run started: earlier ones are someone else's history.
+ */
 async function clearAudit(): Promise<void> {
   const rows = await adminDb()
     .collection("auditEvents")
     .where("subAccountId", "==", SA())
     .where("action", "==", AUDIT_ACTION)
     .get();
-  for (const r of rows.docs) await deleteScoped(r.ref);
+  for (const r of rows.docs) {
+    const created = r.data().createdAt as Timestamp | undefined;
+    if (created && created.toMillis() >= startedAtMs) await deleteScoped(r.ref);
+  }
 }
 
 const goToEventMonth = async (page: Page) => {
@@ -108,6 +112,7 @@ test.beforeAll(async () => {
   ownerUid = (await adminDb().doc(`agencies/${env().E2E_AGENCY_ID}`).get()).data()?.ownerUid;
   expect(ownerUid).toBeTruthy();
   const sub = (await primaryRef().get()).data();
+  startedAtMs = Date.now();
   prior = {
     gate: sub?.googleCalendarEnabledByAgency,
     allowed: sub?.calendarImportAllowed,
@@ -146,14 +151,22 @@ test.beforeAll(async () => {
 });
 
 test.afterAll(async () => {
-  await clearImport();
-  await clearAudit();
+  if (!prior) return;
   const restore = (v: unknown) => (v === undefined ? FieldValue.delete() : v);
-  await primaryRef().update({
-    googleCalendarEnabledByAgency: restore(prior.gate),
-    calendarImportAllowed: restore(prior.allowed),
-    calendarImportGeneration: restore(prior.generation),
-  });
+  try {
+    await clearImport();
+  } finally {
+    // Restore the tenant's switches first: a failing audit tidy must not leave them changed.
+    try {
+      await primaryRef().update({
+        googleCalendarEnabledByAgency: restore(prior.gate),
+        calendarImportAllowed: restore(prior.allowed),
+        calendarImportGeneration: restore(prior.generation),
+      });
+    } finally {
+      await clearAudit();
+    }
+  }
 });
 
 test("settings turn import on, and the calendar shows the event read-only as Busy", async ({ page }) => {

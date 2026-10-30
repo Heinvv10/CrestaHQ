@@ -15,6 +15,14 @@ function formatTime(d: Date): string {
     .replace(" ", "");
 }
 
+/** The time label: a later day of a timed imported event must not repeat its start time. */
+function timeLabel(event: CalendarEvent, start: Date, day: Date): string {
+  if (event.allDay) return "All day";
+  if (!isImportedEvent(event) || start.toDateString() === day.toDateString()) return formatTime(start);
+  const end = toDate(event.endAt);
+  return end && new Date(end.getTime() - 1).toDateString() === day.toDateString() ? `until ${formatTime(end)}` : "All day";
+}
+
 /**
  * One event on the month grid. An event imported from Google is a muted,
  * dashed chip (marked `data-imported`) that reads "All day" or its time, and
@@ -22,10 +30,13 @@ function formatTime(d: Date): string {
  */
 export function CalendarEventChip({
   event,
+  day,
   who,
   onOpen,
 }: {
   event: CalendarEvent;
+  /** The grid day this chip sits on (an imported event can sit on several). */
+  day: Date;
   /** First name shown after the title: the contact, or the owner of an imported event. */
   who: string | undefined;
   onOpen: (e: MouseEvent) => void;
@@ -52,7 +63,7 @@ export function CalendarEventChip({
         )}
       />
       {start && (
-        <span className="shrink-0 text-muted-foreground">{event.allDay ? "All day" : formatTime(start)}</span>
+        <span className="shrink-0 text-muted-foreground">{timeLabel(event, start, day)}</span>
       )}
       <span className="truncate">
         {event.title}

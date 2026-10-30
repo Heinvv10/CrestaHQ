@@ -124,3 +124,28 @@ it("marks every day a multi-day imported block covers, but leaves a manual multi
   expect(chips()).toHaveLength(3);
   expect([...document.querySelectorAll("button")].filter((b) => b.textContent?.includes("Offsite"))).toHaveLength(1);
 });
+
+it("a timed block crossing midnight shows its start on the first day and 'until' on the second", async () => {
+  const y = new Date().getFullYear();
+  const m = new Date().getMonth();
+  await show([
+    imported({
+      startAt: Timestamp.fromDate(new Date(y, m, 15, 23, 0)),
+      endAt: Timestamp.fromDate(new Date(y, m, 16, 1, 0)),
+    }),
+  ]);
+  expect(chips().map((c) => c.textContent)).toEqual([expect.stringContaining("11pm"), expect.stringContaining("until 1am")]);
+});
+
+it("a block much longer than the grid paints every visible day and no more", async () => {
+  const y = new Date().getFullYear();
+  const m = new Date().getMonth();
+  await show([
+    imported({
+      allDay: true,
+      startAt: Timestamp.fromDate(new Date(y, m, 1 - 40)),
+      endAt: Timestamp.fromDate(new Date(y, m, 1 + 80)),
+    }),
+  ]);
+  expect(chips()).toHaveLength(42);
+});

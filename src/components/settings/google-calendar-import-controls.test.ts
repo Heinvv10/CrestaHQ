@@ -214,3 +214,21 @@ it("switching off, or a refused switch-on, does not start the first-sync wait", 
   await tick(POLL_MS * 3);
   expect(onChanged.mock.calls.length).toBe(refused);
 });
+
+it("a new pass that fails with the same message as the last is shown, not hidden as stale", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const failed: Status = { ...connected, importMode: "busy", importStatus: "error", importError: "Google said no" };
+  await show(failed);
+  await click("gcal-import-mode-details");
+  // The server cleared the old outcome...
+  await rerender({ ...connected, importMode: "details" });
+  expect(status()).toContain("First sync in progress");
+  // ...and the new pass failed the same way.
+  await rerender({ ...failed, importMode: "details" });
+  expect(status()).toBe("Last sync failed: Google said no");
+  expect(byId("gcal-import-refresh")).toBeNull();
+  const calls = onChanged.mock.calls.length;
+  await tick(POLL_MS * 3);
+  expect(onChanged.mock.calls.length).toBe(calls);
+});

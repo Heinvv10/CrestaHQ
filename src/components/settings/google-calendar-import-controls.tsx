@@ -69,8 +69,10 @@ export function GoogleImportControls({ status, onChanged }: { status: ImportStat
   const stillSyncing = pending && gaveUp;
 
   useEffect(() => {
-    if (staleSig !== null && reported && sigOf(status) !== staleSig) setStaleSig(null);
-  }, [staleSig, reported, status]);
+    // Any change from what was on screen means the server's clear has landed (or a pass has
+    // reported): what follows is the new pass's, even if it repeats the old message.
+    if (staleSig !== null && sigOf(status) !== staleSig) setStaleSig(null);
+  }, [staleSig, status]);
 
   useEffect(() => {
     if (!waiting) return;

@@ -85,13 +85,16 @@ export function CalendarView({
   }, [gridStart]);
 
   const eventsByDay = useMemo(() => {
+    const shown = { from: days[0], to: days[days.length - 1] };
     const map = new Map<string, CalendarEvent[]>();
     for (const ev of events) {
       const start = toDate(ev.startAt);
       if (!start) continue;
       // An imported busy block marks every day it covers; other events sit on their first day.
-      const days = isImportedEvent(ev) ? importedEventDays(start, toDate(ev.endAt)) : [start];
-      for (const day of days) {
+      const covered = isImportedEvent(ev)
+        ? importedEventDays(start, toDate(ev.endAt), ev.allDay === true, shown)
+        : [start];
+      for (const day of covered) {
         const key = dayKey(day);
         const bucket = map.get(key);
         if (bucket) bucket.push(ev);
@@ -107,7 +110,7 @@ export function CalendarView({
       );
     }
     return map;
-  }, [events]);
+  }, [events, days]);
 
   const contactById = useMemo(() => {
     const m = new Map<string, Contact>();
@@ -255,6 +258,7 @@ export function CalendarView({
                       <CalendarEventChip
                         key={ev.id}
                         event={ev}
+                        day={d}
                         who={who}
                         onOpen={(e) => openEdit(ev, e)}
                       />
