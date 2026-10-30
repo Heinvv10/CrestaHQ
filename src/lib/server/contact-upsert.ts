@@ -214,6 +214,7 @@ export async function upsertContactByPhone(
     mode: input.mode,
     type: "contact.updated",
     payload: { contact },
+    actorUid: input.createdByUid,
   }));
   const tagTrigger = tagFire(written.beforeTags, written.after.tags);
   return {

@@ -248,6 +248,23 @@ export const FEATURE_GATES: Record<
     label: "Browser phone dialer (calls via the client's own Twilio)",
     assistantMayEnable: false,
   },
+  // Agent monitors spend AI credits, selling online moves money and AI texts
+  // reach customers: the assistant can switch them off, never on.
+  agents: {
+    field: "agentsEnabledByAgency",
+    label: "Agent monitors (stale deals, inbox watchdog)",
+    assistantMayEnable: false,
+  },
+  "sell-online": {
+    field: "sellOnlineEnabledByAgency",
+    label: "Sell online (products sold through the client's own payments)",
+    assistantMayEnable: false,
+  },
+  "ai-outbound-sms": {
+    field: "aiOutboundSmsEnabledByAgency",
+    label: "AI texts (the Send AI text workflow step)",
+    assistantMayEnable: false,
+  },
   // AI-written replies to a client's customers: the assistant can switch it
   // off, never on.
   "email-ai-drafts": {

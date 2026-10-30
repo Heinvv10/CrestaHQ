@@ -7,6 +7,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { LogoUploadControls } from "@/components/brand/logo-upload-controls";
 import { normalizePhoneE164 } from "@/lib/contacts/phone";
 
 /**
@@ -96,7 +97,14 @@ export function SubAccountBrandingSection() {
       </div>
 
       <div className="space-y-1.5">
-        <Label htmlFor="sa-logo-url">Logo URL</Label>
+        <Label htmlFor="sa-logo-url">Logo</Label>
+        <LogoUploadControls
+          endpoint={`/api/sub-accounts/${subAccountId}/logo`}
+          scope="sa"
+          ownerId={subAccountId}
+          currentUrl={logoUrl}
+          onChange={setLogoUrl}
+        />
         <Input
           id="sa-logo-url"
           type="url"
@@ -107,8 +115,9 @@ export function SubAccountBrandingSection() {
           }.png`}
         />
         <p className="text-[11px] text-muted-foreground">
-          Public https URL pointing at {businessName}&apos;s logo (PNG with
-          transparent background works best). Renders at 32&ndash;40px
+          Upload {businessName}&apos;s logo (saves straight away) or paste a
+          public https URL. PNG with a transparent background works best.
+          Renders at 32&ndash;40px
           tall. Leave blank to fall back to &ldquo;{businessName}&rdquo; in text.
         </p>
       </div>

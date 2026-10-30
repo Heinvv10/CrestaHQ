@@ -65,3 +65,9 @@ it("still validates logoUrl independently of whatsappNumber", async () => {
   expect(res.status).toBe(400);
   expect(m.set).not.toHaveBeenCalled();
 });
+
+it("keeps an uploaded logo URL (the card's Save posts it back after an upload)", async () => {
+  const url = "https://crm.example.com/api/brand/logo/sa/sa1?v=1730000000000";
+  expect((await patch({ logoUrl: url })).status).toBe(200);
+  expect(m.set).toHaveBeenCalledWith("subAccounts/sa1", expect.objectContaining({ logoUrl: url }), { merge: true });
+});

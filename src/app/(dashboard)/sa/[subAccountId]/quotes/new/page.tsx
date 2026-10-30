@@ -103,6 +103,7 @@ export default function NewQuotePage() {
           paymentDueDays: values.paymentDueDays,
           autoCreateDealOnAccept: values.autoCreateDealOnAccept,
           dealId: values.dealId,
+          requireSignature: values.requireSignature,
         }),
       });
       if (!res.ok) {

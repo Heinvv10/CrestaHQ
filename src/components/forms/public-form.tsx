@@ -12,7 +12,7 @@ import {
   readAttributionFromBrowser,
   trackLeadEvent,
 } from "@/lib/attribution";
-import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
+import { isSafeFormRedirectTarget } from "@/lib/forms/redirect-url";
 
 /**
  * The seam handleSubmit navigates through — exported so the guard against a
@@ -22,7 +22,7 @@ import { isSafeFormRedirectUrl } from "@/lib/forms/redirect-url";
 export function resolveSafeFormRedirect(
   redirectUrl: string | null | undefined,
 ): string | null {
-  return redirectUrl && isSafeFormRedirectUrl(redirectUrl) ? redirectUrl : null;
+  return redirectUrl && isSafeFormRedirectTarget(redirectUrl) ? redirectUrl : null;
 }
 
 interface PublicFormProps {
