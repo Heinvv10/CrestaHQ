@@ -12,16 +12,27 @@ export function orderDelivers(order: Pick<Order, "source">): boolean {
 }
 
 /**
- * Paid (or only partly refunded), not held, and not flagged for a person. A
- * resolved flag (`attentionOpen === false`) no longer blocks, so staff can
- * re-send once they have looked.
+ * Why an order is not owed its delivery right now:
+ *  - "withdrawn": it is not paid (refunded, failed, expired, pending), or it is
+ *    held. Nothing should be delivered and no entitlement should stay live.
+ *  - "review": it is paid and unheld but flagged for a person. Delivery waits;
+ *    once the flag is resolved a re-send delivers.
+ *  - "none": owed.
+ * A resolved flag (`attentionOpen === false`) no longer blocks.
  */
+export function deliveryBlock(
+  order: Pick<Order, "source" | "status" | "heldAt" | "attention" | "attentionOpen">,
+): "none" | "withdrawn" | "review" {
+  if (!orderDelivers(order)) return "withdrawn";
+  if (order.status !== "paid" && order.status !== "partially_refunded") return "withdrawn";
+  if (order.heldAt) return "withdrawn";
+  if (order.attention && order.attentionOpen !== false) return "review";
+  return "none";
+}
+
+/** Whether the order, as it stands, is owed its delivery. */
 export function orderDeliverable(
   order: Pick<Order, "source" | "status" | "heldAt" | "attention" | "attentionOpen">,
 ): boolean {
-  if (!orderDelivers(order)) return false;
-  if (order.status !== "paid" && order.status !== "partially_refunded") return false;
-  if (order.heldAt) return false;
-  if (order.attention && order.attentionOpen !== false) return false;
-  return true;
+  return deliveryBlock(order) === "none";
 }

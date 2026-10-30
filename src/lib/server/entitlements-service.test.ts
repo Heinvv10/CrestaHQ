@@ -381,15 +381,65 @@ describe("no grant unless the order is owed one", () => {
     expect(entitlement()).toMatchObject({ status: "revoked" });
   });
 
-  it("a hold or flag that lands before the email also stops it", async () => {
+  // Seeds `over` onto the order the first time the buyer's membership is read,
+  // i.e. after the claim and before the email.
+  function changeOrderMidDelivery(over: Record<string, unknown>) {
     const real = mem.db.doc;
+    let done = false;
+    return vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+      if (!done && /\/memberships\//.test(path)) {
+        done = true;
+        mem.seed("orders/ord1", { ...order(), ...over });
+      }
+      return real(path);
+    });
+  }
+
+  it("a hold that lands before the email stops it for good: entitlement revoked", async () => {
+    changeOrderMidDelivery({ heldAt: new Date(), attention: "Paid a different amount.", attentionOpen: true });
+    await grantForOrder(target);
+
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(entitlement()).toMatchObject({ status: "revoked" });
+  });
+
+  it("a flag raised after the claim fails this delivery but leaves the entitlement live; resolve, then Re-send delivers once", async () => {
+    const spy = changeOrderMidDelivery({ attention: "Needs a look.", attentionOpen: true });
+    const first = await grantForOrder(target);
+
+    expect(first).toEqual({ delivered: 0, failed: 1, skipped: 0 });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(entitlement()).toMatchObject({ status: "active", fulfilment: { state: "failed" } });
+    expect(deliveryError()).toMatch(/held for review.*Resolve the flag, then Re-send delivery/);
+    spy.mockRestore();
+
+    // While the flag is open a re-send is refused outright...
+    expect(await grantForOrder(target, { resend: true })).toEqual({ delivered: 0, failed: 0, skipped: 0 });
+    expect(sendEmail).not.toHaveBeenCalled();
+    // ...resolved, it delivers, once.
+    mem.seed("orders/ord1", { ...order(), attentionOpen: false });
+    expect(await grantForOrder(target, { resend: true })).toMatchObject({ delivered: 1, failed: 0 });
+    expect(await grantForOrder(target)).toEqual({ delivered: 0, failed: 0, skipped: 1 });
+
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(entitlement()).toMatchObject({ status: "active", sends: 1, fulfilment: { state: "done" } });
+    expect(order().deliveryStatus).toMatchObject({ state: "done" });
+    expect(purchases()).toHaveLength(1);
+  });
+
+  it("a flag raised after the claim on a download order also leaves it live and failed, not revoked", async () => {
+    seedOrder({ deliveries: [{ productId: "p1", delivery: { type: "download", url: DOWNLOAD, label: "Get it" } }] });
+    // orders/ord1 is opened for the first read, the claim, then the pre-send check.
+    const real = mem.db.doc;
+    let n = 0;
     vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
-      if (/\/memberships\//.test(path)) mem.seed("orders/ord1", { ...order(), attention: "Flagged.", attentionOpen: true });
+      if (path === "orders/ord1" && ++n === 3) mem.seed("orders/ord1", { ...order(), attention: "Needs a look.", attentionOpen: true });
       return real(path);
     });
     await grantForOrder(target);
+
     expect(sendEmail).not.toHaveBeenCalled();
-    expect(entitlement()).toMatchObject({ status: "revoked" });
+    expect(entitlement()).toMatchObject({ status: "active", fulfilment: { state: "failed" } });
   });
 
   it("another sub-account's id grants nothing", async () => {

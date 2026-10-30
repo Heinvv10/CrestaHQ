@@ -9,7 +9,7 @@ import {
   deliverCommunity,
   deliverDownload,
 } from "@/lib/server/entitlement-delivery";
-import { orderDeliverable, orderDelivers } from "@/lib/products/order-delivery";
+import { deliveryBlock, orderDeliverable, orderDelivers } from "@/lib/products/order-delivery";
 import {
   deliveredText,
   reason,
@@ -86,10 +86,9 @@ export async function grantForOrder(
   const errors: string[] = [];
   // Asked right before anything is mailed: a refund, hold or flag can land
   // between the claim and the send.
-  const stillOwed = async (): Promise<boolean> => {
+  const stillOwed = async (): Promise<"none" | "withdrawn" | "review"> => {
     const cur = await db.doc(`orders/${order.id}`).get();
-    const now = { id: cur.id, ...(cur.data() as Omit<Order, "id">) };
-    return orderDeliverable(now);
+    return deliveryBlock({ ...(cur.data() as Omit<Order, "id">) });
   };
 
   for (const d of order.deliveries ?? []) {

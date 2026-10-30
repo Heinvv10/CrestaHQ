@@ -45,6 +45,24 @@ export class DeliveryWithdrawn extends Error {
   }
 }
 
+/**
+ * Asked right before an email goes out. A refunded or held order is withdrawn
+ * for good; one merely flagged for review fails this delivery with a message,
+ * so resolving the flag and pressing Re-send delivery works.
+ */
+async function assertStillOwed(
+  stillOwed: () => Promise<"none" | "withdrawn" | "review">,
+  memberId: string | null,
+): Promise<void> {
+  const block = await stillOwed();
+  if (block === "withdrawn") throw new DeliveryWithdrawn(memberId);
+  if (block === "review") {
+    throw new DeliveryError(
+      "The order was held for review while it was being delivered, so nothing was sent. Resolve the flag, then Re-send delivery.",
+    );
+  }
+}
+
 function appUrl(): string {
   return (process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
 }
@@ -56,7 +74,7 @@ export async function deliverCommunity(input: {
   email: string;
   productName: string;
   productId: string;
-  stillOwed: () => Promise<boolean>;
+  stillOwed: () => Promise<"none" | "withdrawn" | "review">;
 }): Promise<{ memberId: string; problem?: string }> {
   const { order, sub, delivery, email, productName, productId } = input;
   const saId = order.subAccountId;
@@ -126,7 +144,7 @@ export async function deliverCommunity(input: {
     };
   }
 
-  if (!(await input.stillOwed())) throw new DeliveryWithdrawn(member.id);
+  await assertStillOwed(input.stillOwed, member.id);
 
   const token = signMemberMagicLinkToken(saId, email, group.id, DELIVERY_LINK_TTL_MS);
   const link = `${appUrl()}/api/community/${saId}/login/verify?token=${encodeURIComponent(token)}`;
@@ -157,7 +175,7 @@ export async function deliverDownload(input: {
   email: string;
   productName: string;
   skipEmail: boolean;
-  stillOwed: () => Promise<boolean>;
+  stillOwed: () => Promise<"none" | "withdrawn" | "review">;
 }): Promise<void> {
   const { order, sub, delivery, email, productName } = input;
   if (!isSafeSocialUrl(delivery.url)) {
@@ -169,7 +187,7 @@ export async function deliverDownload(input: {
       "Email isn't set up, so the link wasn't emailed. The buyer saw it on the thank-you page.",
     );
   }
-  if (!(await input.stillOwed())) throw new DeliveryWithdrawn();
+  await assertStillOwed(input.stillOwed, null);
   const mail = renderDownloadEmail({ productName, business: sub.name || "us", delivery });
   await sendEmail({
     to: email,

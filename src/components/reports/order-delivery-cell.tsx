@@ -34,11 +34,20 @@ export function OrderDeliveryCell({
       const res = await fetch(`/api/sub-accounts/${subAccountId}/orders/${order.id}/redeliver`, {
         method: "POST",
       });
-      const d = (await res.json().catch(() => ({}))) as { error?: string; failed?: number };
+      const d = (await res.json().catch(() => ({}))) as {
+        error?: string;
+        delivered?: number;
+        failed?: number;
+      };
       if (!res.ok) throw new Error(d.error ?? "Could not re-send the delivery.");
-      const text = d.failed ? "Re-sent, but a delivery failed again. Check the message above." : "Delivery re-sent.";
+      // 200 also covers "nothing ran": a delivery already in progress, or a revoked one.
+      const text = d.failed
+        ? "Re-sent, but a delivery failed again. Check the message above."
+        : d.delivered
+          ? "Delivery re-sent."
+          : "Nothing was sent: a delivery is already in progress, or this order's access was revoked.";
       setResult(text);
-      if (d.failed) toast.error(text);
+      if (d.failed || !d.delivered) toast.error(text);
       else toast.success(text);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Could not re-send the delivery.");

@@ -13,6 +13,7 @@ import type { Order } from "@/types/orders";
 
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 const { OrderDeliveryCell } = await import("./order-delivery-cell");
+const { toast } = await import("sonner");
 
 const fetchMock = vi.fn();
 let container: HTMLDivElement;
@@ -28,6 +29,8 @@ const order = (over: Partial<Order> = {}) =>
   }) as unknown as Order;
 
 beforeEach(() => {
+  vi.mocked(toast.success).mockClear();
+  vi.mocked(toast.error).mockClear();
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockReset();
@@ -46,13 +49,41 @@ const render = (o: Order, canManage = true) =>
 const button = () =>
   [...container.querySelectorAll("button")].find((b) => b.textContent === "Re-send delivery");
 
-it("an admin re-sends: POSTs the order's redeliver route and says so", async () => {
-  fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, delivered: 1, failed: 0, skipped: 0 }) });
+const answer = (body: Record<string, unknown>) =>
+  fetchMock.mockResolvedValueOnce({ ok: true, json: async () => ({ ok: true, ...body }) });
+const resendAndRead = async () => {
   await render(order());
   await act(async () => button()!.click());
+  return container.textContent ?? "";
+};
+
+it("an admin re-sends: POSTs the order's redeliver route and says so", async () => {
+  answer({ delivered: 1, failed: 0, skipped: 0 });
+  const text = await resendAndRead();
 
   expect(fetchMock).toHaveBeenCalledWith("/api/sub-accounts/sa1/orders/ord1/redeliver", { method: "POST" });
-  expect(container.textContent).toContain("Delivery re-sent.");
+  expect(text).toContain("Delivery re-sent.");
+  expect(toast.success).toHaveBeenCalledWith("Delivery re-sent.");
+  expect(toast.error).not.toHaveBeenCalled();
+});
+
+it("a 200 where nothing ran (in progress, or revoked) does NOT say it was re-sent", async () => {
+  answer({ delivered: 0, failed: 0, skipped: 1 });
+  const text = await resendAndRead();
+
+  expect(text).toContain("Nothing was sent: a delivery is already in progress, or this order's access was revoked.");
+  expect(text).not.toContain("Delivery re-sent.");
+  expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("Nothing was sent"));
+  expect(toast.success).not.toHaveBeenCalled();
+});
+
+it("a 200 where the delivery failed again says so, not that it was re-sent", async () => {
+  answer({ delivered: 0, failed: 1, skipped: 0 });
+  const text = await resendAndRead();
+
+  expect(text).toContain("a delivery failed again");
+  expect(text).not.toContain("Delivery re-sent.");
+  expect(text).not.toContain("Nothing was sent");
 });
 
 it("shows the failure message the delivery recorded", async () => {
