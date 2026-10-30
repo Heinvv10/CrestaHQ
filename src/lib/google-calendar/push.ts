@@ -95,6 +95,12 @@ const KEPT_FOR_MEET_DESCRIPTION =
 interface PushMode {
   detached: boolean;
   replaceFallback: boolean;
+  /**
+   * Set (before its first await) when a store of the room's link has
+   * started, so a deadline firing mid-commit waits for the outcome instead
+   * of answering "pending" for a link that is about to be on the event.
+   */
+  storing?: { meetUrl: string; done: Promise<boolean> };
 }
 
 const FILL_ONLY: PushMode = { detached: false, replaceFallback: false };
@@ -385,10 +391,12 @@ async function convergeOnce(
   // that is empty or the page's fallback. An operator's own link wins.
   const room: string | null = meetUrl;
   const fallback = page?.meetingUrl ?? null;
-  const stored =
-    !!room && room !== e.meetingUrl && mayStore(e.meetingUrl, fallback, mode)
-      ? await storeMeetUrl(ref, fallback, room, meetHost!, mode)
-      : false;
+  let stored = false;
+  if (!!room && room !== e.meetingUrl && mayStore(e.meetingUrl, fallback, mode)) {
+    const done = storeMeetUrl(ref, fallback, room, meetHost!, mode);
+    mode.storing = { meetUrl: room, done };
+    stored = await done;
+  }
   if (room && !stored && room !== e.meetingUrl && !mayStore(e.meetingUrl, fallback, mode)) {
     console.warn(`[google-calendar] Meet room kept off event=${eventId}: it holds its own meeting link`);
   }
@@ -568,10 +576,24 @@ export async function removeMemberGoogleCopies(subAccountId: string, uid: string
               }
             }, signal),
           );
+          const e = d.data() as SyncedEvent;
+          // The deleted copy owned the Meet room of a booking still to come:
+          // the booker's link may stop working. Say so; the link itself is
+          // left alone until a live walk shows what Google does.
+          const roomGone =
+            e.googleMeetOwnerUid === uid && !!meetUrlOf(e.meetingUrl) && (toDate(e.startAt)?.getTime() ?? 0) > Date.now();
           await d.ref.update({
             [`googleEventIds.${uid}`]: FieldValue.delete(),
-            ...((d.data() as SyncedEvent).googleMeetOwnerUid === uid ? { googleMeetOwnerUid: null } : {}),
-            ...((d.data() as SyncedEvent).googleMeetKeptUid === uid ? { googleMeetKeptUid: null } : {}),
+            ...(e.googleMeetOwnerUid === uid ? { googleMeetOwnerUid: null } : {}),
+            ...(e.googleMeetKeptUid === uid ? { googleMeetKeptUid: null } : {}),
+            ...(roomGone
+              ? {
+                  googleSyncError: {
+                    message: `The Google Meet room belonged to ${await nameIn(d)}, who was removed. The link may stop working: reassign the booking and send the booker a new link.`,
+                    at: new Date(),
+                  },
+                }
+              : {}),
           });
         } catch (err) {
           const name = await nameIn(d);
@@ -674,17 +696,22 @@ export async function pushBookingAndGetMeetUrlWithin(
     }
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
-  // `pending`: the deadline passed with the push still running — a room may
-  // yet land on the event, unlike a push that finished without one.
-  const deadline = new Promise<{ meetUrl: null; pending: true }>((resolve) => {
-    timer = setTimeout(() => {
-      mode.detached = true;
-      console.warn(`[google-calendar] Meet push past ${ms}ms event=${eventId}; continuing detached`);
-      resolve({ meetUrl: null, pending: true });
-    }, ms);
-  });
+  const timedOut = new Promise<"timeout">((resolve) => (timer = setTimeout(() => resolve("timeout"), ms)));
   try {
-    return await Promise.race([push.then((r) => ({ meetUrl: r.meetUrl, pending: false })), deadline]);
+    const first = await Promise.race([push, timedOut]);
+    if (first !== "timeout") return { meetUrl: first.meetUrl, pending: false };
+    // Past the deadline. A store already under way decides it one way only:
+    // the caller gets the stored link, or (refused) the push goes detached.
+    for (let storing = mode.storing; storing; storing = mode.storing) {
+      if (await storing.done.catch(() => false)) return { meetUrl: storing.meetUrl, pending: false };
+      if (mode.storing === storing) break; // refused, and no newer store began meanwhile
+    }
+    // `pending`: the push is still running — a room may yet land on the
+    // event, unlike a push that finished without one. No await between the
+    // last check above and this, so a store can't start in between.
+    mode.detached = true;
+    console.warn(`[google-calendar] Meet push past ${ms}ms event=${eventId}; continuing detached`);
+    return { meetUrl: null, pending: true };
   } finally {
     clearTimeout(timer);
   }

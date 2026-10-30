@@ -267,6 +267,35 @@ describe("removeMemberGoogleCopies: copies kept for a Google Meet room", () => {
     );
   });
 
+  it("deleting the room owner's copy of an upcoming booking warns that the booker's link may stop working", async () => {
+    connect("host_a");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at(8));
+    seedKept();
+    state.docs.set("events/past", { ...event(), id: "past", startAt: ts(at(6)), endAt: ts(at(6, 30)), googleEventIds: { host_a: "g_past" } });
+    // An upcoming booking they still host, and own the room of.
+    state.docs.set("events/own", { ...event(), id: "own", assignedToUid: "host_a", googleEventIds: { host_a: "g_own" } });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    vi.useRealTimers();
+    for (const path of ["events/ev_1", "events/own"]) {
+      expect((state.docs.get(path)!.googleSyncError as { message: string }).message).toBe(
+        "The Google Meet room belonged to HOST_A, who was removed. The link may stop working: reassign the booking and send the booker a new link.",
+      );
+    }
+    expect(state.docs.get("events/past")!.googleSyncError ?? null).toBeNull();
+  });
+
+  it("no warning for an upcoming booking without a Meet link", async () => {
+    connect("host_a");
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(at(8));
+    seedKept({ meetingUrl: "https://zoom.example/x" });
+    await removeMemberGoogleCopies(SUB, "host_a");
+    vi.useRealTimers();
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", "g_a", expect.any(AbortSignal));
+    expect(event().googleSyncError ?? null).toBeNull();
+  });
+
   it("an owner with no copy left just has the owner cleared", async () => {
     connect("host_a");
     seedKept({ googleEventIds: { host_b: "g_b" } });

@@ -260,6 +260,25 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
     expect(settle).not.toHaveBeenCalled();
   });
 
+  it("the deadline firing while the room's link is being committed: the caller gets that link, no follow-up", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: FALLBACK });
+    let commit: () => void = () => {};
+    const paused = new Promise<void>((r) => (commit = r));
+    // Pause the store transaction's write of the link, past the deadline.
+    state.afterWrite = async (w) => {
+      if (w.data && "meetingUrl" in w.data) await paused;
+    };
+    const answer = pushBookingAndGetMeetUrlWithin("ev_1", { ms: 30 });
+    await new Promise((r) => setTimeout(r, 80));
+    commit();
+    expect(await answer).toEqual({ meetUrl: MEET_LINK, pending: false });
+    await flushAfterResponse();
+    expect(event().meetingUrl).toBe(MEET_LINK);
+    expect(followUp).not.toHaveBeenCalled();
+    expect(settle).not.toHaveBeenCalled();
+  });
+
   it("detached: the follow-up waits for the caller's confirmation and row (`after`)", async () => {
     connect("host_a");
     seedMeetBooking();

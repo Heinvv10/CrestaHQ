@@ -8,7 +8,7 @@ import { renderMeetLinkFollowUpEmail } from "@/lib/booking/email";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { meetLinkFollowUpClaimPath, settleMeetLinkRows } from "@/lib/booking/meet-link-missing";
 import { loadEventContact } from "@/lib/server/tenant-ref";
-import { eventOccupiesSlot, eventStatus, type CalendarEvent } from "@/types/events";
+import { eventStatus, type CalendarEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types/tenancy";
 
@@ -33,8 +33,10 @@ export async function sendMeetLinkFollowUp(
     const snap = await db.collection("events").doc(eventId).get();
     if (!snap.exists) return;
     const event = { ...(snap.data() as CalendarEvent), id: eventId };
-    // Only for a live booking still holding this very link.
-    if (!eventOccupiesSlot(eventStatus(event)) || event.meetingUrl !== meetUrl || !event.contactId) return;
+    // Only for a confirmed booking still holding this very link — not a paid
+    // hold (its confirmation, with the link, comes at mark-paid), not a
+    // cancelled or finished one.
+    if (eventStatus(event) !== "scheduled" || event.meetingUrl !== meetUrl || !event.contactId) return;
     const contactId = event.contactId;
     const startAt = (event.startAt as { toDate?: () => Date } | null)?.toDate?.();
     const endAt = (event.endAt as { toDate?: () => Date } | null)?.toDate?.();

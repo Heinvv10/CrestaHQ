@@ -6,7 +6,8 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
-const { MEET_LINK_SENT_NOTE, meetLinkMissingNote, recordMeetLinkMissing, settleMeetLinkPending } = await import("./meet-link-missing");
+const { MEET_LINK_ON_BOOKING_NOTE, MEET_LINK_SENT_NOTE, meetLinkMissingNote, recordMeetLinkMissing, settleMeetLinkPending } =
+  await import("./meet-link-missing");
 
 const row = (id: string, meta: Record<string, unknown>) =>
   mem.seed(`contacts/c1/activities/${id}`, { type: "meet_link_missing", content: meetLinkMissingNote(true), meta });
@@ -41,6 +42,14 @@ describe("recordMeetLinkMissing", () => {
     await recordMeetLinkMissing({ contactId: "c1", eventId: "e1", agencyId: "ag1", subAccountId: "sa1", pending: true });
     expect(mem.list("contacts/c1/activities")).toEqual([
       expect.objectContaining({ content: meetLinkMissingNote(true), meta: { eventId: "e1", pending: true } }),
+    ]);
+  });
+
+  it("the link reached the booking before the row (a late room stored meanwhile): not 'being created'", async () => {
+    mem.seed("events/e1", { contactId: "c1", meetingUrl: "https://meet.google.com/late" });
+    await recordMeetLinkMissing({ contactId: "c1", eventId: "e1", agencyId: "ag1", subAccountId: "sa1", pending: true });
+    expect(mem.list("contacts/c1/activities")).toEqual([
+      expect.objectContaining({ content: MEET_LINK_ON_BOOKING_NOTE, meta: { eventId: "e1", pending: false } }),
     ]);
   });
 

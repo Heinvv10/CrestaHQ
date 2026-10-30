@@ -74,6 +74,13 @@ describe("sendMeetLinkFollowUp", () => {
     expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
   });
 
+  it("a paid hold (awaiting payment) gets no follow-up: its confirmation, with the link, comes at mark-paid", async () => {
+    mem.seed("events/e1", { ...(mem.read("events/e1") as object), status: "awaiting_payment" });
+    await sendMeetLinkFollowUp("e1", MEET_LINK);
+    expect(mails()).toHaveLength(0);
+    expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
+  });
+
   it("the booking holds another link than the one made: no email, no claim (guard on its own)", async () => {
     await sendMeetLinkFollowUp("e1", "https://meet.google.com/some-other-room");
     expect(mails()).toHaveLength(0);

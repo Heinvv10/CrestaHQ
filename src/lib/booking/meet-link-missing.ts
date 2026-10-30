@@ -18,6 +18,9 @@ export function meetLinkMissingNote(pending: boolean): string {
 /** The row once the late link went out by email. */
 export const MEET_LINK_SENT_NOTE =
   "The Google Meet link was made after the booking and has been emailed to the customer.";
+/** The row when the late link reached the booking before the row was written. */
+export const MEET_LINK_ON_BOOKING_NOTE =
+  "The Google Meet link was made after the booking and is on it now; the customer was told the joining link will follow.";
 /** The row once the late link exists but could not be emailed. */
 export const MEET_LINK_NOT_EMAILED_NOTE =
   "The Google Meet link now exists on the booking, but it couldn't be emailed to the customer — send it to them.";
@@ -95,20 +98,27 @@ export async function recordMeetLinkMissing(input: {
   if (!input.contactId) return;
   try {
     const db = getAdminDb();
-    const sent = (await db.doc(meetLinkFollowUpClaimPath(input.eventId)).get()).exists;
+    const [claim, event] = await Promise.all([
+      db.doc(meetLinkFollowUpClaimPath(input.eventId)).get(),
+      db.collection("events").doc(input.eventId).get(),
+    ]);
+    const sent = claim.exists;
+    // The link may already be on the booking (a late room stored meanwhile):
+    // then it isn't "being created" or impossible — the follow-up settles it.
+    const linked = !!(event.data() as { meetingUrl?: string | null } | undefined)?.meetingUrl;
     await db
       .collection("contacts")
       .doc(input.contactId)
       .collection("activities")
       .add({
         type: "meet_link_missing" satisfies ActivityType,
-        content: sent ? MEET_LINK_SENT_NOTE : meetLinkMissingNote(input.pending),
+        content: sent ? MEET_LINK_SENT_NOTE : linked ? MEET_LINK_ON_BOOKING_NOTE : meetLinkMissingNote(input.pending),
         createdBy: "booking",
         agencyId: input.agencyId,
         subAccountId: input.subAccountId,
         meta: {
           eventId: input.eventId,
-          pending: sent ? false : input.pending,
+          pending: sent || linked ? false : input.pending,
           ...(sent ? { resolved: true } : {}),
         },
         createdAt: FieldValue.serverTimestamp(),
