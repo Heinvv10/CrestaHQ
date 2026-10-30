@@ -70,6 +70,19 @@ it("404s when the event doesn't exist", async () => {
   expect(res.status).toBe(404);
 });
 
+it("404s an id that isn't one path segment, before any read or auth", async () => {
+  const res = await POST(
+    new Request("https://example.com/api/events/by-id/x/reschedule", {
+      method: "POST",
+      body: JSON.stringify({ startAt: "2030-01-01T10:00:00Z", endAt: "2030-01-01T10:30:00Z" }),
+    }),
+    { params: Promise.resolve({ id: "evt1/notes/n1" }) },
+  );
+  expect(res.status).toBe(404);
+  expect(m.access).not.toHaveBeenCalled();
+  expect(m.rescheduleWithoutAvailabilityCheck).not.toHaveBeenCalled();
+});
+
 it("authenticates against the event's own sub-account", async () => {
   m.rescheduleWithoutAvailabilityCheck.mockResolvedValue({
     event: { id: "evt1", agencyId: "ag1", subAccountId: "sa1", contactId: "c1", bookingPageSlug: "page-a" },

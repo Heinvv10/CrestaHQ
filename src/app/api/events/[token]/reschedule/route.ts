@@ -1,30 +1,9 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
 
-import { getAdminDb } from "@/lib/firebase/admin";
-import {
-  isSlotAvailable,
-  type SlotCandidate,
-} from "@/lib/booking/availability";
-import {
-  departedHostMessage,
-  movingEventOf,
-  resolvePageAvailability,
-} from "@/lib/booking/resolve-availability";
-import {
-  buildEventPublicUrl,
-  hashEventToken,
-  issueEventToken,
-  verifyEventToken,
-} from "@/lib/booking/event-token";
-import { runRescheduleSideEffects } from "@/lib/booking/reschedule";
-import { nextIcsSequence } from "@/lib/booking/ics";
-import { loadGoogleBusyForEvent } from "@/lib/google-calendar/busy";
-import { eventStatus, isImportedEvent } from "@/types/events";
-import type { BookingPage } from "@/types/booking";
-import type { CalendarEvent } from "@/types/events";
+import { hashEventToken, verifyEventToken } from "@/lib/booking/event-token";
+import { rescheduleBooking } from "@/lib/server/booking-changes-service";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
 
 /**
@@ -42,11 +21,10 @@ import { readJsonCapped } from "@/lib/server/read-json-capped";
  *     slot (operator still has to mark paid). The hold-expiry deadline
  *     is NOT extended — visitor should pay quickly regardless.
  *
- * The only path here that checks slot availability — it's the only actor
- * without a human on the other end double-checking the calendar. The
- * operator route reuses `runRescheduleSideEffects` from
- * lib/booking/reschedule.ts for identical post-write bookkeeping, but
- * skips this availability check (see rescheduleWithoutAvailabilityCheck).
+ * The move, its availability re-check and its side effects are
+ * `rescheduleBooking` (booking-changes-service); the guard here accepts only
+ * the event this token is the live link for. The operator route goes
+ * through the same service but skips the availability check.
  */
 
 interface RescheduleBody {
@@ -93,158 +71,40 @@ export async function POST(
     );
   }
 
-  const db = getAdminDb();
-  const eventRef = db.collection("events").doc(verified.eventId);
+  const tokenHash = hashEventToken(token);
+  const result = await rescheduleBooking({
+    eventId: verified.eventId,
+    newStart,
+    newEnd,
+    guard: (event) => event.publicTokenHash === tokenHash,
+  });
 
-  type Outcome = {
-    newToken: string;
-    pageSnap: FirebaseFirestore.DocumentSnapshot | null;
-    event: CalendarEvent;
-    rotatedHash: string;
-    newStart: Date;
-    newEnd: Date;
-  };
-
-  // The page hosts' Google busy (SP3 G2), loaded BEFORE the transaction.
-  const externalBusy = await loadGoogleBusyForEvent(
-    verified.eventId,
-    new Date(newStart.getTime() - 1),
-    new Date(newEnd.getTime() + 1),
-  );
-
-  let outcome: Outcome | null = null;
-  try {
-    outcome = await db.runTransaction(async (txn) => {
-      const eventSnap = await txn.get(eventRef);
-      if (!eventSnap.exists) throw new TokenInvalid();
-      const event = eventSnap.data() as CalendarEvent;
-      if (event.publicTokenHash !== hashEventToken(token) || isImportedEvent(event)) {
-        throw new TokenInvalid();
-      }
-      const status = eventStatus(event);
-      if (status !== "scheduled" && status !== "awaiting_payment") {
-        throw new BadState(
-          status === "cancelled"
-            ? "This booking was cancelled. Please re-book."
-            : "This meeting can't be rescheduled.",
-        );
-      }
-      if (!event.bookingPageSlug) {
-        throw new BadState("Reschedule isn't available for this booking.");
-      }
-
-      // Load the booking page inside the txn so its config is the same
-      // one used to verify availability.
-      const pageRef = db.doc(
-        `subAccounts/${event.subAccountId}/bookingPages/${event.bookingPageSlug}`,
-      );
-      const pageSnap = await txn.get(pageRef);
-      if (!pageSnap.exists) {
-        throw new BadState(
-          "The booking page is no longer available. Please cancel and re-book later.",
-        );
-      }
-      const page = pageSnap.data() as BookingPage;
-      const departed = await departedHostMessage(page, event);
-      if (departed) throw new BadState(departed);
-
-      // Re-verify through the same resolver the booking used, as a moved
-      // booking: its own host(s) and service, its current slot not busy. A
-      // team booking is checked against its host's calendar only — not
-      // every host's (and a collective one against all of its hosts); a
-      // hostless one against every event, as it was booked.
-      const free = await resolvePageAvailability({
-        subAccountId: event.subAccountId,
-        page,
-        now: new Date(),
-        fromInstant: new Date(newStart.getTime() - 1),
-        toInstant: new Date(newEnd.getTime() + 1),
-        movingEvent: movingEventOf(eventRef.id, event),
-        serviceId: event.serviceId ?? null,
-        externalBusy,
-        txn,
-      });
-      const candidate: SlotCandidate = { startAt: newStart, endAt: newEnd };
-      if (!isSlotAvailable(candidate, free)) {
-        throw new SlotConflict();
-      }
-
-      const { token: newRawToken, hash: newHash } = issueEventToken(
-        eventRef.id,
-      );
-      const icsSequence = nextIcsSequence(event);
-      txn.update(eventRef, {
-        startAt: newStart,
-        endAt: newEnd,
-        publicTokenHash: newHash,
-        icsSequence,
-        rescheduledAt: FieldValue.serverTimestamp(),
-        rescheduleCount: FieldValue.increment(1),
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      return {
-        newToken: newRawToken,
-        pageSnap: pageSnap,
-        event: { ...event, publicTokenHash: newHash, icsSequence } as CalendarEvent,
-        rotatedHash: newHash,
-        newStart,
-        newEnd,
-      };
+  if (result.ok) {
+    return NextResponse.json({
+      ok: true,
+      newStartAt: result.newStart.toISOString(),
+      newEndAt: result.newEnd.toISOString(),
+      newToken: result.newToken,
+      publicEventUrl: result.publicEventUrl,
     });
-  } catch (err) {
-    if (err instanceof TokenInvalid) {
-      return NextResponse.json({ error: "Invalid link" }, { status: 404 });
-    }
-    if (err instanceof BadState) {
-      return NextResponse.json({ error: err.message }, { status: 409 });
-    }
-    if (err instanceof SlotConflict) {
-      return NextResponse.json(
-        {
-          error:
-            "That time was just taken. Refresh and pick another option.",
-        },
-        { status: 409 },
-      );
-    }
-    console.error("[events/reschedule] txn failed", err);
+  }
+  if (result.code === "invalid") {
+    return NextResponse.json({ error: "Invalid link" }, { status: 404 });
+  }
+  if (result.code === "bad_state") {
+    return NextResponse.json({ error: result.message }, { status: 409 });
+  }
+  if (result.code === "slot_taken") {
     return NextResponse.json(
-      { error: "Couldn't reschedule. Try again." },
-      { status: 500 },
+      {
+        error:
+          "That time was just taken. Refresh and pick another option.",
+      },
+      { status: 409 },
     );
   }
-
-  if (!outcome) {
-    return NextResponse.json({ ok: true }); // unreachable; appease ts
-  }
-  const { newToken, event, pageSnap, newStart: nsa, newEnd: nea } = outcome;
-  const page = pageSnap?.data() as BookingPage | undefined;
-  const publicEventUrl = buildEventPublicUrl(newToken);
-
-  // Side effects: reminder reschedule + activity + trigger + emails.
-  await runRescheduleSideEffects({
-    event,
-    page,
-    newRawToken: newToken,
-    publicEventUrl,
-    startAt: nsa,
-    endAt: nea,
-    actor: "visitor",
-  });
-
-  return NextResponse.json({
-    ok: true,
-    newStartAt: nsa.toISOString(),
-    newEndAt: nea.toISOString(),
-    newToken,
-    publicEventUrl,
-  });
+  return NextResponse.json(
+    { error: "Couldn't reschedule. Try again." },
+    { status: 500 },
+  );
 }
-
-class TokenInvalid extends Error {}
-class BadState extends Error {
-  constructor(public readonly message: string) {
-    super(message);
-  }
-}
-class SlotConflict extends Error {}

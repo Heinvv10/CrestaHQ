@@ -5,12 +5,9 @@ import { NextResponse } from "next/server";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { territoryGate } from "@/lib/auth/territory-filter";
-import { buildEventPublicUrl } from "@/lib/booking/event-token";
-import {
-  RescheduleRejected,
-  rescheduleWithoutAvailabilityCheck,
-  runRescheduleSideEffects,
-} from "@/lib/booking/reschedule";
+import { RescheduleRejected } from "@/lib/booking/reschedule";
+import { rescheduleBookingAsOperator } from "@/lib/server/booking-changes-service";
+import { isDocId } from "@/lib/server/doc-id";
 
 /**
  * Operator-side reschedule for a booking-page event. Unlike the public
@@ -18,7 +15,7 @@ import {
  * an operator moving a booking is trusted to have picked a sane time, same
  * as GHL. Runs the identical post-write bookkeeping (reminder reschedule,
  * activity row, `booking.rescheduled` trigger, visitor confirmation email)
- * via lib/booking/reschedule.ts so this doesn't drift from the public path.
+ * via booking-changes-service so this doesn't drift from the public path.
  *
  * Manual (non-booking-page) events have no reschedule bookkeeping to apply
  * and keep editing their time through the plain calendar-event update.
@@ -62,6 +59,9 @@ export async function POST(
     );
   }
 
+  if (!isDocId(eventId)) {
+    return NextResponse.json({ error: "Event not found" }, { status: 404 });
+  }
   // Load the event first so we know which sub-account to authenticate
   // against — mirrors mark-paid/mark-status.
   const snap = await getAdminDb().collection("events").doc(eventId).get();
@@ -74,13 +74,9 @@ export async function POST(
   const gate = await territoryGate(access, snap.data()?.territoryId as string | null | undefined);
   if (gate) return gate;
 
-  let outcome: Awaited<ReturnType<typeof rescheduleWithoutAvailabilityCheck>>;
+  let outcome: Awaited<ReturnType<typeof rescheduleBookingAsOperator>>;
   try {
-    outcome = await rescheduleWithoutAvailabilityCheck(
-      eventId,
-      newStart,
-      newEnd,
-    );
+    outcome = await rescheduleBookingAsOperator(eventId, newStart, newEnd);
   } catch (err) {
     if (err instanceof RescheduleRejected) {
       return NextResponse.json(
@@ -95,17 +91,7 @@ export async function POST(
     );
   }
 
-  const { event, newToken, page } = outcome;
-  const notify = await runRescheduleSideEffects({
-    event,
-    page,
-    newRawToken: newToken,
-    publicEventUrl: buildEventPublicUrl(newToken),
-    startAt: newStart,
-    endAt: newEnd,
-    actor: "operator",
-  });
-
+  const { event, notify } = outcome;
   return NextResponse.json({
     ok: true,
     newStartAt: newStart.toISOString(),

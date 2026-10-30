@@ -10,10 +10,13 @@ import type { CalendarEvent, EventNotifySkipReason } from "@/types/events";
 import type { SubAccountDoc } from "@/types/tenancy";
 
 /**
- * The email an operator cancel sends the attendee, worked out without
- * sending it: shared by the cancel itself (event-status-service) and an
- * agent's cancel preview, which shows and pins exactly this.
+ * The email a cancel sends the attendee, worked out without sending it:
+ * shared by the operator cancel (event-status-service), an agent's cancel
+ * preview, which shows and pins exactly this, and the attendee's own cancel
+ * (booking-changes-service, `by_visitor`).
  */
+
+type CancelledBy = "by_visitor" | "by_operator";
 
 export type CancelNotice =
   | { ok: true; to: string; name: string; subject: string; text: string; html: string; sub: SubAccountDoc }
@@ -27,7 +30,10 @@ export interface CancelNoticeExpect {
   html: string;
 }
 
-export async function planCancelNotice(event: CalendarEvent): Promise<CancelNotice> {
+export async function planCancelNotice(
+  event: CalendarEvent,
+  by: CancelledBy = "by_operator",
+): Promise<CancelNotice> {
   if (!event.contactId) return { ok: false, reason: "no_contact" };
   const db = getAdminDb();
   try {
@@ -71,7 +77,7 @@ export async function planCancelNotice(event: CalendarEvent): Promise<CancelNoti
         endAt,
         publicEventUrl: "",
       },
-      "by_operator",
+      by,
     );
     return { ok: true, to: contact.email, name: contact.name ?? "", subject: rendered.subject, text: rendered.text, html: rendered.html, sub };
   } catch (err) {
@@ -81,15 +87,16 @@ export async function planCancelNotice(event: CalendarEvent): Promise<CancelNoti
 }
 
 /**
- * Send an operator cancel's notice to the visitor. An approved agent cancel
+ * Send a cancel's notice to the visitor. An approved agent cancel
  * (`expect` given) sends only the notice its approver saw (null: none),
  * skipping one that now differs.
  */
 export async function sendCancelNotice(
   event: CalendarEvent,
   expect: CancelNoticeExpect | null | undefined,
+  by: CancelledBy = "by_operator",
 ): Promise<{ emailSent: boolean; emailSkipReason?: EventNotifySkipReason }> {
-  const notice = await planCancelNotice(event);
+  const notice = await planCancelNotice(event, by);
   if (expect !== undefined && notice.ok) {
     const same = !!expect && notice.to === expect.to && notice.subject === expect.subject && notice.text === expect.text && notice.html === expect.html;
     if (!same) return { emailSent: false, emailSkipReason: "changed_since_approval" };

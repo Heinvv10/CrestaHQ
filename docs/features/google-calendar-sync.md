@@ -41,7 +41,7 @@ It reaches every slot decision through `resolvePageAvailability`'s `externalBusy
 
 - the public availability route;
 - the book route;
-- the token reschedule route (`loadGoogleBusyForEvent` pre-reads the event and its page, because the route reads the page inside its transaction);
+- the token reschedule (`rescheduleBooking` in booking-changes-service; `loadGoogleBusyForEvent` pre-reads the event and its page, because the service reads the page inside its transaction);
 - the voice-booking service, for both listing and confirming.
 
 ## Push (G3)
