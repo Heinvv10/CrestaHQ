@@ -184,3 +184,84 @@ it("Stripe's buyer name and email are capped before they are stored", async () =
   expect((order.buyerEmail as string).length).toBeLessThanOrEqual(254);
   expect((order.buyerName as string).length).toBeLessThanOrEqual(200);
 });
+
+describe("paid only from pending, only on a match", () => {
+  it("a held order, later partly refunded, stays held through every paid event", async () => {
+    productLinkOrder();
+    await deliver("checkout.session.completed", paid({ amount_total: 60_000 }), "e1");
+    await deliver("charge.refunded", { id: "ch1", object: "charge", payment_intent: "pi_cs_o1", amount_refunded: 10_100 }, "e2");
+    for (const [type, id] of [["checkout.session.completed", "e3"], ["checkout.session.async_payment_succeeded", "e4"]]) {
+      await deliver(type, paid(), id);
+    }
+    await flushAfterResponse();
+    const o = mem.read("orders/o1")!;
+    expect(o.status).toBe("partially_refunded");
+    expect(o.heldAt).toBeTruthy();
+    expect(fireWorkflowTrigger).not.toHaveBeenCalledWith(expect.objectContaining({ type: "order.paid" }));
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("a held order is never paid, even by a later event that matches", async () => {
+    productLinkOrder();
+    await deliver("checkout.session.completed", paid({ amount_total: 100 }), "e1");
+    await deliver("checkout.session.completed", paid(), "e2");
+    expect(mem.read("orders/o1")).toMatchObject({ status: "pending" });
+  });
+
+  it("a paid-then-partly-refunded order is never moved back to paid by a replay", async () => {
+    productLinkOrder({ status: "partially_refunded", refundedCents: 100, stripePaymentIntentId: "pi_cs_o1", buyerEmail: "buyer@example.com" });
+    await deliver("checkout.session.completed", paid());
+    expect(mem.read("orders/o1")!.status).toBe("partially_refunded");
+  });
+
+  it("a matching amount on a pending order pays it", async () => {
+    productLinkOrder();
+    await deliver("checkout.session.completed", paid());
+    expect(mem.read("orders/o1")).toMatchObject({ status: "paid", stripePaymentIntentId: "pi_cs_o1" });
+    expect(mem.read("orders/o1")!.heldAt ?? null).toBeNull();
+  });
+});
+
+describe("money for a closed order is flagged, never dropped", () => {
+  it.each(["expired", "failed"])("%s, then paid → flagged, not paid", async (status) => {
+    productLinkOrder({ status });
+    expect((await deliver("checkout.session.completed", paid())).status).toBe(200);
+    expect(mem.read("orders/o1")).toMatchObject({ status, attentionOpen: true });
+    expect(mem.read("orders/o1")!.attention).toMatch(new RegExp(`already ${status}`));
+  });
+
+  it("a fully refunded order's own payment replayed is not flagged", async () => {
+    productLinkOrder({ status: "refunded", stripePaymentIntentId: "pi_cs_o1" });
+    await deliver("checkout.session.completed", paid());
+    expect(mem.read("orders/o1")!.attention ?? null).toBeNull();
+  });
+
+  it("an expiry never closes a held order", async () => {
+    productLinkOrder();
+    await deliver("checkout.session.completed", paid({ amount_total: 1 }));
+    await deliver("checkout.session.expired", { id: "cs_o1", object: "checkout.session", payment_status: "unpaid" }, "e2");
+    expect(mem.read("orders/o1")!.status).toBe("pending");
+  });
+
+  it("an expiry never closes a held order whose flag write hasn't landed yet", async () => {
+    productLinkOrder({ heldAt: new Date() });
+    await deliver("checkout.session.expired", { id: "cs_o1", object: "checkout.session", payment_status: "unpaid" }, "e2");
+    expect(mem.read("orders/o1")!.status).toBe("pending");
+  });
+
+  it("an expiry never closes a pending order flagged for another reason", async () => {
+    productLinkOrder({ attention: "check", attentionOpen: true });
+    await deliver("checkout.session.expired", { id: "cs_o1", object: "checkout.session", payment_status: "unpaid" }, "e2");
+    expect(mem.read("orders/o1")!.status).toBe("pending");
+  });
+});
+
+it("the confirmation greets only with a plain first name", async () => {
+  productLinkOrder({ status: "paid", buyerEmail: "buyer@example.com", buyerName: "https://evil.example/pay Now" });
+  await sendOrderConfirmation("o1");
+  expect(sendEmail.mock.calls[0][0].text).not.toContain("evil.example");
+  expect(sendEmail.mock.calls[0][0].text).toContain("Hi there");
+  productLinkOrder({ status: "paid", buyerEmail: "buyer@example.com", buyerName: "Zoë O'Neil" });
+  await sendOrderConfirmation("o1");
+  expect(sendEmail.mock.calls[1][0].text).toContain("Hi Zoë,");
+});

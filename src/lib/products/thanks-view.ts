@@ -23,7 +23,7 @@ export interface ThanksView {
 }
 
 export function thanksView(order: Order | null, emailConfigured: boolean): ThanksView {
-  const flagged = !!order && (order.attentionOpen === true || !!order.attention);
+  const flagged = !!order && (!!order.heldAt || order.attentionOpen === true || !!order.attention);
   const state: ThanksState = !order
     ? "unknown"
     : order.status === "paid" || order.status === "partially_refunded"

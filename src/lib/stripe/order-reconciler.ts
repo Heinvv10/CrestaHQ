@@ -22,10 +22,9 @@ import {
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   handleCheckoutExpired,
-  prepareProductLinkPayment,
+  handleProductLinkCompleted,
   sessionBuyer,
 } from "@/lib/stripe/product-link-reconcile";
-import { sendOrderConfirmationAfterResponse } from "@/lib/server/order-confirmation-service";
 import { eventTokenSecretConfigured } from "@/lib/booking/event-token";
 import type { Order } from "@/types/orders";
 
@@ -136,10 +135,9 @@ async function handleCheckoutCompleted(
       ? session.payment_intent
       : (session.payment_intent?.id ?? null);
 
-  // Express buy links: hold a mismatched payment, link the buyer's contact.
+  // Express buy links have their own paid transition (product-link-reconcile.ts).
   if (order.source === "product_link") {
-    const pre = await prepareProductLinkPayment(order, session, paymentIntentId);
-    if (pre.held) return { handled: true, detail: `order ${order.id} held: amount mismatch` };
+    return await handleProductLinkCompleted(order, session, paymentIntentId);
   }
 
   const buyer = sessionBuyer(session);
@@ -184,9 +182,6 @@ async function handleCheckoutCompleted(
       console.error(`[order-reconciler] order ${updated.id} vanished before its flag: ${problem}`);
     });
   }
-
-  // Claimed once in a transaction, so every delivery may ask.
-  if (updated.source === "product_link") sendOrderConfirmationAfterResponse(updated.id);
 
   return {
     handled: true,

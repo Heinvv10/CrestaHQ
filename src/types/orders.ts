@@ -105,6 +105,12 @@ export interface Order {
   /** SHA-256 (hex) of the token in a `product_link` order's thanks-page URL.
    *  The page shows the order only to a holder of that token. */
   thanksTokenHash?: string;
+  /** Set on a `product_link` order whose payment didn't match it (amount or
+   *  currency). A held order is never `paid`, never delivered and never
+   *  counted as revenue, whatever later events say. */
+  heldAt?: Timestamp | FieldValue | Date | null;
+  /** `product_link`: when its `order.paid` events were claimed (once). */
+  paidEventsFiredAt?: Timestamp | FieldValue | null;
   /** Set for `product_link`: the order confirmation emailed to the buyer.
    *  Claimed (`sending`) in a transaction before the send, so it goes once. */
   confirmationEmail?: OrderConfirmationStatus | null;

@@ -4,13 +4,20 @@ import type Stripe from "stripe";
 
 import { reconcileContactFromCapture } from "@/lib/comms/ai/capture";
 import { centsToStripeAmount, stripeCanChargeCurrency } from "@/lib/stripe/amount";
-import { findOrderByCheckoutSession, flagOrderAttention } from "@/lib/server/orders-service";
+import { formatCurrency } from "@/lib/format";
 import {
-  holdOrderPayment,
+  emitOrderEvents,
+  findOrderByCheckoutSession,
+  flagOrderAttention,
+} from "@/lib/server/orders-service";
+import {
+  claimPaidEvents,
   linkOrderContact,
   markOrderExpired,
+  settleProductLinkPayment,
 } from "@/lib/server/product-link-orders";
-import { isOrderTerminal, type Order } from "@/types/orders";
+import { sendOrderConfirmationAfterResponse } from "@/lib/server/order-confirmation-service";
+import type { Order } from "@/types/orders";
 
 /**
  * The express buy-link (`source: "product_link"`) steps of the Stripe order
@@ -53,62 +60,100 @@ export function sessionAmountCheck(
   return { ok, paidAmount, paidCurrency };
 }
 
+async function flag(order: Order, note: string): Promise<void> {
+  console.warn(`[order-reconciler] order ${order.id} needs attention: ${note}`);
+  await flagOrderAttention(order, note).catch((err: unknown) => {
+    // NOT_FOUND = deleted under us; a retry cannot help.
+    if ((err as { code?: unknown })?.code !== 5) throw err;
+    console.error(`[order-reconciler] order ${order.id} vanished before its flag`);
+  });
+}
+
 /**
- * Before a paid session marks a `product_link` order paid:
+ * A paid session for a `product_link` order. Replaces the generic
+ * markOrderPaid path for this source:
  *
- *  1. The amount and currency must match the order. If not, the order is
- *     HELD — it stays `pending` (never `paid`, so nothing is delivered or
- *     confirmed) with the payment recorded and the order flagged for the
- *     operator. Returns `held: true` and the caller stops.
- *  2. An order with no contact finds or creates the buyer's contact from
- *     Stripe's email (email-first, the same rule as forms) and is linked to
- *     it, before the order's events fire so a workflow sees the contact.
- *     Runs on every delivery until linked; a failure throws, so Stripe's
- *     redelivery retries it. Idempotent: the email match finds the contact
- *     an earlier attempt created, and the link is set once.
+ *  1. `settleProductLinkPayment` — the only pending → paid transition, and
+ *     only on a matching amount and currency; a mismatch holds the order
+ *     (flagged, never paid). Money for an order already expired, failed or
+ *     refunded (not this same payment replayed) is flagged, never dropped.
+ *  2. Contact — a paid order with no contact finds or creates the buyer's
+ *     contact from Stripe's email (email-first, the same rule as forms) and
+ *     is linked once. Doesn't block paid: the order is already paid; a
+ *     failure throws (5xx) so Stripe's redelivery retries the link.
+ *  3. `order.paid` events — claimed once (`paidEventsFiredAt`), after the
+ *     contact step so the workflow sees the contact. A persistent contact
+ *     failure therefore delays them until a delivery links it.
+ *  4. The order confirmation email (claimed once, after the response).
  */
-export async function prepareProductLinkPayment(
+export async function handleProductLinkCompleted(
   order: Order,
   session: Stripe.Checkout.Session,
   paymentIntentId: string | null,
-): Promise<{ held: boolean }> {
+): Promise<{ handled: boolean; detail: string }> {
   const buyer = sessionBuyer(session);
+  const amount = sessionAmountCheck(order, session);
+  const settled = await settleProductLinkPayment({
+    orderId: order.id,
+    matches: (stored) => sessionAmountCheck(stored, session).ok,
+    stripePaymentIntentId: paymentIntentId,
+    buyerEmail: buyer.email,
+    buyerName: buyer.name,
+  });
+  if (!settled) return { handled: true, detail: "order no longer exists" };
 
-  if (order.status === "pending") {
-    const amount = sessionAmountCheck(order, session);
-    if (!amount.ok) {
-      const held = await holdOrderPayment({
-        orderId: order.id,
-        stripePaymentIntentId: paymentIntentId,
-        buyerEmail: buyer.email,
-        buyerName: buyer.name,
-      });
-      if (held) {
-        const note = `Paid ${amount.paidAmount ?? "?"} ${amount.paidCurrency.toUpperCase()} (Stripe units), which differs from this order — it was not marked paid and nothing was delivered. Check it by hand.`;
-        console.warn(`[order-reconciler] order ${order.id} held: ${note}`);
-        await flagOrderAttention(held, note).catch((err: unknown) => {
-          // NOT_FOUND = deleted under us; a retry cannot help.
-          if ((err as { code?: unknown })?.code !== 5) throw err;
-          console.error(`[order-reconciler] order ${order.id} vanished before its flag`);
-        });
-      }
-      return { held: true };
+  if (settled.kind === "held") {
+    await flag(
+      settled.order,
+      `Paid ${amount.paidAmount ?? "?"} ${amount.paidCurrency.toUpperCase()} (Stripe units), which differs from this order — it was not marked paid and nothing was delivered. Refund it, or settle it by hand.`,
+    );
+    return { handled: true, detail: `order ${order.id} held: amount mismatch` };
+  }
+  if (settled.kind === "closed") {
+    const replay =
+      !!paymentIntentId && settled.order.stripePaymentIntentId === paymentIntentId;
+    if (!replay) {
+      await flag(
+        settled.order,
+        `Paid, but this order was already ${settled.order.status} — nothing was delivered. Refund the payment, or settle it by hand.`,
+      );
     }
+    return { handled: true, detail: `order ${order.id} is ${settled.order.status}` };
   }
 
-  if (!order.contactId && buyer.email && !isOrderTerminal(order.status)) {
+  let paid = settled.order;
+  const email = paid.buyerEmail ?? buyer.email;
+  if (!paid.contactId && email) {
     const res = await reconcileContactFromCapture({
-      agencyId: order.agencyId,
-      subAccountId: order.subAccountId,
+      agencyId: paid.agencyId,
+      subAccountId: paid.subAccountId,
       existingContactId: null,
       pageUrl: null,
       source: "checkout",
       matchStrategy: "email-first",
-      capture: { name: buyer.name, email: buyer.email, phone: buyer.phone },
+      capture: { name: paid.buyerName ?? buyer.name, email, phone: buyer.phone },
     });
-    if (res?.contactId) await linkOrderContact(order.id, res.contactId);
+    if (res?.contactId) await linkOrderContact(paid.id, res.contactId);
   }
-  return { held: false };
+
+  const claimed = await claimPaidEvents(paid.id);
+  if (claimed) {
+    paid = claimed;
+    emitOrderEvents({
+      order: claimed,
+      type: "order.paid",
+      activity: {
+        type: "order_paid",
+        content: `Paid ${formatCurrency(claimed.totalCents / 100, claimed.currency.toUpperCase())} by card.`,
+      },
+    });
+  }
+  sendOrderConfirmationAfterResponse(paid.id);
+
+  return {
+    handled: true,
+    detail: settled.kind === "paid" ? `order ${paid.id} paid` : "already paid (idempotent no-op)",
+  };
 }
 
 /** `checkout.session.expired`: the buyer never paid; close a pending buy-link order. */

@@ -6,7 +6,9 @@ import { readableTextOn, safeAccent } from "@/components/buy/buy-shell";
 
 /**
  * Creates the Stripe session on click, never on load: JS-rendering crawlers
- * and link previews would otherwise mint a pending order per visit.
+ * and link previews would otherwise mint a pending order per visit. Sends a
+ * request id minted once per page load, so a double click (or a click after
+ * coming back from Stripe) reuses the session just opened instead of a second.
  */
 export function BuyButton({
   subAccountId,
@@ -19,6 +21,7 @@ export function BuyButton({
   accent: string;
   label: string;
 }) {
+  const [requestId] = useState(() => crypto.randomUUID());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -41,7 +44,11 @@ export function BuyButton({
     try {
       const res = await fetch(
         `/api/co/${encodeURIComponent(subAccountId)}/buy/${encodeURIComponent(slug)}/session`,
-        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ requestId }),
+        },
       );
       const data = (await res.json().catch(() => ({}))) as {
         url?: string;

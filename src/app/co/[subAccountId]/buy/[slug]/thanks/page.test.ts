@@ -88,8 +88,12 @@ describe("with the order's own token", () => {
     expect(html).toContain("Part of this payment has been refunded");
   });
 
-  it("paid but flagged (open or resolved): no download", async () => {
-    for (const over of [{ attentionOpen: true, attention: "check it" }, { attentionOpen: false, attention: "resolved" }]) {
+  it("paid but flagged (open or resolved) or held: no download", async () => {
+    for (const over of [
+      { attentionOpen: true, attention: "check it" },
+      { attentionOpen: false, attention: "resolved" },
+      { status: "partially_refunded", heldAt: new Date() },
+    ]) {
       mem.seed("orders/o1", { ...ORDER, ...over });
       const html = await render({ order: "o1", t: TOKEN });
       expect(html).not.toContain(DOWNLOAD);

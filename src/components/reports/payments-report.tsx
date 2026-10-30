@@ -59,7 +59,10 @@ function netCents(o: Order): number {
   return Math.max(0, (o.totalCents ?? 0) - (o.refundedCents ?? 0));
 }
 
-function countsAsRevenue(o: Order): boolean {
+/** A held buy-link order (its payment didn't match it) is never revenue,
+ *  even once part of it is refunded. */
+export function countsAsRevenue(o: Order): boolean {
+  if (o.heldAt) return false;
   return o.status === "paid" || o.status === "partially_refunded";
 }
 

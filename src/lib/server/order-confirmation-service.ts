@@ -63,7 +63,10 @@ export function renderOrderConfirmation(
   sub: Partial<SubAccountDoc>,
 ): { subject: string; text: string } {
   const business = sub.name?.trim() || "";
-  const first = order.buyerName?.trim().split(/\s+/)[0];
+  // Buyer-typed on Stripe's page and mailed from the tenant: greet only with
+  // a plain first name, never a URL or other text an attacker could plant.
+  const word = order.buyerName?.trim().split(/\s+/)[0] ?? "";
+  const first = /^\p{L}[\p{L}'-]{0,39}$/u.test(word) ? word : null;
   const items = order.lineItems
     .map((li) => {
       const qty = li.quantity > 1 ? ` x ${li.quantity}` : "";
@@ -103,6 +106,7 @@ async function claim(orderId: string): Promise<Order | null> {
     if (
       order.source !== "product_link" ||
       order.status !== "paid" ||
+      !!order.heldAt ||
       order.attentionOpen === true ||
       !!order.attention ||
       order.confirmationEmail

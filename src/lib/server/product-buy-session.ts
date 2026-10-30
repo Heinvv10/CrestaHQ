@@ -158,38 +158,68 @@ export async function openProductLinkSession(
 }
 
 // ── Double-click dedupe ─────────────────────────────────────────────────────
-// One buyer (IP) asking for the same product again within a minute gets the
-// session already opened for them while its order still awaits payment,
-// rather than a second pending order and a second live Stripe session.
-// In-memory, like the checkout rate limiter: a double click lands on the one
-// serving instance, and a restart only costs a duplicate pending order. The
-// key is an HMAC under a per-process random salt, so no IP is kept.
+// The buy button sends a random request id minted once per page load. A
+// second request with the same id for the same product within 30 s (a double
+// click, or back from Stripe) gets the session already opened for it — only
+// while its order is still pending, linked and unflagged, and only while the
+// product's price and currency are what that session charges. No request id
+// means no dedupe; two ids never share a session. In-memory, like the
+// checkout rate limiter: a restart between two clicks only costs a duplicate
+// pending order. The key is an HMAC under a per-process random salt.
 
-const DEDUPE_MS = 60_000;
+const DEDUPE_MS = 30_000;
 const MAX_TRACKED = 5_000;
 const SALT = randomBytes(32);
-const recent = new Map<string, { at: number; result: Promise<SessionResult> }>();
+const REQUEST_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
-export function buyerKey(subAccountId: string, productId: string, ip: string): string {
-  return createHmac("sha256", SALT).update(`${subAccountId}\n${productId}\n${ip}`).digest("hex");
+interface Recent {
+  at: number;
+  unitPriceCents: number;
+  currency: string;
+  result: Promise<SessionResult>;
+}
+const recent = new Map<string, Recent>();
+
+export function isBuyRequestId(v: unknown): v is string {
+  return typeof v === "string" && REQUEST_ID.test(v);
+}
+
+export function buyRequestKey(subAccountId: string, productId: string, requestId: string): string {
+  return createHmac("sha256", SALT)
+    .update(`${subAccountId}\n${productId}\n${requestId.toLowerCase()}`)
+    .digest("hex");
 }
 
 export async function dedupedSession(
-  key: string,
+  key: string | null,
+  price: { unitPriceCents: number; currency: string },
   open: () => Promise<SessionResult>,
 ): Promise<SessionResult> {
+  if (!key) return open();
   const now = Date.now();
   if (recent.size > MAX_TRACKED) {
     for (const [k, v] of recent) if (now - v.at > DEDUPE_MS) recent.delete(k);
     if (recent.size > MAX_TRACKED) recent.clear();
   }
-  const prior = recent.get(key);
-  if (prior && now - prior.at < DEDUPE_MS) {
-    const r = await prior.result;
-    if (r.ok && (await isOrderAwaitingPayment(r.orderId))) return r;
+  // A few rounds at most: a round repeats only when a concurrent duplicate
+  // replaced the entry while this one was checking the old one.
+  for (let round = 0; round < 3; round++) {
+    const prior = recent.get(key);
+    if (
+      prior &&
+      Date.now() - prior.at < DEDUPE_MS &&
+      prior.unitPriceCents === price.unitPriceCents &&
+      prior.currency === price.currency
+    ) {
+      const r = await prior.result;
+      if (r.ok && (await isOrderAwaitingPayment(r.orderId))) return r;
+      if (recent.get(key) !== prior) continue;
+    }
+    // Set with no await since the read above, so a concurrent duplicate
+    // finds this one.
+    const result = open();
+    recent.set(key, { at: Date.now(), ...price, result });
+    return result;
   }
-  // Set before the first await so a concurrent duplicate finds this one.
-  const result = open();
-  recent.set(key, { at: Date.now(), result });
-  return result;
+  return open();
 }

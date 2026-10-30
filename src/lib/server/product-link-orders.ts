@@ -61,41 +61,84 @@ export async function linkOrderContact(orderId: string, contactId: string): Prom
   });
 }
 
+export type ProductLinkSettlement =
+  /** This delivery moved the order pending → paid. */
+  | { kind: "paid"; order: Order }
+  /** Already paid (or paid then partly refunded): a redelivery. */
+  | { kind: "already"; order: Order }
+  /** Held: the money didn't match (now or on an earlier delivery). Never paid. */
+  | { kind: "held"; order: Order }
+  /** Expired, failed or refunded before this payment arrived. Never paid. */
+  | { kind: "closed"; order: Order };
+
 /**
- * Money arrived for a pending order, but not the money it was opened for
- * (amount or currency). The order stays `pending` — never `paid`, so nothing
- * is delivered — with the payment recorded so a refund still finds it. The
- * caller flags it for the operator. Returns the order as stored, or null.
+ * The ONLY way a `product_link` order becomes `paid`: from `pending`, not
+ * held, and only when `matches(order)` — the session collected exactly the
+ * order's amount and currency, judged against the order as re-read in this
+ * transaction. A mismatch HOLDS the order instead: it stays `pending` with
+ * `heldAt` set and the payment intent and buyer recorded (so a refund still
+ * finds it). A held order never becomes paid through any later event — not
+ * a replay, not after a partial refund — and there is no release path in the
+ * app: the operator refunds it (a manual "mark paid" may come later).
  */
-export async function holdOrderPayment(input: {
+export async function settleProductLinkPayment(input: {
   orderId: string;
+  matches: (order: Order) => boolean;
   stripePaymentIntentId: string | null;
   buyerEmail: string | null;
   buyerName: string | null;
-}): Promise<Order | null> {
+}): Promise<ProductLinkSettlement | null> {
   const db = getAdminDb();
   const ref = db.doc(`orders/${input.orderId}`);
-  return db.runTransaction(async (tx) => {
+  return db.runTransaction(async (tx): Promise<ProductLinkSettlement | null> => {
     const snap = await tx.get(ref);
     if (!snap.exists) return null;
     const order = { id: snap.id, ...(snap.data() as Omit<Order, "id">) };
-    if (order.status !== "pending") return order;
-    const patch: Record<string, unknown> = { updatedAt: FieldValue.serverTimestamp() };
-    if (input.stripePaymentIntentId) patch.stripePaymentIntentId = input.stripePaymentIntentId;
-    if (input.buyerEmail && !order.buyerEmail) patch.buyerEmail = input.buyerEmail;
-    if (input.buyerName && !order.buyerName) patch.buyerName = input.buyerName;
-    tx.update(ref, patch);
-    return {
-      ...order,
+    if (order.heldAt) return { kind: "held", order };
+    if (order.status === "paid" || order.status === "partially_refunded") {
+      return { kind: "already", order };
+    }
+    if (order.status !== "pending") return { kind: "closed", order };
+
+    const recorded = {
       stripePaymentIntentId: input.stripePaymentIntentId ?? order.stripePaymentIntentId,
       buyerEmail: order.buyerEmail ?? input.buyerEmail,
       buyerName: order.buyerName ?? input.buyerName,
     };
+    const patch: Record<string, unknown> = {
+      ...recorded,
+      updatedAt: FieldValue.serverTimestamp(),
+    };
+    if (!input.matches(order)) {
+      tx.update(ref, { ...patch, heldAt: FieldValue.serverTimestamp() });
+      return { kind: "held", order: { ...order, ...recorded, heldAt: new Date() } };
+    }
+    tx.update(ref, { ...patch, status: "paid", paidAt: FieldValue.serverTimestamp() });
+    return { kind: "paid", order: { ...order, ...recorded, status: "paid" } };
   });
 }
 
-/** A `product_link` order whose Stripe session expired unpaid. Pending only;
- *  returns whether it changed. */
+/**
+ * Claims the order's one `order.paid` events (webhook, workflow, activity):
+ * true for exactly one caller, once the order is paid and not held. Claimed
+ * after the contact step, so the workflow sees the contact.
+ */
+export async function claimPaidEvents(orderId: string): Promise<Order | null> {
+  const db = getAdminDb();
+  const ref = db.doc(`orders/${orderId}`);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return null;
+    const order = { id: snap.id, ...(snap.data() as Omit<Order, "id">) };
+    if (order.heldAt || order.paidEventsFiredAt) return null;
+    if (order.status !== "paid" && order.status !== "partially_refunded") return null;
+    tx.update(ref, { paidEventsFiredAt: FieldValue.serverTimestamp() });
+    return order;
+  });
+}
+
+/** A `product_link` order whose Stripe session expired unpaid: pending,
+ *  never held or flagged (a held order took money). Returns whether it changed. */
 export async function markOrderExpired(orderId: string): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`orders/${orderId}`);
@@ -103,11 +146,11 @@ export async function markOrderExpired(orderId: string): Promise<boolean> {
     const snap = await tx.get(ref);
     const order = snap.data() as Partial<Order> | undefined;
     if (!order || order.status !== "pending" || order.source !== "product_link") return false;
+    if (order.heldAt || order.attention) return false;
     tx.update(ref, { status: "expired", updatedAt: FieldValue.serverTimestamp() });
     return true;
   });
 }
-
 
 /** True while the order is pending, linked to its Stripe session and not
  *  flagged: its checkout can still be paid as opened. */
@@ -118,6 +161,7 @@ export async function isOrderAwaitingPayment(orderId: string): Promise<boolean> 
     !!order &&
     order.status === "pending" &&
     !!order.stripeCheckoutSessionId &&
+    !order.heldAt &&
     !order.attention
   );
 }

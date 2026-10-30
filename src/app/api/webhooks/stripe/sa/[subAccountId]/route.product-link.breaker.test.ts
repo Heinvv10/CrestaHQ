@@ -75,10 +75,10 @@ it("REPRO 1: an underpaid session holds the order: never paid, flagged, no downl
   expect(html).toContain("quick check");
 });
 
-it("REPRO 2: a transient contact failure answers 5xx; Stripe's redelivery links the contact", async () => {
+it("REPRO 2: a transient contact failure answers 5xx (the order is already paid); Stripe's redelivery links the contact", async () => {
   order(); cap.fail = true;
   expect((await deliver("checkout.session.completed", paid())).status).toBeGreaterThanOrEqual(500);
-  expect(mem.read("orders/o1")!.status).toBe("pending");
+  expect(mem.read("orders/o1")!.status).toBe("paid");
   expect((await deliver("checkout.session.completed", paid(), "evt_2")).status).toBe(200);
   await flushAfterResponse();
   expect(mem.read("orders/o1")).toMatchObject({ status: "paid", contactId: expect.any(String) });
