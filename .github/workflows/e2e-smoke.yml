@@ -79,7 +79,7 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Acquire fixture lock
-        timeout-minutes: 240
+        timeout-minutes: 220
         run: node scripts/ci/fixture-lock.mjs acquire
         env:
           GITHUB_TOKEN: ${{ github.token }}

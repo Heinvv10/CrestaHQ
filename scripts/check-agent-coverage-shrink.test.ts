@@ -200,6 +200,13 @@ describe("check-agent-coverage-shrink CLI", () => {
       const step = job.slice(job.lastIndexOf("- name:", playwright), playwright);
       expect(step).toMatch(/timeout-minutes: (\d+)/);
       expect(Number(step.match(/timeout-minutes: (\d+)/)![1])).toBeLessThan(STALE_MS / 60_000);
+      // Lock wait + Playwright + ~20 min of setup must fit the job budget, or a
+      // job timeout would kill a run mid-Playwright.
+      const minutes = (name: string) =>
+        Number(job.slice(job.indexOf(`- name: ${name}`)).match(/timeout-minutes: (\d+)/)![1]);
+      const jobBudget = Number(job.match(/\n {4}timeout-minutes: (\d+)/)![1]);
+      expect(minutes("Acquire fixture lock") + minutes("Playwright") + 20).toBeLessThanOrEqual(jobBudget);
+      expect(jobBudget).toBeLessThanOrEqual(360);
       // The write token reaches the two lock steps and nothing else.
       expect(job.match(/github\.token/g)).toHaveLength(2);
     }

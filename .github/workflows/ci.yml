@@ -292,12 +292,13 @@ jobs:
       cancel-in-progress: false
     # Wall clock includes waiting for the fixture lock behind other PRs'
     # runs, so the job budget is generous and the real limits sit on the
-    # steps: the lock wait (240 min) and the Playwright run itself (90 min,
+    # steps: the lock wait (220 min) and the Playwright run itself (90 min,
     # which also bounds how long the lock can be held; the lock's stale
     # limit is 150 min). On a hosted runner the 186 specs take ~55-60 min
     # (18 min on velo-server; the Firestore-heavy specs are 2-4x slower), so
     # a wait that runs out means ~4 runs were queued ahead, and fails this
-    # check.
+    # check. Setup (~15) + 220 + 90 leaves ~30 min under the job budget;
+    # 360 is the GitHub-hosted maximum.
     timeout-minutes: 355
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     env:
@@ -435,7 +436,7 @@ jobs:
       # Everything above is private to this VM; from here until the release
       # step the run touches the shared fixture tenants.
       - name: Acquire fixture lock
-        timeout-minutes: 240
+        timeout-minutes: 220
         run: node scripts/ci/fixture-lock.mjs acquire
         env:
           GITHUB_TOKEN: ${{ github.token }}
