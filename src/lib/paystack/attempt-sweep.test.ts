@@ -28,9 +28,9 @@ it("gives up on a Paystack call that never answers, and leaves the attempt open 
 const HOUR = 60 * 60 * 1000;
 
 /** A buy-page order's open attempt made `ageHours` ago, with Paystack answering `status` for it. */
-function orderAttempt(orderStatus: string, status: string, ageHours = 1) {
+function orderAttempt(orderStatus: string, status: string, ageHours = 1, orderOver: Record<string, unknown> = {}) {
   const ref = "po-ord1";
-  mem.seed("orders/ord1", { subAccountId: SA, source: "product_link", status: orderStatus });
+  mem.seed("orders/ord1", { subAccountId: SA, source: "product_link", status: orderStatus, ...orderOver });
   seedAttempt(ref, {
     secretKey: LIVE_KEY,
     paymentLinkId: "",
@@ -83,4 +83,11 @@ it("a buy-page reference Paystack has never heard of, past 24 h: the order is ex
   await sweepAttempts(SA, LIVE_KEY, [ref]);
   expect(mem.read(`paymentAttempts/${ref}`)).toMatchObject({ state: "refused" });
   expect(mem.read("orders/ord1")).toMatchObject({ status: "expired" });
+});
+
+it("a buy-page order past 24 h that the sweep may not expire (flagged) still has its abandoned attempt closed, not left open for ever", async () => {
+  const ref = orderAttempt("pending", "abandoned", 25, { attention: "Held, check", attentionOpen: true });
+  await sweepAttempts(SA, LIVE_KEY, [ref]);
+  expect(mem.read(`paymentAttempts/${ref}`)).toMatchObject({ state: "refused" });
+  expect(mem.read("orders/ord1")).toMatchObject({ status: "pending", attentionOpen: true });
 });

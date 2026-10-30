@@ -124,6 +124,16 @@ describe("with the order's own token", () => {
     expect(html).not.toContain(DOWNLOAD);
   });
 
+  it("expired or failed but flagged (a payment landed late): a quick check, never 'nothing was charged'", async () => {
+    for (const status of ["expired", "failed"]) {
+      mem.seed("orders/o1", { ...ORDER, status, attentionOpen: true, attention: "Paid, but this order was already closed" });
+      const html = await render({ order: "o1", t: TOKEN });
+      expect(html).toContain("quick check");
+      expect(html).not.toContain("nothing was charged");
+      expect(html).not.toContain(DOWNLOAD);
+    }
+  });
+
   it("claims a confirmation email only when one can be sent", async () => {
     expect(await render({ order: "o1", t: TOKEN })).toContain("A confirmation is on its way");
     mem.seed("orders/o1", { ...ORDER, confirmationEmail: { state: "failed", error: "x", at: 1 } });

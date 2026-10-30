@@ -1,12 +1,13 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, type QueryDocumentSnapshot } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { verifyPaystackTransaction } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { reconcilePaystackCharge } from "@/lib/paystack/payment-link-reconciler";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
+import type { PaystackConnectionSecret } from "@/types/paystack-connection";
 import { isNotFound } from "@/lib/paystack/verify-answer";
 import { markOrderExpired } from "@/lib/server/product-link-orders";
 import { toDate } from "@/lib/server/recurring-invoice-cycle";
@@ -34,7 +35,9 @@ import type { PaymentAttempt } from "@/types/payment-attempts";
  * An expired order is terminal: a payment that still lands is flagged by the
  * reconciler, never dropped. Bounded: at most `EXPIRY_BATCH` Paystack calls and
  * `BUDGET_MS` per run; the oldest go first. An attempt skipped for its key or
- * connection costs only a place in the page read, not one of the calls.
+ * connection costs only a place in the read, not one of the calls, and one
+ * workspace's attempts that never resolve cannot use up the run's calls: after
+ * three unresolved asks the rest of its attempts wait for the next run.
  *
  * Throws (so the housekeeping route answers 500 and QStash retries) when every
  * ask of a run failed: Paystack or Firestore is down, not "nothing to do".
@@ -44,8 +47,12 @@ export const PAYSTACK_ORDER_LIFETIME_MS = 24 * 60 * 60 * 1000;
 /** An attempt Paystack still calls ongoing/pending after this long will not be paid. */
 export const STUCK_ATTEMPT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 export const EXPIRY_BATCH = 25;
-/** The page read is larger: attempts skipped without asking Paystack do not count. */
+/** Rows per read; attempts skipped without asking Paystack do not count as calls. */
 const PAGE = 100;
+/** Pages read per run at most (a bound on reads, not on calls). */
+const MAX_PAGES = 10;
+/** Unresolved asks (no answer, still ongoing) one workspace may use per run. */
+const UNRESOLVED_PER_TENANT = 3;
 const BUDGET_MS = 40_000;
 const CLOSED = new Set(["abandoned", "failed", "reversed", "not_found"]);
 
@@ -84,14 +91,12 @@ export async function expireStalePaystackOrders(
   budgetMs = BUDGET_MS,
 ): Promise<PaystackOrderExpirySummary> {
   const startedAt = Date.now();
-  const stale = await getAdminDb()
+  const stale = getAdminDb()
     .collection("paymentAttempts")
     .where("state", "==", "open")
     .where("paymentLinkId", "==", "")
     .where("createdAt", "<=", new Date(now.getTime() - PAYSTACK_ORDER_LIFETIME_MS))
-    .orderBy("createdAt")
-    .limit(PAGE)
-    .get();
+    .orderBy("createdAt");
   const summary: PaystackOrderExpirySummary = {
     checked: 0,
     expired: 0,
@@ -100,38 +105,63 @@ export async function expireStalePaystackOrders(
     skipped: 0,
     overBudget: 0,
   };
-  for (const doc of stale.docs) {
-    if (summary.checked >= EXPIRY_BATCH) break;
-    const attempt = { ...doc.data(), id: doc.id } as PaymentAttempt;
-    if (!attempt.orderId) continue;
-    // Opened with a key this workspace no longer holds: a connection change
-    // flags those, it is not this sweep's to judge.
-    const conn = await readPaystackConnectionSecret(attempt.subAccountId);
-    if (!conn || paystackKeyFingerprint(conn.secretKey) !== attempt.keyFingerprint) {
-      summary.skipped += 1;
-      continue;
-    }
-    if (Date.now() - startedAt >= budgetMs) {
-      summary.overBudget += 1;
-      continue;
-    }
-    summary.checked += 1;
-    try {
-      const status = await paystackStatus(attempt.id, conn.secretKey);
-      if (status === null) {
-        summary.errors += 1;
-      } else if (status === "success") {
-        const result = await reconcilePaystackCharge({ subAccountId: attempt.subAccountId, secretKey: conn.secretKey, reference: attempt.id });
-        if (result.retry) summary.errors += 1;
-        else summary.reconciled += 1;
-      } else if (CLOSED.has(status) || isPastOrderLifetime(attempt.createdAt, now.getTime(), STUCK_ATTEMPT_LIFETIME_MS)) {
-        if (await markOrderExpired(attempt.orderId)) summary.expired += 1;
-        await refuseAttempt(attempt.id, `Checkout ended without payment (Paystack: ${status}).`);
+  // Oldest first, so one workspace's attempts that never resolve (a revoked
+  // key answering 401, a payment stuck "ongoing") would sit at the front of
+  // the page and use every call, run after run. Two guards: a workspace gets
+  // at most UNRESOLVED_PER_TENANT unresolved asks a run (the rest of its
+  // attempts are skipped), and the read continues past the first page.
+  const unresolved = new Map<string, number>();
+  const connections = new Map<string, PaystackConnectionSecret | null>();
+  let cursor: QueryDocumentSnapshot | null = null;
+  pages: for (let page = 0; page < MAX_PAGES; page += 1) {
+    const snap = await (cursor ? stale.startAfter(cursor) : stale).limit(PAGE).get();
+    for (const doc of snap.docs) {
+      if (summary.checked >= EXPIRY_BATCH) break pages;
+      const attempt = { ...doc.data(), id: doc.id } as PaymentAttempt;
+      if (!attempt.orderId) continue;
+      const sa = attempt.subAccountId;
+      if ((unresolved.get(sa) ?? 0) >= UNRESOLVED_PER_TENANT) {
+        summary.skipped += 1;
+        continue;
       }
-    } catch (err) {
-      summary.errors += 1;
-      console.error(`[paystack/order-expiry] ref=${attempt.id} left open: ${err instanceof Error ? err.message : String(err)}`);
+      // Opened with a key this workspace no longer holds: a connection change
+      // flags those, it is not this sweep's to judge.
+      if (!connections.has(sa)) connections.set(sa, await readPaystackConnectionSecret(sa));
+      const conn = connections.get(sa);
+      if (!conn || paystackKeyFingerprint(conn.secretKey) !== attempt.keyFingerprint) {
+        summary.skipped += 1;
+        continue;
+      }
+      if (Date.now() - startedAt >= budgetMs) {
+        summary.overBudget += 1;
+        continue;
+      }
+      summary.checked += 1;
+      let resolved = false;
+      try {
+        const status = await paystackStatus(attempt.id, conn.secretKey);
+        if (status === null) {
+          summary.errors += 1;
+        } else if (status === "success") {
+          const result = await reconcilePaystackCharge({ subAccountId: sa, secretKey: conn.secretKey, reference: attempt.id });
+          if (result.retry) summary.errors += 1;
+          else {
+            summary.reconciled += 1;
+            resolved = true;
+          }
+        } else if (CLOSED.has(status) || isPastOrderLifetime(attempt.createdAt, now.getTime(), STUCK_ATTEMPT_LIFETIME_MS)) {
+          if (await markOrderExpired(attempt.orderId)) summary.expired += 1;
+          await refuseAttempt(attempt.id, `Checkout ended without payment (Paystack: ${status}).`);
+          resolved = true;
+        }
+      } catch (err) {
+        summary.errors += 1;
+        console.error(`[paystack/order-expiry] ref=${attempt.id} left open: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      if (!resolved) unresolved.set(sa, (unresolved.get(sa) ?? 0) + 1);
     }
+    if (snap.size < PAGE) break;
+    cursor = snap.docs[snap.docs.length - 1];
   }
   if (summary.checked > 0 && summary.errors >= summary.checked) {
     throw new Error(`paystack-order-expiry: all ${summary.checked} Paystack ask(s) failed`);

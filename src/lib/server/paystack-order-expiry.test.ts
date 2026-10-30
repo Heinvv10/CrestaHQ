@@ -4,6 +4,7 @@ import { flushAfterResponse } from "@/lib/server/after-response";
 import {
   KEY,
   OTHER_KEY,
+  OTHER_SA,
   SA,
   mem,
   refused,
@@ -34,11 +35,16 @@ const DAY = 24 * HOUR;
 const NOW = new Date("2026-10-30T12:00:00Z");
 const OLD = new Date(NOW.getTime() - 25 * HOUR);
 
-function seedBuy(n: number, createdAt: Date = OLD, orderOver: Record<string, unknown> = {}) {
+function seedBuy(
+  n: number,
+  createdAt: Date = OLD,
+  orderOver: Record<string, unknown> = {},
+  tenant: { sa: string; key: string } = { sa: SA, key: KEY },
+) {
   const id = `ord${n}`;
   mem.seed(`orders/${id}`, {
     agencyId: "ag1",
-    subAccountId: SA,
+    subAccountId: tenant.sa,
     contactId: null,
     source: "product_link",
     status: "pending",
@@ -52,13 +58,20 @@ function seedBuy(n: number, createdAt: Date = OLD, orderOver: Record<string, unk
     lineItems: [{ productId: "p1", name: "Fibre guide", description: "", unitPriceCents: 49_900, quantity: 1, isBump: false }],
     ...orderOver,
   });
-  seedAttempt(`po-${id}`, { paymentLinkId: "", orderId: id, amountCents: 49_900, createdAt });
+  seedAttempt(`po-${id}`, {
+    paymentLinkId: "",
+    orderId: id,
+    amountCents: 49_900,
+    createdAt,
+    subAccountId: tenant.sa,
+    secretKey: tenant.key,
+  });
   return `po-${id}`;
 }
 const order = (n: number) => mem.read(`orders/ord${n}`)!;
 const attempt = (n: number) => mem.read(`paymentAttempts/po-ord${n}`)!;
 
-let verifyAnswer: (reference: string) => ReturnType<typeof verified> | "network-error" | { status: number; body: unknown };
+let verifyAnswer: (reference: string, auth?: string | null) => ReturnType<typeof verified> | "network-error" | { status: number; body: unknown };
 let calls: PaystackCall[];
 
 beforeEach(() => {
@@ -68,7 +81,7 @@ beforeEach(() => {
   process.env.EMAIL_FROM = "shop@example.com";
   seedSub();
   verifyAnswer = (reference) => verified({ reference, status: "abandoned", amount: 49_900 });
-  calls = stubPaystack((c) => verifyAnswer(c.path.split("/").pop()!));
+  calls = stubPaystack((c) => verifyAnswer(c.path.split("/").pop()!, c.auth));
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
@@ -166,6 +179,51 @@ describe("a stuck attempt", () => {
     await expireStalePaystackOrders(NOW);
     expect(order(31)).toMatchObject({ status: "expired" });
     for (let i = 1; i <= 30; i += 1) expect(attempt(i)).toMatchObject({ state: "refused" });
+  });
+});
+
+describe("one workspace cannot starve the others", () => {
+  const B = { sa: OTHER_SA, key: OTHER_KEY };
+
+  beforeEach(() => seedSub(OTHER_SA, OTHER_KEY));
+
+  it("25 old buys under a revoked key (401) do not stop another workspace's abandoned buy being asked", async () => {
+    for (let i = 1; i <= 25; i += 1) seedBuy(i, new Date(OLD.getTime() - (100 - i) * 1000));
+    seedBuy(100, OLD, {}, B);
+    verifyAnswer = (reference, auth) =>
+      auth === `Bearer ${KEY}` ? refused(401, "Invalid key") : verified({ reference, status: "abandoned" });
+
+    const summary = await expireStalePaystackOrders(NOW);
+    expect(order(100)).toMatchObject({ status: "expired" });
+    expect(attempt(100)).toMatchObject({ state: "refused" });
+    // The revoked key cost three calls, not twenty-five.
+    expect(calls.filter((c) => c.auth === `Bearer ${KEY}`)).toHaveLength(3);
+    expect(summary).toMatchObject({ checked: 4, errors: 3, expired: 1, skipped: 22 });
+    expect(order(1)).toMatchObject({ status: "pending" });
+  });
+
+  it("buys stuck 'ongoing' (under 7 days) are asked three times a run, not all", async () => {
+    for (let i = 1; i <= 30; i += 1) seedBuy(i, new Date(OLD.getTime() - (100 - i) * 1000));
+    seedBuy(100, OLD, {}, B);
+    verifyAnswer = (reference, auth) =>
+      verified({ reference, status: auth === `Bearer ${KEY}` ? "ongoing" : "abandoned" });
+    await expireStalePaystackOrders(NOW);
+    expect(order(100)).toMatchObject({ status: "expired" });
+    expect(calls.filter((c) => c.auth === `Bearer ${KEY}`)).toHaveLength(3);
+  });
+
+  it("reads past the first page: another workspace's buy behind 120 stuck rows is still reached", async () => {
+    for (let i = 1; i <= 120; i += 1) seedBuy(i, new Date(OLD.getTime() - (1000 - i) * 1000));
+    seedBuy(500, OLD, {}, B);
+    verifyAnswer = (reference, auth) =>
+      verified({ reference, status: auth === `Bearer ${KEY}` ? "ongoing" : "abandoned" });
+    await expireStalePaystackOrders(NOW);
+    expect(order(500)).toMatchObject({ status: "expired" });
+  });
+
+  it("a workspace whose first asks resolve is not capped: its 25 abandoned buys all expire", async () => {
+    for (let i = 1; i <= 25; i += 1) seedBuy(i, new Date(OLD.getTime() - (100 - i) * 1000));
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 25, expired: 25 });
   });
 });
 

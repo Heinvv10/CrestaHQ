@@ -37,9 +37,13 @@ export function thanksView(order: Order | null, emailConfigured: boolean): Thank
         ? order.heldAt
           ? "held"
           : "processing"
-        : order.status === "expired"
-          ? "expired"
-          : "closed";
+        : // Expired or failed but flagged: a payment landed after all, so never
+          // say "nothing was charged".
+          (order.status === "expired" || order.status === "failed") && flagged
+          ? "held"
+          : order.status === "expired"
+            ? "expired"
+            : "closed";
   const delivery = order?.deliveries?.[0]?.delivery ?? null;
   const download =
     state === "paid" && delivery?.type === "download" && isSafeSocialUrl(delivery.url)
