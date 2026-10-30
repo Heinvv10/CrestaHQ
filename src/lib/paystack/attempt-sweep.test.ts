@@ -69,12 +69,26 @@ it("a reversed buy-page payment closes the attempt and expires the young pending
   expect(mem.read("orders/ord1")).toMatchObject({ status: "expired" });
 });
 
-it("a buy-page reference Paystack has never heard of: a young order stays pending, only the attempt is refused", async () => {
+it("a buy-page reference Paystack has never heard of, under 24 h: attempt and order both stay open for the expiry sweep", async () => {
   const ref = orderAttempt("pending", "abandoned", 1);
   stubPaystack(() => refused(404, "Transaction reference not found"));
   await sweepAttempts(SA, LIVE_KEY, [ref]);
-  expect(mem.read(`paymentAttempts/${ref}`)).toMatchObject({ state: "refused" });
+  expect(mem.read(`paymentAttempts/${ref}`)).toMatchObject({ state: "open" });
   expect(mem.read("orders/ord1")).toMatchObject({ status: "pending" });
+});
+
+it("that young orphan is closed with its order by the expiry sweep once 24 h have passed", async () => {
+  const ref = orderAttempt("pending", "abandoned", 1);
+  stubPaystack(() => refused(404, "Transaction reference not found"));
+  await sweepAttempts(SA, LIVE_KEY, [ref]);
+  const { expireStalePaystackOrders } = await import("@/lib/server/paystack-order-expiry");
+  // The sweep reads the connection the attempt was opened with.
+  seedSub(SA, LIVE_KEY);
+  expect(await expireStalePaystackOrders(new Date(Date.now() + 22 * HOUR))).toMatchObject({ checked: 0 });
+  expect(mem.read(`paymentAttempts/${ref}`)).toMatchObject({ state: "open" });
+  expect(await expireStalePaystackOrders(new Date(Date.now() + 25 * HOUR))).toMatchObject({ checked: 1, expired: 1 });
+  expect(mem.read(`paymentAttempts/${ref}`)).toMatchObject({ state: "refused" });
+  expect(mem.read("orders/ord1")).toMatchObject({ status: "expired" });
 });
 
 it("a buy-page reference Paystack has never heard of, past 24 h: the order is expired with the attempt", async () => {

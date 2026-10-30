@@ -26,6 +26,9 @@ import type { PaymentLink } from "@/types/payment-links";
  * Per attempt, Paystack is asked with the key it was opened with:
  *   success                        → recorded through the normal reconciler;
  *   reversed, or unknown to Paystack → closed as `refused` (no money can come);
+ *                                    except a buy-page attempt under 24 h old,
+ *                                    which stays open with its order for the
+ *                                    expiry sweep;
  *   abandoned / failed             → closed only if its link is already paid or
  *                                    withdrawn (a buy-page order's: no longer
  *                                    pending, or older than 24 h and expired
@@ -108,7 +111,7 @@ async function settleOrClose(subAccountId: string, secretKey: string, reference:
   const db = getAdminDb();
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
   // A buy-page order that is over (reversed, or any answer past its lifetime:
-  // a younger unknown reference only refuses the attempt) is expired first, so
+  // a younger unknown reference leaves both open) is expired first, so
   // a crash before the attempt closes below leaves an open attempt for the
   // next sweep rather than an order stuck pending.
   const before = (await attemptRef.get()).data() as PaymentAttempt | undefined;
@@ -119,6 +122,9 @@ async function settleOrClose(subAccountId: string, secretKey: string, reference:
     const attempt = (await t.get(attemptRef)).data() as PaymentAttempt | undefined;
     // Only ever open → refused: a payment may have settled it meanwhile.
     if (attempt?.state !== "open") return;
+    // A young buy-page reference Paystack doesn't know yet: left open with its
+    // order pending, so the 24 h expiry sweep closes both together.
+    if (status === "not_found" && attempt.orderId && !isPastOrderLifetime(attempt.createdAt)) return;
     if (RESUMABLE.has(status)) {
       const link = attempt.paymentLinkId
         ? ((await t.get(db.doc(`paymentLinks/${attempt.paymentLinkId}`))).data() as PaymentLink | undefined)
