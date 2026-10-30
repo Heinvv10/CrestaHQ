@@ -107,12 +107,14 @@ between two steps of `scripts/ci/fixture-lock.mjs`:
 - `acquire` creates the git ref `refs/ci-locks/e2e-fixtures` (create is atomic:
   422 if it exists) and otherwise **waits**, polling once a minute and logging
   the holder run. It never cancels anything. Waiting is not FIFO, and a wait
-  longer than 290 min fails that run's check. On a PR it gives up (failing that
+  longer than 240 min fails that run's check. A hosted run holds the lock for
+  ~55-60 min (the suite took 18 min on velo-server), so the queue drains about
+  one run an hour. On a PR it gives up (failing that
   superseded commit's check) once the PR has a newer head or is closed.
 - A lock whose holder run attempt has completed (or no longer exists), or that is
-  older than 90 min, is taken over with a fast-forward-only ref update on top of
+  older than 150 min, is taken over with a fast-forward-only ref update on top of
   it, so two waiters cannot both take the same stale lock. The Playwright step's
-  own 45-min timeout keeps a live holder well inside that limit.
+  own 90-min timeout keeps a live holder inside that limit.
 - `release` runs under `if: always()` and deletes the ref only if its recorded
   holder is this run attempt.
 

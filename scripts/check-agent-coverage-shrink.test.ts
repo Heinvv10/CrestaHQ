@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { addedKeys } from "./check-agent-coverage-shrink.mjs";
+import { STALE_MS } from "./ci/fixture-lock-core.mjs";
 
 /**
  * Runs the shrink check against a throwaway git repo: a base commit is
@@ -195,10 +196,10 @@ describe("check-agent-coverage-shrink CLI", () => {
       expect(job.slice(job.lastIndexOf("- name:", release), release)).toContain("if: always()");
       expect(job).toMatch(/permissions:\n\s+contents: write\n\s+actions: read/);
       expect(job).toContain("persist-credentials: false");
-      // The Playwright step bounds how long the lock is held (stale limit 90 min).
+      // The Playwright step bounds how long the lock is held, inside its stale limit.
       const step = job.slice(job.lastIndexOf("- name:", playwright), playwright);
       expect(step).toMatch(/timeout-minutes: (\d+)/);
-      expect(Number(step.match(/timeout-minutes: (\d+)/)![1])).toBeLessThan(90);
+      expect(Number(step.match(/timeout-minutes: (\d+)/)![1])).toBeLessThan(STALE_MS / 60_000);
       // The write token reaches the two lock steps and nothing else.
       expect(job.match(/github\.token/g)).toHaveLength(2);
     }

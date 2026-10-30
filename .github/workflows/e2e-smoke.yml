@@ -79,13 +79,13 @@ jobs:
         run: pnpm exec playwright install --with-deps chromium
 
       - name: Acquire fixture lock
-        timeout-minutes: 290
+        timeout-minutes: 240
         run: node scripts/ci/fixture-lock.mjs acquire
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Playwright
-        timeout-minutes: 45
+        timeout-minutes: 90
         # @not-on-prod: specs that write test records (mystery shops) the production app would act on.
         run: pnpm exec playwright test --grep-invert "@enrols-workflows|@not-on-prod"
 

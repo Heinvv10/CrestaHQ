@@ -29,7 +29,7 @@
 // The CLI wrapper the workflows call is scripts/ci/fixture-lock.mjs.
 
 export const LOCK_REF = "ci-locks/e2e-fixtures";
-export const STALE_MS = 90 * 60_000;
+export const STALE_MS = 150 * 60_000;
 export const POLL_MS = 60_000;
 export const DEEP_EVERY = 5;
 
