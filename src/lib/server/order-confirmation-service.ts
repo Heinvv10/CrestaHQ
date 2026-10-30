@@ -63,10 +63,6 @@ export function renderOrderConfirmation(
   sub: Partial<SubAccountDoc>,
 ): { subject: string; text: string } {
   const business = sub.name?.trim() || "";
-  // Buyer-typed on Stripe's page and mailed from the tenant: greet only with
-  // a plain first name, never a URL or other text an attacker could plant.
-  const word = order.buyerName?.trim().split(/\s+/)[0] ?? "";
-  const first = /^\p{L}[\p{L}'-]{0,39}$/u.test(word) ? word : null;
   const items = order.lineItems
     .map((li) => {
       const qty = li.quantity > 1 ? ` x ${li.quantity}` : "";
@@ -77,7 +73,9 @@ export function renderOrderConfirmation(
   const test = order.livemode === false ? "[Test] " : "";
 
   const subject = `${test}Order confirmed: ${main?.name ?? "your order"}`;
-  const text = `Hi ${first || "there"},
+  // Mailed from the tenant to whatever address the buyer typed, so nothing
+  // the buyer typed is echoed back: only our own doc's item names and amounts.
+  const text = `Hi,
 
 Thanks for your order${business ? ` with ${business}` : ""}. Your payment went through.
 

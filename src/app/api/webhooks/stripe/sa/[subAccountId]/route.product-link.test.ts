@@ -256,12 +256,16 @@ describe("money for a closed order is flagged, never dropped", () => {
   });
 });
 
-it("the confirmation greets only with a plain first name", async () => {
-  productLinkOrder({ status: "paid", buyerEmail: "buyer@example.com", buyerName: "https://evil.example/pay Now" });
-  await sendOrderConfirmation("o1");
-  expect(sendEmail.mock.calls[0][0].text).not.toContain("evil.example");
-  expect(sendEmail.mock.calls[0][0].text).toContain("Hi there");
-  productLinkOrder({ status: "paid", buyerEmail: "buyer@example.com", buyerName: "Zoë O'Neil" });
-  await sendOrderConfirmation("o1");
-  expect(sendEmail.mock.calls[1][0].text).toContain("Hi Zoë,");
+it("the confirmation never echoes buyer-typed text (name, email) back", async () => {
+  for (const buyerName of ["https://evil.example/pay Now", "Zoë O'Neil"]) {
+    sendEmail.mockClear();
+    productLinkOrder({ status: "paid", buyerEmail: "buyer@example.com", buyerName });
+    await sendOrderConfirmation("o1");
+    const { text, subject } = sendEmail.mock.calls[0][0];
+    expect(text.startsWith("Hi,\n")).toBe(true);
+    for (const typed of [buyerName, buyerName.split(" ")[0], "buyer@example.com"]) {
+      expect(text + subject).not.toContain(typed);
+    }
+    expect(text).toContain("Fibre guide");
+  }
 });

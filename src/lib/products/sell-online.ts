@@ -68,6 +68,33 @@ export const SELL_ONLINE_CURRENCIES = [
 ] as const;
 const SELL_ONLINE_CURRENCY_SET = new Set<string>(SELL_ONLINE_CURRENCIES);
 
+/**
+ * Stripe's minimum charge per currency, in this app's cents (major × 100,
+ * so ¥50 is 5_000). Source: https://docs.stripe.com/currencies#minimum-and-maximum-charge-amounts
+ * ("Minimum charge amount by currency", read 2026-10-30). A charge converted
+ * into a different settlement currency must also meet that currency's
+ * minimum after conversion, which can't be known here.
+ */
+const STRIPE_MIN_CHARGE_CENTS: Record<(typeof SELL_ONLINE_CURRENCIES)[number], number> = {
+  USD: 50,
+  AUD: 50,
+  EUR: 50,
+  GBP: 30,
+  CAD: 50,
+  NZD: 50,
+  JPY: 5_000,
+  CHF: 50,
+  SGD: 50,
+  HKD: 400,
+  ZAR: 50,
+};
+/** For a currency missing from the table above. */
+const UNKNOWN_MIN_CHARGE_CENTS = 100;
+
+export function minSellOnlinePriceCents(currency: string): number {
+  return (STRIPE_MIN_CHARGE_CENTS as Record<string, number>)[currency] ?? UNKNOWN_MIN_CHARGE_CENTS;
+}
+
 /** Same ceiling as payment links and plan prices (1,000,000.00). */
 export const MAX_SELL_ONLINE_PRICE_CENTS = 100_000_000;
 
@@ -78,6 +105,9 @@ export function sellOnlinePriceError(unitPriceCents: unknown, currency: unknown)
   }
   if (typeof unitPriceCents !== "number" || !Number.isInteger(unitPriceCents) || unitPriceCents <= 0) {
     return "Set a price above zero before selling online.";
+  }
+  if (unitPriceCents < minSellOnlinePriceCents(currency)) {
+    return `The lowest price card payments take in ${currency} is ${(minSellOnlinePriceCents(currency) / 100).toFixed(2)}.`;
   }
   if (unitPriceCents > MAX_SELL_ONLINE_PRICE_CENTS) {
     return "That price is too high to sell online.";
