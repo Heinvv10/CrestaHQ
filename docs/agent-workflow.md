@@ -93,8 +93,7 @@ the PR's individual commits stay readable in history.
 
 ### CI runner
 
-CI (`ci.yml`, `e2e-smoke.yml`, `agent-coverage-shrink.yml`) runs on
-**GitHub-hosted `ubuntu-latest`**. If jobs never start or fail instantly with a
+CI (every workflow) runs on **GitHub-hosted `ubuntu-latest`**. If jobs never start or fail instantly with a
 billing/spending-limit annotation, check the account's Actions billing first.
 
 E2E touches one shared set of fixture sub-accounts in the production Firestore
@@ -104,11 +103,8 @@ group with `cancel-in-progress: false`. GitHub holds only one *pending* run per
 group, so a third run queuing behind a running one cancels the older pending
 one; a cancelled E2E check needs a re-run, not a fix.
 
-Only the Go workflows (`wa-manager.yml`, `wa-agent-bridge.yml`) are still on the
-self-hosted runner (`velo-crestahq-u`, labels `self-hosted, linux, velo,
-crestahq`, service
-`actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`). If *those* sit
-queued forever, check that service first.
+The Go workflows (`wa-manager.yml`, `wa-agent-bridge.yml`) are on
+`ubuntu-latest` too; no workflow uses the old self-hosted runner any more.
 
 ### Deploy
 

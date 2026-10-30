@@ -250,6 +250,10 @@ jobs:
   # `finally` strands shared Firestore fixtures and makes later, unrelated
   # runs fail.
   #
+  # FOLLOW-UP: scope global-setup's purgeFixtureData per run id (as
+  # e2e/lib/run-id.ts already does for specs' fixture prefixes); with that,
+  # this group can be dropped and E2E runs can go parallel.
+  #
   # GitHub keeps ONE pending run per group: when a third run queues behind a
   # running one, the older pending run is cancelled (a cancelled required
   # check blocks merge until re-run). The `needs` below keeps that window
