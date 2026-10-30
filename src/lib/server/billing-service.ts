@@ -20,6 +20,7 @@ import {
   type BillingPlanDoc,
   type BillingPlanResponse,
   type PlanGates,
+  type UsageChargeLine,
   type SubAccountBillingStatus,
 } from "@/types/billing";
 import { BillingError } from "@/lib/billing/errors";
@@ -35,6 +36,8 @@ import {
   SUB_ACCOUNT_PLAN_KIND,
 } from "@/lib/billing/kinds";
 import { runAfterResponse } from "@/lib/server/after-response";
+import { billingRecipient } from "@/lib/server/usage-billing-recipient";
+import type { SubAccountDoc } from "@/types";
 
 /**
  * Client Billing v1 service — the single write path for agency plans
@@ -1005,6 +1008,99 @@ export async function createOneTimeCharge(input: {
   };
 }
 
+/** Deterministic so a re-run of the month close can never mint a second charge. */
+export function usageChargeId(subAccountId: string, month: string): string {
+  return `usage_${subAccountId}_${month}`;
+}
+
+/**
+ * Create the month's usage charge at most once; a repeat returns
+ * `created: false`. The id is deterministic and the write is `create()`, so
+ * two overlapping runs cannot both mint it. Paystack opens a payment page only
+ * for an email, so a usage charge with no `payerEmail` is refused HERE, before
+ * anything is written, rather than minting a link nobody can pay.
+ */
+export async function createUsageCharge(input: {
+  agencyId: string;
+  subAccountId: string;
+  month: string;
+  description: string;
+  amountCents: number;
+  currency: string;
+  lineItems: UsageChargeLine[];
+  dueAt: Date;
+  payerEmail: string | null;
+}): Promise<{ created: boolean; chargeId: string; checkoutUrl: string | null }> {
+  const provider = getBillingProvider();
+  if (!provider.isConfigured()) {
+    throw new BillingError(
+      "Client billing isn't configured on this deployment, so no usage charge can be created.",
+      503,
+    );
+  }
+  if (provider.id === "paystack" && !input.payerEmail) {
+    throw new BillingError(
+      "Paystack needs an email to open a payment page — set this workspace's account contact first.",
+      422,
+    );
+  }
+  await getSubInAgencyOrThrow(input.agencyId, input.subAccountId);
+  const chargeId = usageChargeId(input.subAccountId, input.month);
+  const ref = chargesCollection().doc(chargeId);
+  const { token, hash } = issueChargeToken(chargeId);
+  const checkoutUrl = buildChargeCheckoutUrl(token);
+  if (!checkoutUrl) {
+    throw new BillingError("NEXT_PUBLIC_APP_URL isn't configured, so no pay link can be built.", 503);
+  }
+  const doc: Omit<BillingChargeDoc, "createdAt" | "paidAt" | "updatedAt"> = {
+    id: chargeId,
+    agencyId: input.agencyId,
+    subAccountId: input.subAccountId,
+    description: input.description,
+    amountCents: input.amountCents,
+    currency: input.currency,
+    status: "pending",
+    tokenHash: hash,
+    stripeCheckoutSessionId: null,
+    stripePaymentIntentId: null,
+    createdByUid: "system:usage-close",
+    kind: "usage",
+    usageMonth: input.month,
+    lineItems: input.lineItems,
+    dueAt: Timestamp.fromDate(input.dueAt),
+    payUrl: checkoutUrl,
+    remindedAt: {},
+    emailedTo: null,
+  };
+  try {
+    await ref.create({
+      ...doc,
+      createdAt: FieldValue.serverTimestamp(),
+      paidAt: null,
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    // gRPC ALREADY_EXISTS: an earlier run already minted it.
+    if ((err as { code?: number }).code === 6) {
+      return { created: false, chargeId, checkoutUrl: null };
+    }
+    throw err;
+  }
+  recordBillingEvent({
+    agencyId: input.agencyId,
+    subAccountId: input.subAccountId,
+    event: "charge.created",
+    detail: {
+      chargeId,
+      kind: "usage",
+      usageMonth: input.month,
+      amountCents: input.amountCents,
+      currency: input.currency,
+    },
+  });
+  return { created: true, chargeId, checkoutUrl };
+}
+
 export async function listChargesForSubAccount(
   agencyId: string,
   subAccountId: string,
@@ -1049,11 +1145,14 @@ export async function mintChargeCheckoutLink(input: {
     );
   }
   const { token, hash } = issueChargeToken(input.chargeId);
+  const url = buildChargeCheckoutUrl(token);
   await ref.update({
     tokenHash: hash,
+    // Reminders reuse the stored link, so keep it pointing at the live token.
+    ...(data.kind === "usage" ? { payUrl: url || null } : {}),
     updatedAt: FieldValue.serverTimestamp(),
   });
-  return buildChargeCheckoutUrl(token);
+  return url;
 }
 
 /** Void a pending charge: kills the link; paid charges can't be canceled here. */
@@ -1074,6 +1173,7 @@ export async function cancelOneTimeCharge(input: {
   await ref.update({
     status: "canceled" satisfies BillingChargeStatus,
     tokenHash: null,
+    ...(data.kind === "usage" ? { payUrl: null } : {}),
     updatedAt: FieldValue.serverTimestamp(),
   });
   recordBillingEvent({
@@ -1118,16 +1218,16 @@ export async function createChargeCheckoutSession(input: {
     ? readBilling(subSnap.data() as Record<string, unknown>)
     : null;
 
-  const contact = subSnap.exists
-    ? ((subSnap.data() as Record<string, unknown>).accountContact as {
-        email?: string | null;
-      } | null)
+  // The account contact, else an active non-owner admin (what a usage invoice
+  // is emailed to), so the link that was emailed there can be paid.
+  const payerEmail = subSnap.exists
+    ? await billingRecipient({ ...(subSnap.data() as SubAccountDoc), id: subSnap.id })
     : null;
 
   const { url, sessionId } = await getBillingProvider().createOneTimeCheckout({
     customerId: billing?.stripeCustomerId ?? null,
     // Only used by a provider that can't open a guest checkout (Paystack).
-    payerEmail: contact?.email ?? null,
+    payerEmail,
     currency: charge.currency,
     amountCents: charge.amountCents,
     productName: charge.description,
