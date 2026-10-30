@@ -29,6 +29,10 @@ const CONNECT_REFUSAL =
 const URL_PASTED_NOTE =
   " Do not paste the URL into the chat. If you already did, treat it as exposed: revoke it in Slack (Incoming Webhooks → remove it) and create a new one for the card.";
 
+/** The args as a plain object; anything else (a string, number, array, null) is empty. */
+const asObject = (raw: unknown): Record<string, unknown> =>
+  typeof raw === "object" && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+
 const HOOK_HOST_RE = /hooks\.slack\.com/i;
 
 const EVENT_NOT_RECOGNISED = `none of those event names are recognised; use event types such as ${DEFAULT_SLACK_EVENTS.join(", ")}`;
@@ -51,10 +55,10 @@ export const SLACK_CAPABILITIES: AiSuiteCapability[] = [
       if (!cfg.connected) {
         return { resultText: `Slack isn't connected for this workspace. An admin connects it on the card: ${CARD}.` };
       }
-      const label = oneLine(redactSlackUrls(cfg.channelLabel ?? ""));
-      const events = cfg.events.map((e) => oneLine(e)).filter(Boolean);
+      const label = redactSlackUrls(oneLine(cfg.channelLabel));
+      const events = cfg.events.map((e) => redactSlackUrls(oneLine(e))).filter(Boolean);
       const last = cfg.lastSentAt ? `${cfg.lastSentAt.slice(0, 16).replace("T", " ")} UTC` : "never";
-      const error = oneLine(redactSlackUrls(cfg.lastError ?? ""));
+      const error = redactSlackUrls(oneLine(cfg.lastError));
       return {
         resultText: `Slack: connected${label ? ` to ${label}` : ""}${
           cfg.needsReconnect ? " — NEEDS RECONNECT (Slack rejected the webhook URL; an admin pastes a new one on the card)" : ""
@@ -85,7 +89,7 @@ export const SLACK_CAPABILITIES: AiSuiteCapability[] = [
       additionalProperties: false,
     },
     validate: (raw) => {
-      const r = (raw ?? {}) as Record<string, unknown>;
+      const r = asObject(raw);
       if ("includeMessagePreview" in r) {
         return { ok: false, error: "the message-text switch can only be changed on the Slack card, not through the assistant" };
       }
@@ -127,7 +131,7 @@ export const SLACK_CAPABILITIES: AiSuiteCapability[] = [
       additionalProperties: false,
     },
     validate: (raw) => {
-      const r = (raw ?? {}) as Record<string, unknown>;
+      const r = asObject(raw);
       // Anything that is or names a hook URL is dropped here, before it can
       // reach the audit row's args or summary, and only flags the refusal.
       const holdsHook = (v: unknown) => {

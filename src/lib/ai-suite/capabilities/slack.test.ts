@@ -104,6 +104,13 @@ describe("slack_status", () => {
     for (const secret of ["hooks.slack.com", "SECRETSECRETSECRET", "SECRETS", "T0AAAAAA"]) expect(text).not.toContain(secret);
   });
 
+  it("an event name that holds a webhook URL prints redacted", async () => {
+    seedConnected({ events: [`${HOOK}`, "call.missed"] });
+    await ask("slack_status", {});
+    expect(lookupResult()).toContain("Posting on: [slack-url], call.missed.");
+    expect(lookupResult()).not.toContain("SECRETSECRET");
+  });
+
   it("a label that is a URL fragment (the secret's tail) is redacted too", async () => {
     seedConnected({ channelLabel: "/services/T0AAAAAA/B0BBBBBB/SECRETSECRETSECRET" });
     await ask("slack_status", {});
@@ -185,6 +192,19 @@ describe("configure_slack_events", () => {
     expect(slackMeta()?.events).toEqual(["contact.created", "booking.created"]);
   });
 
+  it.each([
+    ["a string", "x"],
+    ["a number", 5],
+    ["true", true],
+    ["an array", ["deal.won"]],
+    ["null", null],
+  ])("args that are %s: 400 through the confirm route, nothing written", async (_what, args) => {
+    seedConnected();
+    const res = await doConfirm("configure_slack_events", args as unknown as Record<string, unknown>);
+    expect(res.status).toBe(400);
+    expect(slackMeta()?.events).toEqual(["contact.created", "booking.created"]);
+  });
+
   it("not connected: refused with the route's message, nothing written", async () => {
     const res = await doConfirm("configure_slack_events", { events: ["deal.won"] });
     expect((await res.json()).error).toBe("Connect a Slack channel first.");
@@ -252,6 +272,13 @@ describe("connect_slack", () => {
     const ctx = { uid: "u1", email: "", displayName: "", agencyId: "ag1", subAccountId: "sa1", subAccountRole: "admin" };
     await expect(getCapability("connect_slack")!.execute(ctx, { webhookUrl: HOOK })).rejects.toThrow("Slack can only be connected on the card");
     expect(postSlackMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([["a string", "x"], ["a number", 5], ["true", true]])("args that are %s: still refused in chat, no throw", async (_w, args) => {
+    const cap = getCapability("connect_slack")!;
+    const v = cap.validate(args);
+    expect(v.ok).toBe(true);
+    expect(cap.chatRefusal!((v as { args: Record<string, unknown> }).args, {} as never)).toContain("Slack can only be connected on the card");
   });
 
   it("a channel name with a hidden character is refused", async () => {
