@@ -84,8 +84,13 @@ describe("consent", () => {
     expect(sendSmsVia).not.toHaveBeenCalled();
   });
 
-  it("does not text a contact with no phone number", async () => {
-    seedContact({ phone: undefined });
+  it.each([
+    ["no phone number", undefined],
+    ["an empty phone number", ""],
+    ["a whitespace-only phone number", "   "],
+    ["a tab-and-newline phone number", " \t\n "],
+  ])("does not text a contact with %s", async (_label, phone) => {
+    seedContact({ phone });
     expect(await send()).toEqual({ sent: false, reason: "no_phone" });
     expect(sendSmsVia).not.toHaveBeenCalled();
   });
@@ -196,6 +201,66 @@ describe("a failing carrier", () => {
   it("never throws: reports send_failed", async () => {
     sendSmsVia.mockRejectedValueOnce(new Error("carrier down"));
     expect(await send()).toEqual({ sent: false, reason: "send_failed" });
-    expect(rows("activities")).toHaveLength(0);
+    expect(rows("activities").filter((a) => a.type === "sms_sent")).toHaveLength(0);
+  });
+});
+
+describe("timeline notes for a text that was not sent", () => {
+  const notes = () => rows("activities");
+
+  it("notes a contact with no phone, once per claim however often it is delivered", async () => {
+    seedContact({ phone: "  " });
+    const claimPath = "events/e1/reminderSends/sms_60_abc";
+    await send({ claimPath });
+    await send({ claimPath });
+    expect(notes()).toEqual([
+      expect.objectContaining({ type: "note_added", createdBy: "booking", content: "Booking confirmation text not sent: the contact has no phone number." }),
+    ]);
+  });
+
+  it("notes a send that failed at the carrier", async () => {
+    sendSmsVia.mockRejectedValueOnce(new Error("carrier down"));
+    expect(await send()).toEqual({ sent: false, reason: "send_failed" });
+    expect(notes()).toEqual([expect.objectContaining({ content: "Booking confirmation text not sent: the text could not be sent." })]);
+  });
+
+  it("notes a missing sender and a number the carrier unsubscribed", async () => {
+    await send({ sub: sub({ twilioConfig: undefined }) });
+    sendSmsVia.mockRejectedValueOnce(Object.assign(new Error("unsubscribed"), { code: 21610 }));
+    await send();
+    expect(notes().map((n) => n.content)).toEqual([
+      "Booking confirmation text not sent: no SMS sender is set up for this workspace.",
+      "Booking confirmation text not sent: the number has unsubscribed at the carrier (STOP).",
+    ]);
+  });
+
+  it("does not note consent (opted out) or a redelivery", async () => {
+    seedContact({ smsOptedOut: true });
+    await send();
+    seedContact({});
+    const claimPath = "events/e1/reminderSends/sms_60_abc";
+    await send({ claimPath });
+    await send({ claimPath });
+    expect(notes().filter((n) => n.type === "note_added")).toEqual([]);
+  });
+
+  it("writes nothing to a contact of another sub-account", async () => {
+    seedContact({ subAccountId: "someone-else", phone: undefined });
+    await send();
+    expect(notes()).toEqual([]);
+  });
+});
+
+describe("what is logged", () => {
+  it("masks the destination number in a carrier error, however it is written", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    sendSmsVia.mockRejectedValueOnce(new Error("The 'To' number +27821234567 is not a valid phone number (0821234567 / 082 123 4567)"));
+    await send();
+    const logged = JSON.stringify(warn.mock.calls);
+    expect(logged).toContain("send failed");
+    expect(logged).not.toMatch(/\d{6}/);
+    expect(logged).not.toContain("821234567");
+    expect(logged).toContain("[number]");
+    warn.mockRestore();
   });
 });

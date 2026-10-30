@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAfterResponse } from "@/lib/server/after-response";
-import { SA, mem, post, resetBookingHarness, seedPage, slot } from "@/test/booking-harness";
+import { NOW, SA, mem, post, resetBookingHarness, seedPage, slot } from "@/test/booking-harness";
 
 /**
  * The booking confirmation text through the real book route: real route ->
@@ -12,6 +12,9 @@ import { SA, mem, post, resetBookingHarness, seedPage, slot } from "@/test/booki
 
 const sendSmsVia = vi.fn();
 const scheduleEventReminders = vi.fn();
+const order: string[] = [];
+/** `after()` callbacks, held back (when `on`) so a test can run them later, as the host does after the response. */
+const deferred = vi.hoisted(() => ({ on: false, fns: [] as Array<() => unknown> }));
 
 const h = () => import("@/test/booking-harness");
 const s = () => import("@/test/email-suppression-seam");
@@ -19,12 +22,21 @@ vi.mock("@/lib/firebase/admin", async () => (await h()).bookingMocks.admin());
 vi.mock("@/lib/booking/contact-reconcile", async () => (await h()).bookingMocks.reconcile());
 vi.mock("@/lib/booking/lifecycle", async () => ({
   ...(await h()).bookingMocks.lifecycle(),
-  scheduleEventReminders: (...a: unknown[]) => scheduleEventReminders(...a),
+  scheduleEventReminders: async (...a: unknown[]) => (order.push("reminders"), scheduleEventReminders(...a)),
+  recordBookingActivity: async () => void order.push("activity"),
+  fireBookingTrigger: async () => void order.push("trigger"),
+}));
+vi.mock("next/server", async (orig) => ({
+  ...(await orig<typeof import("next/server")>()),
+  after: (fn: () => unknown) => {
+    if (!deferred.on) throw new Error("outside a request scope");
+    deferred.fns.push(fn);
+  },
 }));
 vi.mock("@/lib/comms/smtp", async (orig) => (await s()).seamMocks.smtp(orig));
 vi.mock("@/lib/server/email-conversations", async () => (await s()).seamMocks.conversations());
 vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(orig));
-vi.mock("@/lib/comms/sms/select", () => ({ sendSmsVia: (...a: unknown[]) => sendSmsVia(...a) }));
+vi.mock("@/lib/comms/sms/select", () => ({ sendSmsVia: async (...a: unknown[]) => (order.push("sms"), sendSmsVia(...a)) }));
 vi.mock("@/lib/server/sub-account-secrets", () => ({ readSubAccountSecret: async () => "token" }));
 vi.mock("@/lib/server/conversations-service", () => ({ upsertConversationForMessage: async () => undefined }));
 vi.mock("@/lib/google-calendar/push", () => ({
@@ -47,6 +59,9 @@ beforeEach(() => {
   process.env.NEXT_PUBLIC_APP_URL = "https://app.test";
   sendSmsVia.mockReset().mockResolvedValue({ sid: "SM1" });
   scheduleEventReminders.mockReset().mockResolvedValue(undefined);
+  order.length = 0;
+  deferred.on = false;
+  deferred.fns.length = 0;
   mem.seed(`subAccounts/${SA}`, {
     ...SMTP_SUB,
     agencyId: "ag1",
@@ -57,7 +72,10 @@ beforeEach(() => {
   mem.seed("contacts/c1", { name: "Visitor Vee", phone: "+27821234567", agencyId: "ag1", subAccountId: SA });
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  deferred.on = false;
+  vi.useRealTimers();
+});
 
 describe("the confirmation text", () => {
   it("is not sent when the page's text toggle is off (the default)", async () => {
@@ -104,6 +122,67 @@ describe("the confirmation text", () => {
     expect((await book()).status).toBe(200);
     await flushAfterResponse();
     expect(sendSmsVia).not.toHaveBeenCalled();
+  });
+});
+
+/** Runs what the host would run after the response, and waits for it. */
+const runAfter = async () => {
+  for (const fn of deferred.fns.splice(0)) await fn();
+  await flushAfterResponse();
+};
+const MINUTE = 60_000;
+
+describe("the confirmation text runs after the response", () => {
+  it("does not hold up the response: nothing is sent until the host runs the after-callbacks, and then it goes", async () => {
+    deferred.on = true;
+    seedPage("intro", { smsRemindersEnabled: true });
+    expect((await book()).status).toBe(200);
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    await runAfter();
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+  });
+
+  it("goes after the reminders are scheduled, the activity row and the booking triggers", async () => {
+    seedPage("intro", { smsRemindersEnabled: true, reminderOffsetsMinutes: [60] });
+    expect((await book()).status).toBe(200);
+    await flushAfterResponse();
+    expect(order.indexOf("sms")).toBeGreaterThan(-1);
+    for (const earlier of ["reminders", "activity", "trigger"]) {
+      expect(order.indexOf(earlier), earlier).toBeGreaterThan(-1);
+      expect(order.indexOf(earlier), earlier).toBeLessThan(order.indexOf("sms"));
+    }
+  });
+
+  it("is still exempt from quiet hours when it runs a couple of minutes after the booking", async () => {
+    deferred.on = true;
+    seedPage("intro", { smsRemindersEnabled: true });
+    expect((await book()).status).toBe(200);
+    vi.setSystemTime(new Date(NOW.getTime() + 2 * MINUTE));
+    await runAfter();
+    expect(texts()).toHaveLength(1);
+  });
+
+  it("is held, and says so on the contact's timeline, if it only runs after the exemption has lapsed", async () => {
+    deferred.on = true;
+    seedPage("intro", { smsRemindersEnabled: true });
+    expect((await book()).status).toBe(200);
+    vi.setSystemTime(new Date(NOW.getTime() + 11 * MINUTE));
+    await runAfter();
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(mem.list("contacts/c1/activities")).toEqual([
+      expect.objectContaining({ type: "quiet_hours_held", content: expect.stringContaining("Booking confirmation text was not sent: it fell in quiet hours") }),
+    ]);
+  });
+
+  it("leaves a note when it cannot be sent at all (the contact has no phone)", async () => {
+    seedPage("intro", { smsRemindersEnabled: true });
+    mem.seed("contacts/c1", { name: "Visitor Vee", agencyId: "ag1", subAccountId: SA });
+    expect((await book()).status).toBe(200);
+    await flushAfterResponse();
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(mem.list("contacts/c1/activities")).toEqual([
+      expect.objectContaining({ content: "Booking confirmation text not sent: the contact has no phone number." }),
+    ]);
   });
 });
 

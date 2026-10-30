@@ -81,7 +81,8 @@ const seedContact = (over: Record<string, unknown> = {}) =>
     subAccountId: SA,
     ...over,
   });
-const claims = () => mem.list("events/e1/reminderSends").map((d) => d.id);
+/** The text claims (not the hold markers that sit beside them). */
+const claims = () => mem.list("events/e1/reminderSends").map((d) => d.id).filter((id) => !id.startsWith("smshold_"));
 const notes = () => mem.list("contacts/c1/activities").filter((a) => a.type === "quiet_hours_held");
 
 beforeEach(() => {
@@ -203,6 +204,29 @@ describe("what the booker typed", () => {
     expect(await res.json()).toMatchObject({ sms: "number_not_allowed" });
     expect(sendSmsVia).not.toHaveBeenCalled();
     expect(mem.list("contacts/c1/activities")).toEqual([expect.objectContaining({ content: expect.stringContaining("home country") })]);
+  });
+});
+
+describe("a veto in the scheduled snapshot", () => {
+  it("sms:false keeps the live page from texting (an agent-approved mark-paid)", async () => {
+    const res = await remind({ channels: { email: false, sms: false } });
+    await flushAfterResponse();
+    expect(await res.json()).not.toHaveProperty("sms");
+    expect(sendSmsVia).not.toHaveBeenCalled();
+  });
+
+  it("an absent snapshot does not veto", async () => {
+    await remind();
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+  });
+
+  it("sms:false also keeps a deleted page's fallback quiet", async () => {
+    mem.clear();
+    mem.seed(`subAccounts/${SA}`, { ...SMTP_SUB, defaultPhoneCountry: "ZA", sendWindow: WINDOW, twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber: "+27110000000" } });
+    seedEvent(new Date("2026-09-24T14:00:00Z"));
+    seedContact();
+    await remind({ channels: { email: false, sms: false } });
+    expect(sendSmsVia).not.toHaveBeenCalled();
   });
 });
 
@@ -331,5 +355,82 @@ describe("quiet hours", () => {
     mem.seed("events/e1", { ...mem.read("events/e1"), status: "scheduled", publicTokenHash: issueEventToken("e1").hash });
     expect(await (await remind({ smsOnly: true })).json()).toMatchObject({ skipped: "rotated" });
     expect(sendSmsVia).not.toHaveBeenCalled();
+  });
+});
+
+describe("quiet hours: republish ids, two held reminders, and an email retry", () => {
+  beforeEach(() => {
+    vi.setSystemTime(NIGHT);
+    seedEvent(new Date("2026-09-25T09:00:00Z"));
+  });
+  const published = () => publishCallback.mock.calls.map((c) => c[0] as { deduplicationId: string; body: Record<string, unknown> });
+
+  it("each hold of the same reminder publishes under a new id, so QStash cannot collapse a re-hold into the first", async () => {
+    await remind({ channels: { sms: true } });
+    // The republished step arrives while the window is still closed (the window was changed): held again.
+    await remind({ smsOnly: true, heldUntil: MORNING.getTime(), attempt: 1, channels: { sms: true } });
+    await remind({ smsOnly: true, heldUntil: MORNING.getTime(), attempt: 2, channels: { sms: true } });
+    const ids = published().map((p) => p.deduplicationId);
+    expect(new Set(ids).size).toBe(3);
+    expect(ids.map((id) => id.match(/_a(\d+)$/)?.[1])).toEqual(["1", "2", "3"]);
+    expect(published().map((p) => p.body.attempt)).toEqual([1, 2, 3]);
+    expect(published().every((p) => p.body.heldUntil === MORNING.getTime())).toBe(true);
+  });
+
+  it("a redelivery of the SAME step publishes the SAME id, so QStash does collapse it", async () => {
+    await remind({ smsOnly: true, heldUntil: MORNING.getTime(), attempt: 4 });
+    await remind({ smsOnly: true, heldUntil: MORNING.getTime(), attempt: 4 });
+    const ids = published().map((p) => p.deduplicationId);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]);
+  });
+
+  it("two reminders held to the same window end: only the later one (smaller offset) is sent, the earlier is dropped with a note", async () => {
+    await remind({ channels: { sms: true } }, 120);
+    await remind({ channels: { sms: true } }, 60);
+    expect(published()).toHaveLength(2);
+    vi.setSystemTime(MORNING);
+    const [earlier, later] = published().map((p) => p.body);
+    expect(await (await remind(earlier, 120)).json()).toMatchObject({ sms: "superseded" });
+    expect(await (await remind(later, 60)).json()).toMatchObject({ sms: "sent" });
+    await flushAfterResponse();
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+    expect(mem.list("contacts/c1/activities").filter((a) => String(a.content).includes("a later reminder was held"))).toHaveLength(1);
+  });
+
+  it("whichever republished step runs first, the earlier reminder never sends", async () => {
+    await remind({ channels: { sms: true } }, 120);
+    await remind({ channels: { sms: true } }, 60);
+    vi.setSystemTime(MORNING);
+    const [earlier, later] = published().map((p) => p.body);
+    await remind(later, 60);
+    expect(await (await remind(earlier, 120)).json()).toMatchObject({ sms: "superseded" });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+  });
+
+  it("a reminder held alone is sent, and so is one held to a different window end", async () => {
+    await remind({ channels: { sms: true } }, 120);
+    vi.setSystemTime(MORNING);
+    const [held] = published().map((p) => p.body);
+    expect(await (await remind(held, 120)).json()).toMatchObject({ sms: "sent" });
+    // A larger offset arriving for another window end is not superseded by this one.
+    expect(await (await remind({ smsOnly: true, heldUntil: MORNING.getTime() + 86_400_000 }, 1440)).json()).toMatchObject({ sms: "sent" });
+  });
+
+  it("an email 503 retry while the text is held: one republish id, and the text goes once after the window", async () => {
+    seedPage({ remindersEnabled: true });
+    smtpSend.mockRejectedValueOnce(Object.assign(new Error("connect ETIMEDOUT"), { code: "ETIMEDOUT" }));
+    expect((await remind()).status).toBe(503); // QStash will redeliver the same body
+    expect((await remind()).status).toBe(200); // the retry: the email goes
+    const ids = published().map((p) => p.deduplicationId);
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).toBe(ids[1]); // QStash collapses these into one republish
+    vi.setSystemTime(MORNING);
+    // Even if both were delivered, the claim lets exactly one text out.
+    await remind(published()[0].body);
+    await remind(published()[1].body);
+    await flushAfterResponse();
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+    expect(smtpSend).toHaveBeenCalledTimes(2); // one failed attempt, one delivery; the republished steps are text-only
   });
 });

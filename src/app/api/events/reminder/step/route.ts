@@ -61,6 +61,9 @@ interface ReminderBody {
   channels?: ReminderChannels;
   /** Set by a quiet-hours republish: the email was already handled. */
   smsOnly?: boolean;
+  /** Quiet-hours republish: when the window it waited for ends (ms), and how many holds led here. */
+  heldUntil?: number;
+  attempt?: number;
 }
 
 export async function POST(request: Request) {
@@ -166,7 +169,11 @@ export async function POST(request: Request) {
   const emailOn =
     body.smsOnly !== true &&
     (page ? page.remindersEnabled !== false : (snap?.email ?? true));
-  const smsOn = page ? page.smsRemindersEnabled === true : snap?.sms === true;
+  // `sms: false` in the snapshot is a veto the live page cannot lift (an agent
+  // mark-paid: the approver never reviewed the phone). Absent = no veto.
+  const smsOn = page
+    ? page.smsRemindersEnabled === true && snap?.sms !== false
+    : snap?.sms === true;
 
   let smsResult: string | undefined;
   if (smsOn) {
@@ -180,6 +187,8 @@ export async function POST(request: Request) {
       channels: snap,
       startAt,
       endAt,
+      heldUntil: typeof body.heldUntil === "number" ? body.heldUntil : null,
+      attempt: typeof body.attempt === "number" && body.attempt >= 0 ? Math.floor(body.attempt) : 0,
     });
   }
   const withSms = smsResult === undefined ? {} : { sms: smsResult };

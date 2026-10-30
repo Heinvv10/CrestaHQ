@@ -53,6 +53,8 @@ export interface PublicBookingPageData {
   themePreset: CheckoutThemeId | null;
   /** Where the meeting happens. Null: not set. */
   location: BookingLocation | null;
+  /** Whether the booker's phone gets booking texts: shows the consent line under the phone field. Only this boolean, never the reminder settings. */
+  textsBooker: boolean;
 }
 
 export interface PublicBookingBranding {
@@ -210,6 +212,7 @@ export function publicBookingPage(doc: BookingPage, canonicalSlug: string): Publ
     payment: publicPayment(doc.payment),
     themePreset: publicBookingStyle(doc).themePreset,
     location: publicLocation(doc),
+    textsBooker: doc.smsRemindersEnabled === true,
   };
 }
 

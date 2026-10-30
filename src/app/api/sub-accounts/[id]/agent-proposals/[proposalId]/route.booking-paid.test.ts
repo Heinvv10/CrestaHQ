@@ -65,17 +65,16 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllEnvs());
 
 describe("mark_booking_paid", () => {
-  it("a text-reminders page: the preview lists the reminders (texts included) and says no confirmation text goes", async () => {
+  it("a text-reminders page: the preview lists only the email reminders and says no texts are sent", async () => {
     mem.seed("subAccounts/sa1/bookingPages/bp1", { ...PAGE, remindersEnabled: false, smsRemindersEnabled: true, reminderOffsetsMinutes: [60] });
     const id = await propose();
-    expect(rowOf(id, "Reminders")).toContain("60 min before the start");
-    expect(rowOf(id, "Reminders")).toContain("texts them to the contact's phone");
-    expect(rowOf(id, "Confirmation text")).toContain("None");
+    expect(rowOf(id, "Reminders")).toBe("None");
+    expect(rowOf(id, "Texts")).toContain("no confirmation text and no text reminders");
   });
 
-  it("a page with texts off shows no confirmation-text row", async () => {
+  it("a page with texts off shows no texts row", async () => {
     const id = await propose();
-    expect(rowOf(id, "Confirmation text")).toBeUndefined();
+    expect(rowOf(id, "Texts")).toBeUndefined();
   });
 
   it("an outbound proposal naming the recipient, reminders and workflows; nothing written or sent until approve, which confirms and emails exactly once", async () => {

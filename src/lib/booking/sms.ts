@@ -1,12 +1,14 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
 import { FieldValue } from "firebase-admin/firestore";
 import { getCountryCallingCode, parsePhoneNumberFromString } from "libphonenumber-js/max";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agencyAllowsSharedSms } from "@/lib/agency/policy";
 import { smsSendBlock } from "@/lib/comms/sms-consent";
-import { isQuietHoursDeferred, type QuietHoursHold } from "@/lib/comms/quiet-hours";
+import { formatHoldUntil, isQuietHoursDeferred, type QuietHoursHold } from "@/lib/comms/quiet-hours";
+import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
 import {
   sendSmsForSubAccount,
   smsIsConfigured,
@@ -128,8 +130,56 @@ export function homeCountryE164(raw: string, homeCountry: string | null | undefi
   }
 }
 
+/** A log-safe reason: Twilio's messages quote the destination number, so digit runs are masked. */
 function reasonOf(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
+  const text = err instanceof Error ? err.message : String(err);
+  return text.replace(/\+?\d[\d\s().-]{4,}\d/g, "[number]");
+}
+
+/** Why a text was not sent, as the contact's timeline says it. Consent (opted_out) and a redelivery (already_sent) are not noted. */
+const UNSENT_NOTE: Record<string, string> = {
+  no_phone: "the contact has no phone number",
+  number_not_allowed: "the number is not a valid mobile number in this workspace's home country",
+  sms_not_configured: "no SMS sender is set up for this workspace",
+  send_failed: "the text could not be sent",
+  carrier_unsubscribed: "the number has unsubscribed at the carrier (STOP)",
+  cap_number: "the daily limit of texts to this number was reached",
+  cap_subaccount: "the workspace's daily limit of booking texts was reached",
+  cap_unavailable: "the daily limit could not be checked",
+};
+
+/** One timeline row on a contact the caller has already tenant-checked; a stable id (from the claim) keeps a redelivery to one row. */
+async function noteUnsent(contactId: string, label: string, reason: string, claimPath: string | undefined): Promise<void> {
+  const why = UNSENT_NOTE[reason];
+  if (!why) return;
+  try {
+    const coll = getAdminDb().collection("contacts").doc(contactId).collection("activities");
+    const row = {
+      type: "note_added",
+      content: `${label[0].toUpperCase()}${label.slice(1)} text not sent: ${why}.`,
+      createdBy: "booking",
+      createdAt: FieldValue.serverTimestamp(),
+    };
+    if (claimPath) await coll.doc(`bsms_${createHash("sha1").update(claimPath).digest("hex").slice(0, 16)}_${reason}`).set(row);
+    else await coll.add(row);
+  } catch (err) {
+    console.warn("[booking/sms] note write failed", reasonOf(err));
+  }
+}
+
+/**
+ * A confirmation that quiet hours held is dropped, not parked (a late
+ * "you're booked" is worse than none): the contact's timeline says so. The
+ * contact was tenant-checked inside sendBookingSms, which is the only way to
+ * reach this reason.
+ */
+export async function noteConfirmationHeld(result: BookingSmsResult, contactId: string, noteId: string): Promise<void> {
+  if (result.sent || result.reason !== "quiet_hours" || !result.hold) return;
+  await writeHoldActivity(
+    contactId,
+    `Booking confirmation text was not sent: it fell in quiet hours (until ${formatHoldUntil(result.hold)}).`,
+    noteId,
+  );
 }
 
 export async function sendBookingSms(input: {
@@ -161,26 +211,19 @@ export async function sendBookingSms(input: {
   }
   if (!contact) return { sent: false, reason: "no_contact" };
   if (smsSendBlock(contact)) return { sent: false, reason: "opted_out" };
-  if (!contact.phone) return { sent: false, reason: "no_phone" };
-  const to = homeCountryE164(contact.phone, input.sub.defaultPhoneCountry);
-  if (!to) {
-    try {
-      await db.collection("contacts").doc(contact.id).collection("activities").add({
-        type: "note_added",
-        content: `${input.label} text not sent: the number is not a valid number in this workspace's home country.`,
-        createdBy: "booking",
-        createdAt: FieldValue.serverTimestamp(),
-      });
-    } catch (err) {
-      console.warn("[booking/sms] refusal note write failed", reasonOf(err));
-    }
-    return { sent: false, reason: "number_not_allowed" };
-  }
+  const phone = contact.phone?.trim();
+  const unsent = async (reason: string): Promise<BookingSmsResult> => {
+    await noteUnsent(contact.id, input.label, reason, input.claimPath);
+    return { sent: false, reason };
+  };
+  if (!phone) return unsent("no_phone");
+  const to = homeCountryE164(phone, input.sub.defaultPhoneCountry);
+  if (!to) return unsent("number_not_allowed");
 
   const hasSms =
     subAccountTwilioIsConfigured(input.sub.twilioConfig) ||
     (smsIsConfigured() && (await agencyAllowsSharedSms(input.sub.agencyId)));
-  if (!hasSms) return { sent: false, reason: "sms_not_configured" };
+  if (!hasSms) return unsent("sms_not_configured");
 
   const target = { subAccountId: input.subAccountId, agencyId: input.sub.agencyId, to, claimPath: input.claimPath };
   const reserved = await reserveBookingSms(target);
@@ -188,7 +231,7 @@ export async function sendBookingSms(input: {
     if (reserved.reason !== "already_sent") {
       console.warn(`[booking/sms] not sent: ${reserved.reason} sub=${input.subAccountId}`);
     }
-    return { sent: false, reason: reserved.reason };
+    return reserved.reason === "already_sent" ? { sent: false, reason: reserved.reason } : unsent(reserved.reason);
   }
 
   try {
@@ -261,9 +304,9 @@ export async function sendBookingSms(input: {
       } catch (recordErr) {
         console.warn("[booking/sms] opt-out record failed", reasonOf(recordErr));
       }
-      return { sent: false, reason: "carrier_unsubscribed" };
+      return unsent("carrier_unsubscribed");
     }
     console.warn("[booking/sms] send failed", reasonOf(err));
-    return { sent: false, reason: "send_failed" };
+    return unsent("send_failed");
   }
 }

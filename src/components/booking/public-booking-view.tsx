@@ -755,6 +755,11 @@ function IntakeFormSection({
             maxLength={40}
             required
           />
+          {page.textsBooker && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              We&apos;ll text booking confirmations and reminders to this number.
+            </p>
+          )}
         </Field>
         {needsAddress && (
           <Field
