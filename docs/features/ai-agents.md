@@ -208,3 +208,34 @@ Everything above answers calls **coming in**. Outbound Voice flips the direction
 
 **Setup contract — no new env vars.** Outbound reuses the inbound Voice stack: `VAPI_API_KEY` + `VAPI_WEBHOOK_SECRET` (calls), `QSTASH_*` (campaign fan-out), `NEXT_PUBLIC_APP_URL` (the LLM webhook URL Vapi calls per turn), the sub-account's dedicated Twilio number (BYOC). The agency owner flips `outboundVoiceEnabledByAgency` on; the sub-account operator flips `voice.outboundEnabled` on; the scrub provider is a no-op unless the buyer wires one. Cost is the same per-minute Vapi + per-token OpenRouter footprint as inbound — but spent proactively, which is exactly why it's independently agency-gated.
 
+
+
+### Shared conversational booking engine (1.0.54 A1)
+
+`lib/server/agent-booking-service.ts` replaces `voice-booking-service.ts`.
+The existing voice route uses its phone API; the expanded voice tools and the
+website/messaging adapters land in A3–A5. Those adapters remain unwired here.
+**NOT runtime-verified:** no live call, provider send or widget session was run.
+The per-channel booking page remains the opt-in; no new agency gate is added.
+
+The engine retains our public-page resolver: collective hosts, round-robin-only
+load balancing, named hosts, Google busy (fail open), date overrides, day caps,
+long events and the offered-slot minimum-notice exception. Service, unpublished
+and paid pages are refused. Phone bookings retain host emails, both booking
+triggers and voice-call attempted/booked stamps, without customer confirmations.
+
+Other channels require a reconciled in-tenant contact. They fill blank contact
+fields, save bounded intake/location notes, and schedule confirmation email with
+ICS, host emails, optional booking SMS and reminders after the response. SMS uses
+B3's consent, country, cap, quiet-hours and create-only claim checks, with no
+booker location or intake text. Conversational texts get no quiet-hours exemption.
+Meet uses our bounded push and late-link follow-up machinery before confirmation.
+
+A deterministic event id (tenant/page/channel/contact-or-call/start) and a
+transactional create collapse concurrent retries. Only the creating request runs
+follow-ups; a process failure after commit may leave follow-ups incomplete rather
+than send them twice. A cancelled or moved event is never replayed as success.
+The recent-booking finder also checks tenant, contact, page, time, state and age.
+The engine re-reads the page and contact in the transaction, refusing if page
+configuration changed since preparation. Change-slot reads use the stored event's
+hosts and duration, including every collective host, rather than caller overrides.

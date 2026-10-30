@@ -135,10 +135,12 @@ describe("push call sites", () => {
 
   it("voice booking → after the tool reply", async () => {
     seedPage("p", { hosts: [{ uid: "a", name: "Ann" }] });
-    const { bookVoiceSlot } = await import("@/lib/server/voice-booking-service");
-    const res = await bookVoiceSlot({
+    mem.seed("contacts/c1", { subAccountId: "sa1", name: "C" });
+    const { bookAgentSlot } = await import("@/lib/server/agent-booking-service");
+    const res = await bookAgentSlot({
+    channel: "phone",
       subAccountId: "sa1", agencyId: "ag1", page: mem.read("subAccounts/sa1/bookingPages/p") as never,
-      startAtIso: new Date("2026-09-14T09:00:00Z").toISOString(), callerName: "C", callerPhone: "+27600000000", contactId: "c1",
+      startAtIso: new Date("2026-09-14T09:00:00Z").toISOString(), name: "C", phone: "+27600000000", contactId: "c1",
     });
     expect(res.ok).toBe(true);
     expect(push.later).toHaveBeenCalledWith((res as { eventId: string }).eventId);

@@ -20,14 +20,14 @@ vi.mock("@/lib/comms/ai/prompt", () => ({ buildSystemPrompt: () => "SYSTEM_PROMP
 vi.mock("@/lib/comms/ai/openrouter", () => ({
   callAi: async () => ({ text: '[[book start="2026-09-14T09:00:00Z" name="Ann"]]', totalTokens: 5, model: "haiku" }),
 }));
-vi.mock("@/lib/server/voice-booking-service", () => ({
-  bookVoiceSlot: async (input: { callId: string | null }) => {
+vi.mock("@/lib/server/agent-booking-service", () => ({
+  bookAgentSlot: async (input: { callId: string | null }) => {
     booked.push({ callId: input.callId });
     return { ok: false, code: "error" };
   },
   formatSlotForSpeech: () => "",
-  getVoiceBookingContext: async () => ({ bookable: true, page: { timezone: "UTC", durationMinutes: 30 } }),
-  listVoiceSlots: async () => [],
+  getAgentBookingContext: async () => ({ bookable: true, page: { timezone: "UTC", durationMinutes: 30 } }),
+  listAgentSlots: async () => [],
 }));
 vi.mock("@/lib/booking/page-slots", () => ({ hostSelectionEnabled: () => false }));
 vi.mock("@/lib/firebase/admin", () => ({
