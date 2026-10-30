@@ -77,7 +77,7 @@ On a page whose location is Google Meet (read from the page through the server-s
 
 - **One room per booking**, on the assigned host's copy (a collective meeting's first host), asked for only when that copy is first created. That host is written first; every other host's copy carries the link as its location.
 - **An overwrite never sends `conferenceData`** (a PATCH without it leaves the room alone), so a reschedule moves the Google event and keeps the link the booker was sent.
-- **The link is stored on the event's `meetingUrl`** when the room was just made (replacing the page's fallback snapshot), or when an overwrite finds a room and the event has no link yet (a first push that timed out after Google made it). An operator's own link is never replaced.
+- **The link is stored on the event's `meetingUrl`** when the room was just made (replacing the page's fallback snapshot), or when an overwrite finds a room and the event has no link yet (a first push that timed out after Google made it). An operator's own link is never replaced: the write is a transaction that sets the link only while the event's `meetingUrl` is still empty or still the value the push read, so an edit made during the Google calls wins.
 - Google answering 400 to the conference request (Meet off for that Google account) inserts the event again without it.
 - A `hangoutLink` that is not `https://meet.google.com/…` is dropped (`meetUrlOf`).
 - `pushBookingAndGetMeetUrl(eventId)` is the same push returning `{ meetUrl }` — the book route awaits it for free Meet bookings so the confirmation carries the link. Never throws; `null` when no room was made.

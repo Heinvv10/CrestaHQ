@@ -139,6 +139,26 @@ function meetHostFor(e: SyncedEvent, page: BookingPage | null, eligible: string[
 type Converged = { fingerprint: string; meetUrl: string | null };
 
 /**
+ * Store a Meet room's link on the event, in a transaction: only while the
+ * event's link is still empty or still the one this pass read. An operator's
+ * edit that landed during the Google calls wins. True when stored.
+ */
+async function storeMeetUrl(
+  ref: FirebaseFirestore.DocumentReference,
+  read: string | null,
+  meetUrl: string,
+): Promise<boolean> {
+  return getAdminDb().runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists) return false;
+    const current = (snap.data() as SyncedEvent).meetingUrl ?? null;
+    if (current && current !== read) return false;
+    tx.update(ref, { meetingUrl: meetUrl });
+    return true;
+  });
+}
+
+/**
  * One pass. Returns the fingerprint it converged to (and the event's Meet
  * link, when this pass saw one), or null when it did nothing. `removeAll`:
  * take every Google copy down (the event is about to be deleted outright).
@@ -241,13 +261,16 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<Converg
   // A room just made replaces the page's fallback link on the event; a room
   // found on an overwrite fills only an event that has no link (one whose
   // first push timed out after Google made it). An operator's own link wins.
-  const storeMeet = !!meetUrl && meetUrl !== e.meetingUrl && (meetCreated || !e.meetingUrl);
   await ref.update({
     googleEventIds: ids,
     googleSyncError: failures.length > 0 ? { message: failures.join(" "), at: new Date() } : null,
-    ...(storeMeet ? { meetingUrl: meetUrl } : {}),
   });
-  return { fingerprint: fingerprint(e), meetUrl: storeMeet || meetUrl === e.meetingUrl ? meetUrl : null };
+  const room: string | null = meetUrl;
+  const stored =
+    !!room && room !== e.meetingUrl && (meetCreated || !e.meetingUrl)
+      ? await storeMeetUrl(ref, e.meetingUrl ?? null, room)
+      : false;
+  return { fingerprint: fingerprint(e), meetUrl: stored || (!!room && room === e.meetingUrl) ? room : null };
 }
 
 async function sync(eventId: string): Promise<{ meetUrl: string | null }> {

@@ -12,6 +12,7 @@ import {
 } from "@/lib/booking/validation";
 import { resolveBookingHosts } from "@/lib/booking/hosts";
 import { meetSetupError } from "@/lib/server/booking-page-write";
+import { isDocId } from "@/lib/server/doc-id";
 import { isCheckoutThemeId } from "@/lib/checkout/themes";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage, BookingPageFormData } from "@/types/booking";
@@ -68,6 +69,10 @@ export async function POST(
   ctx: { params: Promise<{ id: string; slug: string }> },
 ) {
   const { id: subAccountId, slug } = await ctx.params;
+  // Both name Firestore paths: one carrying a "/" would address another doc.
+  if (!isDocId(subAccountId) || !isDocId(slug)) {
+    return NextResponse.json({ error: "Booking page not found" }, { status: 404 });
+  }
   const access = await requireSubAccountAdmin(request, subAccountId);
   if (access instanceof NextResponse) return access;
 

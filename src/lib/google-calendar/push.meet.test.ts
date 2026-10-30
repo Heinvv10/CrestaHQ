@@ -79,6 +79,28 @@ describe("a Google Meet booking", () => {
     expect(event().meetingUrl).toBe("https://zoom.example/operator");
   });
 
+  it("an operator's link edited while Google was making the room wins: it is not overwritten", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: "https://zoom.example/fallback" });
+    provider.putEvent.mockImplementationOnce(async () => {
+      state.docs.set("events/ev_1", { ...event(), meetingUrl: "https://zoom.example/operator" });
+      return { created: true, meetUrl: MEET_LINK };
+    });
+    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: null });
+    expect(event().meetingUrl).toBe("https://zoom.example/operator");
+  });
+
+  it("an event whose link was cleared meanwhile still takes the room's link", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: "https://zoom.example/fallback" });
+    provider.putEvent.mockImplementationOnce(async () => {
+      state.docs.set("events/ev_1", { ...event(), meetingUrl: null });
+      return { created: true, meetUrl: MEET_LINK };
+    });
+    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: MEET_LINK });
+    expect(event().meetingUrl).toBe(MEET_LINK);
+  });
+
   it("a room just made replaces the page's fallback link on the event", async () => {
     connect("host_a");
     seedMeetBooking({ meetingUrl: "https://zoom.example/fallback" });
