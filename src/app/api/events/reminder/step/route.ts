@@ -62,7 +62,7 @@ interface ReminderBody {
   channels?: ReminderChannels;
   /** Set by a quiet-hours republish: the email was already handled. */
   smsOnly?: boolean;
-  /** Quiet-hours republish: when the window it waited for ends (ms), and how many holds led here. */
+  /** Quiet-hours republish: when the window it waited for ends (ms; informational), and how many holds led here. */
   heldUntil?: number;
   attempt?: number;
 }
@@ -190,7 +190,6 @@ export async function POST(request: Request) {
       channels: snap,
       startAt,
       endAt,
-      heldUntil: typeof body.heldUntil === "number" ? body.heldUntil : null,
       attempt: typeof body.attempt === "number" && body.attempt >= 0 ? Math.floor(body.attempt) : 0,
       finalAttempt: Number(request.headers.get("upstash-retried") ?? "0") >= REMINDER_STEP_RETRIES,
     });
@@ -200,7 +199,7 @@ export async function POST(request: Request) {
   // delivers this again. The email below does not wait for that (it has its
   // own claim, so the redelivery does not repeat it); the 503 is answered last.
   // On the final delivery the text was noted instead (see sendBookingSms).
-  const retrySms = smsResult === "cap_unavailable" && Number(request.headers.get("upstash-retried") ?? "0") < REMINDER_STEP_RETRIES;
+  const retrySms = (smsResult === "cap_unavailable" || smsResult === "in_flight") && Number(request.headers.get("upstash-retried") ?? "0") < REMINDER_STEP_RETRIES;
   const reply = (extra: Record<string, unknown>) =>
     retrySms
       ? NextResponse.json({ error: "Text could not be queued; retry", ...withSms, ...extra }, { status: 503 })

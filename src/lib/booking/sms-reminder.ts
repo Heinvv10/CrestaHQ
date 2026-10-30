@@ -1,7 +1,5 @@
 import "server-only";
 
-import { FieldValue, type DocumentReference } from "firebase-admin/firestore";
-
 import { getAdminDb } from "@/lib/firebase/admin";
 import { publishCallback } from "@/lib/automations/qstash";
 import { formatHoldUntil } from "@/lib/comms/quiet-hours";
@@ -10,6 +8,7 @@ import { buildEventPublicUrl, hashEventToken } from "@/lib/booking/event-token";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { bookingReminderSmsBody, sendBookingSms } from "@/lib/booking/sms";
 import { REMINDER_STEP_PATH, REMINDER_STEP_RETRIES } from "@/lib/booking/reminder-step";
+import { takeTextLock } from "@/lib/booking/sms-text-lock";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { SubAccountDoc } from "@/types/tenancy";
@@ -32,11 +31,11 @@ export interface ReminderChannels {
  * The republished step re-checks everything (status, token, opt-out, the
  * page's live toggle) before it sends.
  *
- * Reminders held to the same window end would arrive together, as the same
- * text. Each republished step first claims `smswin_{token}_{windowEnd}`: the
- * first sends, the rest answer already_sent. A step that sent nothing gives
- * the window claim back (a failed send, a re-hold, a 503), so another reminder
- * held to that window can still try and the customer is not left with none.
+ * Reminder texts of one event are at most one per half hour: each takes
+ * `smsrecent_{token}` first (sms-text-lock.ts). So two reminders that fire
+ * together, held ones released at the same window end or a held one and a
+ * fresh one, are one text; a lock held by a text still in flight makes the
+ * other wait (503) so that a failed send leaves the other free to go.
  */
 export async function deliverReminderSms(input: {
   event: CalendarEvent;
@@ -48,8 +47,7 @@ export async function deliverReminderSms(input: {
   channels: ReminderChannels | undefined;
   startAt: Date;
   endAt: Date;
-  /** A republish: the window end (ms) this step waited for, and how many holds led here. */
-  heldUntil?: number | null;
+  /** A republish: how many holds led here. */
   attempt?: number;
   /** QStash's last delivery: a text that still cannot be queued is noted instead of retried. */
   finalAttempt?: boolean;
@@ -60,35 +58,27 @@ export async function deliverReminderSms(input: {
   const attempt = input.attempt ?? 0;
   const noteId = `bsms_${eventId}_${offsetMinutes}_${tokenKey}`;
 
-  // One text per quiet-hours window end and event.
-  let windowClaim: DocumentReference | null = null;
-  let ownWindow = false;
-  if (input.heldUntil) {
-    windowClaim = getAdminDb().doc(`events/${eventId}/reminderSends/smswin_${tokenKey}_${input.heldUntil}`);
-    try {
-      await windowClaim.create({ agencyId: event.agencyId, subAccountId: event.subAccountId, offsetMinutes, claimedAt: FieldValue.serverTimestamp() });
-    } catch (err) {
-      if ((err as { code?: unknown } | null)?.code !== 6) throw err;
-      // Another offset's text went for this window.
-      const holder = (await windowClaim.get()).data()?.offsetMinutes;
-      if (holder !== offsetMinutes) {
-        await writeHoldActivity(
-          event.contactId,
-          "A booking reminder text was not sent: another reminder held to the same time went instead.",
-          `${noteId}_collapsed`,
-        );
-        return "already_sent";
-      }
-      // Our own: a redelivery, or a step that died after claiming the window.
-      // Which one is for this offset's own claim below to say (exactly once).
-      ownWindow = true;
+  // One reminder text per event per half hour (see sms-text-lock.ts).
+  const claimPath = `events/${eventId}/reminderSends/sms_${offsetMinutes}_${tokenKey}${attempt > 0 ? `_a${attempt}` : ""}`;
+  const lock = await takeTextLock({
+    eventId,
+    tokenKey,
+    agencyId: event.agencyId,
+    subAccountId: event.subAccountId,
+    offsetMinutes,
+    ownClaimExists: async () => (await getAdminDb().doc(claimPath).get()).exists,
+    finalAttempt: input.finalAttempt === true,
+  });
+  if (!lock.ok) {
+    if (lock.collapsed) {
+      await writeHoldActivity(
+        event.contactId,
+        "A booking reminder text was not sent: another reminder for this booking went a moment ago.",
+        `${noteId}_collapsed`,
+      );
     }
+    return lock.reason;
   }
-  const giveBackWindow = async () => {
-    await windowClaim?.delete().catch((err: unknown) => {
-      console.error("[events/reminder] window claim release failed", err instanceof Error ? err.message : String(err));
-    });
-  };
 
   let result: Awaited<ReturnType<typeof sendBookingSms>>;
   try {
@@ -102,7 +92,7 @@ export async function deliverReminderSms(input: {
       retryOnContention: !input.finalAttempt,
       // A step that follows a hold has its own claim: if the release of the
       // earlier one ever failed, that claim is left behind and must not block it.
-      claimPath: `events/${eventId}/reminderSends/sms_${offsetMinutes}_${tokenKey}${attempt > 0 ? `_a${attempt}` : ""}`,
+      claimPath,
       body: bookingReminderSmsBody({
         businessName: sub.name ?? "us",
         // Never event.title: it carries the booker's name.
@@ -114,14 +104,16 @@ export async function deliverReminderSms(input: {
       }),
     });
   } catch (err) {
-    await giveBackWindow();
+    await lock.release();
     throw err;
   }
-  if (result.sent) return "sent";
-  // Nothing went out: another reminder held to this window may still send.
-  // (Not when our own claim says it is a redelivery of a text that went: that
-  // window is spent.)
-  if (!(ownWindow && result.reason === "already_sent")) await giveBackWindow();
+  if (result.sent) {
+    await lock.markSent();
+    return "sent";
+  }
+  // Nothing went out: another reminder may still send. (Not when our own claim
+  // says this is a redelivery of a text that went: that lock is spent.)
+  if (!(lock.mine && result.reason === "already_sent")) await lock.release();
   const hold = result.hold;
   if (result.reason !== "quiet_hours" || !hold) return result.reason;
 

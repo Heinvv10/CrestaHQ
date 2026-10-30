@@ -38,11 +38,11 @@ const MORNING = new Date("2026-09-25T06:00:00Z");
 const ts = (d: Date) => ({ toDate: () => d, toMillis: () => d.getTime() });
 let token = "";
 
-const remind = (extra: Record<string, unknown> = {}, offsetMinutes = 60) =>
+const remind = (extra: Record<string, unknown> = {}, offsetMinutes = 60, headers: Record<string, string> = {}) =>
   POST(
     new Request("https://app.test/api/events/reminder/step", {
       method: "POST",
-      headers: { "Upstash-Signature": "sig" },
+      headers: { "Upstash-Signature": "sig", ...headers },
       body: JSON.stringify({ eventId: "e1", offsetMinutes, token, ...extra }),
     }),
   );
@@ -82,7 +82,7 @@ const seedContact = (over: Record<string, unknown> = {}) =>
     ...over,
   });
 /** The text claims (not the window claims that sit beside them). */
-const claims = () => mem.list("events/e1/reminderSends").map((d) => d.id).filter((id) => !id.startsWith("smswin_"));
+const claims = () => mem.list("events/e1/reminderSends").map((d) => d.id).filter((id) => id.startsWith("sms_") && !id.startsWith("smsrecent_"));
 const notes = () => mem.list("contacts/c1/activities").filter((a) => a.type === "quiet_hours_held");
 
 beforeEach(() => {
@@ -261,8 +261,9 @@ describe("redelivery", () => {
     expect(sendSmsVia).toHaveBeenCalledOnce();
   });
 
-  it("does not stop a different offset", async () => {
+  it("does not stop a different offset, once the last text is more than half an hour old", async () => {
     await remind({}, 60);
+    vi.setSystemTime(new Date(DAY.getTime() + 31 * 60_000));
     await remind({}, 1440);
     await flushAfterResponse();
     expect(sendSmsVia).toHaveBeenCalledTimes(2);
@@ -402,7 +403,9 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     vi.setSystemTime(MORNING);
     return published().map((p) => p.body) as [Record<string, unknown>, Record<string, unknown>];
   }
-  const windowNotes = () => mem.list("contacts/c1/activities").filter((a) => String(a.content).includes("went instead"));
+  const windowNotes = () => mem.list("contacts/c1/activities").filter((a) => String(a.content).includes("went a moment ago"));
+  const lockId = () => `smsrecent_${hashEventToken(token).slice(0, 16)}`;
+  const lockDoc = () => mem.read(`events/e1/reminderSends/${lockId()}`) as { state?: string; offsetMinutes?: number } | undefined;
 
   it.each([
     ["the earlier offset first", [0, 1]],
@@ -441,9 +444,10 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     const [earlier, later] = await holdBoth();
     sendSmsVia.mockRejectedValueOnce(new Error("carrier down"));
     expect(await (await remind(later, 60)).json()).toMatchObject({ sms: "send_failed" });
-    expect(mem.list("events/e1/reminderSends").some((d) => d.id.startsWith("smswin_"))).toBe(false); // given back
+    expect(lockDoc()).toBeUndefined(); // given back
     expect(await (await remind(earlier, 720)).json()).toMatchObject({ sms: "sent" });
     expect(sendSmsVia).toHaveBeenCalledTimes(2); // one failed attempt, one delivery
+    expect(lockDoc()).toMatchObject({ state: "sent", offsetMinutes: 720 });
   });
 
   it("the earlier one fails at the carrier: the later one still sends", async () => {
@@ -459,32 +463,139 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     const page = mem.read(`subAccounts/${SA}/bookingPages/p1`)!;
     mem.seed(`subAccounts/${SA}/bookingPages/p1`, { ...page, timezone: "Not/AZone" });
     await expect(remind(later, 60)).rejects.toThrow();
-    expect(mem.list("events/e1/reminderSends").some((d) => d.id.startsWith("smswin_"))).toBe(false);
+    expect(lockDoc()).toBeUndefined();
     mem.seed(`subAccounts/${SA}/bookingPages/p1`, page);
     expect(await (await remind(earlier, 720)).json()).toMatchObject({ sms: "sent" });
   });
 
-  it("a step behind its OWN stale window claim (it died after claiming) still sends, once", async () => {
+  it("a step behind its OWN lock (it died after taking it) still sends, once", async () => {
     vi.setSystemTime(MORNING);
-    const windowId = `smswin_${hashEventToken(token).slice(0, 16)}_${MORNING.getTime()}`;
-    mem.seed(`events/e1/reminderSends/${windowId}`, { agencyId: AGENCY, subAccountId: SA, offsetMinutes: 60 });
+    mem.seed(`events/e1/reminderSends/${lockId()}`, { agencyId: AGENCY, subAccountId: SA, offsetMinutes: 60, state: "sending", at: MORNING.getTime() - 60_000 });
     const body = { smsOnly: true, heldUntil: MORNING.getTime(), attempt: 1 };
     expect(await (await remind(body, 60)).json()).toMatchObject({ sms: "sent" });
     expect(sendSmsVia).toHaveBeenCalledOnce();
-    // The redelivery of that step: its own claim says it went, and the window stays spent.
+    expect(lockDoc()).toMatchObject({ state: "sent", offsetMinutes: 60, at: MORNING.getTime() }); // taken over afresh
+    // The redelivery of that step: its own claim says it went, and the lock stays spent.
     expect(await (await remind(body, 60)).json()).toMatchObject({ sms: "already_sent" });
-    expect(mem.read(`events/e1/reminderSends/${windowId}`)).toBeTruthy();
-    // So another offset held to the same window still collapses into it.
+    expect(lockDoc()).toMatchObject({ state: "sent" });
+    // So another offset right behind it collapses into it.
     expect(await (await remind({ ...body }, 720)).json()).toMatchObject({ sms: "already_sent" });
     expect(sendSmsVia).toHaveBeenCalledOnce();
   });
 
-  it("a stale window claim of ANOTHER offset collapses this one, with a note", async () => {
+  it("a twin delivery of a step that is still mid-send (its own claim exists) answers already_sent and leaves the lock alone", async () => {
     vi.setSystemTime(MORNING);
-    mem.seed(`events/e1/reminderSends/smswin_${hashEventToken(token).slice(0, 16)}_${MORNING.getTime()}`, { offsetMinutes: 720 });
-    expect(await (await remind({ smsOnly: true, heldUntil: MORNING.getTime(), attempt: 1 }, 60)).json()).toMatchObject({ sms: "already_sent" });
+    const at = MORNING.getTime() - 1000;
+    mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 60, state: "sending", at });
+    mem.seed(`events/e1/reminderSends/sms_60_${hashEventToken(token).slice(0, 16)}`, { state: "sending" });
+    expect(await (await remind({ smsOnly: true, attempt: 0 }, 60)).json()).toMatchObject({ sms: "already_sent" });
     expect(sendSmsVia).not.toHaveBeenCalled();
-    expect(mem.list("contacts/c1/activities").filter((a) => String(a.content).includes("went instead"))).toHaveLength(1);
+    expect(lockDoc()).toMatchObject({ state: "sending", offsetMinutes: 60, at }); // still the first delivery's
+  });
+
+  it("a step whose lock was taken over meanwhile does not delete the new holder's lock when its own send fails", async () => {
+    vi.setSystemTime(MORNING);
+    sendSmsVia.mockImplementationOnce(async () => {
+      // While this send is in flight, another holder takes the lock over.
+      mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 720, state: "sending", at: MORNING.getTime() + 5 });
+      throw new Error("carrier down");
+    });
+    expect(await (await remind({ smsOnly: true, attempt: 1 }, 60)).json()).toMatchObject({ sms: "send_failed" });
+    expect(lockDoc()).toMatchObject({ state: "sending", offsetMinutes: 720 });
+  });
+
+  it("two steps taking over the same stale lock at once: exactly one wins and texts", async () => {
+    vi.setSystemTime(MORNING);
+    mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 1440, state: "sent", at: MORNING.getTime() - 40 * 60_000 });
+    const res = await Promise.all([remind({ smsOnly: true, attempt: 1 }, 720), remind({ smsOnly: true, attempt: 1 }, 60)]);
+    const bodies = await Promise.all(res.map((r) => r.json()));
+    await flushAfterResponse();
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+    expect(bodies.map((b) => b.sms).sort()).toEqual(["in_flight", "sent"]);
+  });
+
+  it("a recent SENT lock of ANOTHER offset collapses this one, with a note", async () => {
+    vi.setSystemTime(MORNING);
+    mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 720, state: "sent", at: MORNING.getTime() - 5 * 60_000 });
+    expect(await (await remind({ smsOnly: true, attempt: 1 }, 60)).json()).toMatchObject({ sms: "already_sent" });
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(windowNotes()).toHaveLength(1);
+  });
+
+  it("a SENDING lock of another offset makes this one wait (503), not collapse: that text may still fail", async () => {
+    vi.setSystemTime(MORNING);
+    mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 720, state: "sending", at: MORNING.getTime() - 1000 });
+    const res = await remind({ smsOnly: true, attempt: 1 }, 60);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toMatchObject({ sms: "in_flight" });
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(windowNotes()).toEqual([]);
+  });
+
+  it("...and on QStash's last delivery a lock that never resolved is taken as crashed", async () => {
+    vi.setSystemTime(MORNING);
+    mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 720, state: "sending", at: MORNING.getTime() - 1000 });
+    const res = await remind({ smsOnly: true, attempt: 1 }, 60, { "upstash-retried": "3" });
+    expect(await res.json()).toMatchObject({ sms: "sent" });
+    expect(lockDoc()).toMatchObject({ state: "sent", offsetMinutes: 60 });
+  });
+
+  it.each(["sent", "sending"])("a %s lock older than half an hour is free", async (state) => {
+    vi.setSystemTime(MORNING);
+    mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 720, state, at: MORNING.getTime() - 31 * 60_000 });
+    expect(await (await remind({ smsOnly: true, attempt: 1 }, 60)).json()).toMatchObject({ sms: "sent" });
+    expect(lockDoc()).toMatchObject({ state: "sent", offsetMinutes: 60 });
+  });
+
+  it("concurrent: the winner fails at the carrier while its twin is in flight: exactly ONE text still goes", async () => {
+    const [earlier, later] = await holdBoth();
+    sendSmsVia.mockRejectedValueOnce(new Error("carrier down"));
+    const first = await Promise.all([remind(later, 60), remind(earlier, 720)]);
+    const bodies = await Promise.all(first.map((r) => r.json()));
+    // Whichever took the lock failed; the other waited (503) and QStash delivers it again.
+    expect(bodies.map((b) => b.sms).sort()).toEqual(["in_flight", "send_failed"]);
+    const waiting = first.findIndex((r) => r.status === 503);
+    expect((await remind(waiting === 0 ? later : earlier, waiting === 0 ? 60 : 720)).status).toBe(200);
+    await flushAfterResponse();
+    expect(sendSmsVia).toHaveBeenCalledTimes(2); // one failed attempt, one delivery
+    expect(lockDoc()).toMatchObject({ state: "sent" });
+  });
+
+  it("concurrent with no failure: exactly ONE text, the twin waits and then collapses", async () => {
+    const [earlier, later] = await holdBoth();
+    const first = await Promise.all([remind(later, 60), remind(earlier, 720)]);
+    const bodies = await Promise.all(first.map((r) => r.json()));
+    expect(bodies.map((b) => b.sms).sort()).toEqual(["in_flight", "sent"]);
+    const waiting = first.findIndex((r) => r.status === 503);
+    expect(await (await remind(waiting === 0 ? later : earlier, waiting === 0 ? 60 : 720)).json()).toMatchObject({ sms: "already_sent" });
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+  });
+
+  it("a held reminder released at 06:00 and a fresh step firing at 06:00 are ONE text, sequentially and concurrently", async () => {
+    for (const mode of ["held first", "fresh first", "together"] as const) {
+      sendSmsVia.mockClear();
+      mem.clear();
+      mem.seed(`subAccounts/${SA}`, { ...SMTP_SUB, defaultPhoneCountry: "ZA", sendWindow: WINDOW, twilioConfig: { enabled: true, accountSid: "AC1", authTokenSet: true, fromNumber: "+27110000000" } });
+      seedEvent(new Date("2026-09-25T09:00:00Z"));
+      seedPage();
+      seedContact();
+      vi.setSystemTime(NIGHT);
+      await remind({ channels: { sms: true } }, 720); // held until the window opens
+      vi.setSystemTime(MORNING);
+      const heldBody = published().at(-1)!.body;
+      const held = async () => (await remind(heldBody, 720)).json() as Promise<Record<string, unknown>>;
+      const fresh = async () => (await remind({}, 60)).json() as Promise<Record<string, unknown>>; // the 60-minute step, firing at the same instant
+      let results: Array<Record<string, unknown>>;
+      if (mode === "together") {
+        results = await Promise.all([held(), fresh()]);
+        // A twin that found the other still in flight is delivered again by QStash.
+        const waiting = results.findIndex((r) => r.sms === "in_flight");
+        if (waiting >= 0) results[waiting] = await (waiting === 0 ? held() : fresh());
+      } else if (mode === "held first") results = [await held(), await fresh()];
+      else results = [await fresh(), await held()];
+      expect(sendSmsVia, mode).toHaveBeenCalledOnce();
+      expect(results.map((r) => r.sms).sort(), mode).toEqual(["already_sent", "sent"]);
+    }
   });
 
   it("a step that holds again gives its window back, so another reminder held to it can send", async () => {
@@ -495,13 +606,14 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     expect(await (await remind(earlier, 720)).json()).toMatchObject({ sms: "sent" });
   });
 
-  it("a reminder held alone is sent, and so is one held to a different window end", async () => {
+  it("a reminder held alone is sent, and so is one more than half an hour later", async () => {
     await remind({ channels: { sms: true } }, 120);
     vi.setSystemTime(MORNING);
     const [held] = published().map((p) => p.body);
     expect(await (await remind(held, 120)).json()).toMatchObject({ sms: "sent" });
-    // A larger offset arriving for another window end is not superseded by this one.
-    expect(await (await remind({ smsOnly: true, heldUntil: MORNING.getTime() + 86_400_000 }, 1440)).json()).toMatchObject({ sms: "sent" });
+    vi.setSystemTime(new Date(MORNING.getTime() + 31 * 60_000));
+    expect(await (await remind({ smsOnly: true }, 1440)).json()).toMatchObject({ sms: "sent" });
+    expect(sendSmsVia).toHaveBeenCalledTimes(2);
   });
 
   it("an email 503 retry while the text is held: one republish id, and the text goes once after the window", async () => {

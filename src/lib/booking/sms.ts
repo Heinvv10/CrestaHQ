@@ -119,8 +119,15 @@ export function bookingReminderSmsBody(input: {
     .join("\n");
 }
 
-/** The US and Canada share +1 and one domestic network; a workspace in either texts both. */
-const NANP_HOME = new Set(["US", "CA"]);
+/**
+ * Regions a workspace texts as domestic. The US and Canada share +1 and one
+ * network; the US territories are domestic US numbers. The other +1 countries
+ * (Jamaica, the Bahamas, the Dominican Republic...) are international.
+ */
+const DOMESTIC: Record<string, ReadonlySet<string>> = {
+  US: new Set(["US", "CA", "PR", "GU", "VI", "AS", "MP"]),
+  CA: new Set(["US", "CA"]),
+};
 
 /**
  * `raw` as E.164 when it is a valid MOBILE number in the home country (the
@@ -128,7 +135,8 @@ const NANP_HOME = new Set(["US", "CA"]);
  * number is read in the home country; a "+" number keeps its own. The number's
  * REGION must be the home country, not just its calling code: +1 also covers
  * Jamaica, the Bahamas and the other Caribbean NANP countries, whose rates are
- * not domestic. The one exception is US/CA, which accept each other.
+ * not domestic. The exceptions are in DOMESTIC: US and CA accept each other,
+ * and a US workspace also accepts the US territories.
  */
 export function homeCountryE164(raw: string, homeCountry: string | null | undefined): string | null {
   const home = coercePhoneCountry(homeCountry);
@@ -144,7 +152,7 @@ export function homeCountryE164(raw: string, homeCountry: string | null | undefi
   if (parsed.nationalNumber.length < 7) return null;
   const region = parsed.country;
   if (!region) return null;
-  const sameRegion = region === home || (NANP_HOME.has(region) && NANP_HOME.has(home));
+  const sameRegion = region === home || DOMESTIC[home]?.has(region) === true;
   try {
     return sameRegion && parsed.countryCallingCode === getCountryCallingCode(home) ? parsed.number : null;
   } catch {

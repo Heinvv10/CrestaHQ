@@ -184,9 +184,20 @@ describe("homeCountryE164", () => {
     expect(homeCountryE164("+14155552671", "CA")).toBe("+14155552671"); // a San Francisco number
   });
 
+  it("a US workspace also texts the US territories (PR, GU, VI, AS, MP); a CA one does not", () => {
+    const territories = ["+17875551234", "+16717351234", "+13407731234", "+16847331234", "+16702341234"];
+    const valid = territories.filter((n) => homeCountryE164(n, "US"));
+    expect(valid, "which of the sample numbers are valid mobiles").toEqual(territories);
+    for (const n of territories) {
+      expect(homeCountryE164(n, "US"), n).toBe(n);
+      expect(homeCountryE164(n, "CA"), n).toBeNull();
+      expect(homeCountryE164(n, "ZA"), n).toBeNull();
+    }
+  });
+
   it("refuses the Caribbean +1 countries, whose rates are not domestic, whichever workspace", () => {
-    for (const n of ["+18765551234", "+1 876 316 1234", "+12425551234", "+17875551234", "+18095551234"]) {
-      // Jamaica, the Bahamas (and Puerto Rico and the Dominican Republic stay their own regions, not US).
+    for (const n of ["+18765551234", "+1 876 316 1234", "+12425551234", "+18095551234"]) {
+      // Jamaica, the Bahamas, the Dominican Republic: their own regions, not US.
       expect(homeCountryE164(n, "US"), n).toBeNull();
       expect(homeCountryE164(n, "CA"), n).toBeNull();
     }
