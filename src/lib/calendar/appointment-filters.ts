@@ -26,7 +26,7 @@ export interface AppointmentFilters {
   status: EventStatus | null;
   /**
    * `manual` vs `booking_page` only — a voice booking is itself a
-   * `booking_page` event (voice-booking-service.ts stamps
+   * `booking_page` event (agent-booking-service.ts stamps
    * `source: "booking_page"`, not a distinct value) with no other
    * per-event field marking it voice-originated, so there is no clean
    * third bucket to filter on today.

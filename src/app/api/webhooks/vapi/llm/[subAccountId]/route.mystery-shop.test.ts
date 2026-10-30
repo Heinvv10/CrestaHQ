@@ -22,11 +22,11 @@ vi.mock("@/lib/comms/ai/openrouter", () => ({
     return { text: "Thanks!", totalTokens: 5, model: "haiku" };
   },
 }));
-vi.mock("@/lib/server/voice-booking-service", () => ({
-  bookVoiceSlot: async () => ({ ok: false, code: "error" }),
+vi.mock("@/lib/server/agent-booking-service", () => ({
+  bookAgentSlot: async () => ({ ok: false, code: "error" }),
   formatSlotForSpeech: () => "",
-  getVoiceBookingContext: async () => null,
-  listVoiceSlots: async () => [],
+  getAgentBookingContext: async () => null,
+  listAgentSlots: async () => [],
 }));
 vi.mock("@/lib/booking/page-slots", () => ({ hostSelectionEnabled: () => false }));
 

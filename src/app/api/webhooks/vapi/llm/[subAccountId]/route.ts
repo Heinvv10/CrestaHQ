@@ -8,11 +8,11 @@ import { replyModelFallback } from "@/lib/comms/ai/model-policy";
 import { incrementChannelTokens, resolveAgent } from "@/lib/comms/ai/agent";
 import { voiceCallPrompt } from "@/lib/comms/voice/call-prompt";
 import {
-  bookVoiceSlot,
+  bookAgentSlot,
   formatSlotForSpeech,
-  getVoiceBookingContext,
-  listVoiceSlots,
-} from "@/lib/server/voice-booking-service";
+  getAgentBookingContext,
+  listAgentSlots,
+} from "@/lib/server/agent-booking-service";
 import { hostSelectionEnabled } from "@/lib/booking/page-slots";
 import type { BookingHost, BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types";
@@ -262,7 +262,7 @@ export async function POST(
   if (!isOutboundCall) {
     const slugCfg = agent.channel.voice?.bookingPageSlug ?? null;
     if (slugCfg) {
-      const bctx = await getVoiceBookingContext(subAccountId, slugCfg).catch(
+      const bctx = await getAgentBookingContext(subAccountId, slugCfg).catch(
         () => null,
       );
       if (bctx?.bookable) {
@@ -545,14 +545,15 @@ async function runBookingToolIfRequested(input: {
       return "[SYSTEM TOOL RESULT — not the caller speaking] The book marker was missing its start value. Emit [[slots]] to get fresh times, then book with the exact start value of the slot the caller chose.";
     }
     try {
-      const result = await bookVoiceSlot({
+      const result = await bookAgentSlot({
         subAccountId,
         agencyId,
         page,
         startAtIso,
-        callerName,
-        callerPhone: input.callerPhone,
-        callerEmail: input.callerEmail,
+        channel: "phone",
+        name: callerName,
+        phone: input.callerPhone,
+        email: input.callerEmail,
         contactId: input.contactId,
         hostUid,
         callId: input.callId,
@@ -572,7 +573,7 @@ async function runBookingToolIfRequested(input: {
       // "no longer available" (a real-conflict message) would send it into
       // a retry loop on the same bad value. Give it a copy-exactly nudge
       // instead. A genuine `slot_taken` gets the apologise-and-offer path.
-      const alternatives = await listVoiceSlots(
+      const alternatives = await listAgentSlots(
         subAccountId,
         page,
         hostUid,
@@ -623,7 +624,7 @@ async function runBookingToolIfRequested(input: {
     // call that ends before a booking still creates a follow-up Task.
     runAfterResponse(() => stampBookingAttempt(subAccountId, input.callId));
     try {
-      const slots = await listVoiceSlots(subAccountId, input.page, hostUid);
+      const slots = await listAgentSlots(subAccountId, input.page, hostUid);
       const forHost = hostUid
         ? ` for ${(page.hosts ?? []).find((h) => h.uid === hostUid)?.name ?? "the chosen host"}`
         : "";

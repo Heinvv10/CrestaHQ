@@ -24,8 +24,8 @@ vi.mock("@/lib/comms/ai/agent", () => ({
 }));
 vi.mock("@/lib/comms/ai/context", () => ({ buildContactContextBlock: async () => null }));
 vi.mock("@/lib/comms/ai/prompt", () => ({ buildSystemPrompt: () => "SYSTEM" }));
-vi.mock("@/lib/server/voice-booking-service", () => ({
-  bookVoiceSlot: vi.fn(), formatSlotForSpeech: vi.fn(), getVoiceBookingContext: vi.fn(), listVoiceSlots: vi.fn(),
+vi.mock("@/lib/server/agent-booking-service", () => ({
+  bookAgentSlot: vi.fn(), formatSlotForSpeech: vi.fn(), getAgentBookingContext: vi.fn(), listAgentSlots: vi.fn(),
 }));
 
 const { mem } = await import("@/test/gbp-sync-store");

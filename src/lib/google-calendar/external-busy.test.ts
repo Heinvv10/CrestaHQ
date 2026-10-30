@@ -55,13 +55,15 @@ describe("externalBusy at every re-verify", () => {
   });
 
   it("voice confirm", async () => {
-    const { bookVoiceSlot, listVoiceSlots } = await import("@/lib/server/voice-booking-service");
+    mem.seed("contacts/c1", { subAccountId: "sa1", name: "C" });
+    const { bookAgentSlot, listAgentSlots } = await import("@/lib/server/agent-booking-service");
     const page = mem.read("subAccounts/sa1/bookingPages/p") as never;
     const book = (hhmm: string) =>
-      bookVoiceSlot({ subAccountId: "sa1", agencyId: "ag1", page, startAtIso: at(hhmm).toISOString(), callerName: "C", callerPhone: "+27600000000", contactId: "c1" });
+      bookAgentSlot({
+    channel: "phone", subAccountId: "sa1", agencyId: "ag1", page, startAtIso: at(hhmm).toISOString(), name: "C", phone: "+27600000000", contactId: "c1" });
     expect(await book("10:00")).toEqual({ ok: false, code: "slot_taken" });
     expect((await book("10:30")).ok).toBe(true);
-    const listed = (await listVoiceSlots("sa1", page)).map((s) => s.startAt.getTime());
+    const listed = (await listAgentSlots("sa1", page)).map((s) => s.startAt.getTime());
     expect(listed).not.toContain(at("10:00").getTime());
   });
 });

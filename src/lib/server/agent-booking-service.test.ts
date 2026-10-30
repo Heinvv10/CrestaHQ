@@ -15,25 +15,26 @@ vi.mock("@/lib/server/contacts-service", () => ({
   emitContactCreatedById: async () => undefined,
 }));
 
-const { bookVoiceSlot, getVoiceBookingContext, listVoiceSlots } = await import(
-  "./voice-booking-service"
+const { bookAgentSlot, getAgentBookingContext, listAgentSlots } = await import(
+  "./agent-booking-service"
 );
 
 const A = { uid: "a", name: "Ann" };
 const B = { uid: "b", name: "Bob" };
 
-const bookAt = (page: Parameters<typeof bookVoiceSlot>[0]["page"], hhmm: string) =>
-  bookVoiceSlot({
+const bookAt = (page: Parameters<typeof bookAgentSlot>[0]["page"], hhmm: string) =>
+  bookAgentSlot({
+    channel: "phone",
     subAccountId: "sa1",
     agencyId: "ag1",
     page,
     startAtIso: at(hhmm).toISOString(),
-    callerName: "Caller",
-    callerPhone: "+27600000000",
+    name: "Caller",
+    phone: "+27600000000",
     contactId: "c1",
   });
 
-beforeEach(resetBookingHarness);
+beforeEach(() => { resetBookingHarness(); mem.seed("contacts/c1", { subAccountId: "sa1", name: "", email: "", phone: "" }); });
 afterEach(() => vi.useRealTimers());
 
 describe("voice booking", () => {
@@ -41,7 +42,7 @@ describe("voice booking", () => {
     const page = seedPage("col", { calendarType: "collective", hosts: [A, B] });
     seedEvent("bobs", "09:00", "09:30", { assignedToUid: "b" });
 
-    const slots = await listVoiceSlots("sa1", page);
+    const slots = await listAgentSlots("sa1", page);
     expect(slots[0].startAt.toISOString()).toBe("2026-09-14T09:30:00.000Z");
 
     expect(await bookAt(page, "09:00")).toEqual({ ok: false, code: "slot_taken" });
@@ -53,20 +54,21 @@ describe("voice booking", () => {
   it("confirms an offered slot inside the moving minimum notice", async () => {
     // 4h notice at 06:00 → listing starts at 10:00; 09:00 was offered earlier.
     const page = seedPage("solo", { minNoticeHours: 4 });
-    const slots = await listVoiceSlots("sa1", page);
+    const slots = await listAgentSlots("sa1", page);
     expect(slots[0].startAt.toISOString()).toBe("2026-09-14T10:00:00.000Z");
     expect(await bookAt(page, "09:00")).toMatchObject({ ok: true });
   });
 
   it("a caller name or number with a line break reaches the title on one line", async () => {
     const page = seedPage("solo", { location: { type: "we_call", value: null } });
-    const res = await bookVoiceSlot({
+    const res = await bookAgentSlot({
+    channel: "phone",
       subAccountId: "sa1",
       agencyId: "ag1",
       page,
       startAtIso: at("09:00").toISOString(),
-      callerName: "Eve\r\nATTENDEE:mailto:evil@example.com\u2028x",
-      callerPhone: "+27 60\u0085000",
+      name: "Eve\r\nATTENDEE:mailto:evil@example.com\u2028x",
+      phone: "+27 60\u0085000",
       contactId: "c1",
     });
     expect(res).toMatchObject({ ok: true });
@@ -80,7 +82,7 @@ describe("voice booking", () => {
       calendarType: "service",
       services: [{ id: "cut", name: "Cut", durationMinutes: 60, description: null }],
     });
-    expect(await getVoiceBookingContext("sa1", "svc")).toMatchObject({
+    expect(await getAgentBookingContext("sa1", "svc")).toMatchObject({
       bookable: false,
       reason: "page_is_service",
     });
