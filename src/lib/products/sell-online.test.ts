@@ -41,6 +41,7 @@ describe("sellOnlinePriceError", () => {
     [1, "USD"],
     [49_900, "ZAR"],
     [MAX_SELL_ONLINE_PRICE_CENTS, "EUR"],
+    [123_00, "JPY"],
   ])("%s %s → ok", (cents, currency) => {
     expect(sellOnlinePriceError(cents, currency)).toBeNull();
   });
@@ -57,6 +58,7 @@ describe("sellOnlinePriceError", () => {
     ["a three-decimal currency", 100, "KWD"],
     ["lower-case currency", 100, "usd"],
     ["no currency", 100, undefined],
+    ["a zero-decimal price with cents (¥123.45)", 12_345, "JPY"],
   ])("%s → refused", (_label, cents, currency) => {
     expect(sellOnlinePriceError(cents, currency)).not.toBeNull();
   });

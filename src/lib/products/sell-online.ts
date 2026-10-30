@@ -1,3 +1,4 @@
+import { isZeroDecimalCurrency } from "@/lib/stripe/amount";
 import type { Product } from "@/types/products";
 import type { SubAccountDoc } from "@/types/tenancy";
 
@@ -80,6 +81,11 @@ export function sellOnlinePriceError(unitPriceCents: unknown, currency: unknown)
   }
   if (unitPriceCents > MAX_SELL_ONLINE_PRICE_CENTS) {
     return "That price is too high to sell online.";
+  }
+  // JPY and the other zero-decimal currencies charge whole units: 123.45
+  // would be charged as 123 while the order books 123.45.
+  if (isZeroDecimalCurrency(currency) && unitPriceCents % 100 !== 0) {
+    return `${currency} prices must be whole amounts (no cents).`;
   }
   return null;
 }
