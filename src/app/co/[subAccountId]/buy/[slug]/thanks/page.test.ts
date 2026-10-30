@@ -13,7 +13,7 @@ import { createMemoryFirestore } from "@/test/memory-firestore";
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
-const { default: ThanksPage } = await import("./page");
+const { default: ThanksPage, metadata } = await import("./page");
 const { mintThanksToken } = await import("@/lib/server/product-buy-service");
 
 const SA = "sa1";
@@ -48,6 +48,8 @@ const expectNothingOfTheOrder = (html: string) => {
 
 beforeEach(() => {
   mem.clear();
+  process.env.RESEND_API_KEY = "re_test";
+  process.env.EMAIL_FROM = "shop@example.com";
   mem.seed(`subAccounts/${SA}`, { agencyId: "ag1", name: "Fixture" });
   mem.seed("orders/o1", ORDER);
 });
@@ -77,6 +79,48 @@ describe("with the order's own token", () => {
     mem.seed("orders/o1", { ...ORDER, deliveries: [{ productId: "p1", delivery: { type: "download", url: "javascript:alert(1)" } }] });
     const html = await render({ order: "o1", t: TOKEN });
     expect(html).not.toContain("javascript:");
+  });
+
+  it("partially refunded: still paid, keeps the download, with a note", async () => {
+    mem.seed("orders/o1", { ...ORDER, status: "partially_refunded" });
+    const html = await render({ order: "o1", t: TOKEN });
+    expect(html).toContain(`href="${DOWNLOAD}"`);
+    expect(html).toContain("Part of this payment has been refunded");
+  });
+
+  it("paid but flagged (open or resolved): no download", async () => {
+    for (const over of [{ attentionOpen: true, attention: "check it" }, { attentionOpen: false, attention: "resolved" }]) {
+      mem.seed("orders/o1", { ...ORDER, ...over });
+      const html = await render({ order: "o1", t: TOKEN });
+      expect(html).not.toContain(DOWNLOAD);
+      expect(html).toContain("quick check");
+    }
+  });
+
+  it("held (pending, flagged): a quick check, no download", async () => {
+    mem.seed("orders/o1", { ...ORDER, status: "pending", attentionOpen: true, attention: "differs" });
+    const html = await render({ order: "o1", t: TOKEN });
+    expect(html).toContain("quick check");
+    expect(html).not.toContain(DOWNLOAD);
+  });
+
+  it("expired: says so, nothing charged, no download", async () => {
+    mem.seed("orders/o1", { ...ORDER, status: "expired" });
+    const html = await render({ order: "o1", t: TOKEN });
+    expect(html).toContain("Checkout expired");
+    expect(html).toContain("nothing was charged");
+    expect(html).not.toContain(DOWNLOAD);
+  });
+
+  it("claims a confirmation email only when one can be sent", async () => {
+    expect(await render({ order: "o1", t: TOKEN })).toContain("A confirmation is on its way");
+    mem.seed("orders/o1", { ...ORDER, confirmationEmail: { state: "failed", error: "x", at: 1 } });
+    expect(await render({ order: "o1", t: TOKEN })).not.toContain("on its way");
+    mem.seed("orders/o1", ORDER);
+    delete process.env.RESEND_API_KEY;
+    const html = await render({ order: "o1", t: TOKEN });
+    expect(html).not.toContain("on its way");
+    expect(html).toContain("Keep this page");
   });
 
   it("a query param can't claim paid", async () => {
@@ -120,4 +164,9 @@ it("mintThanksToken: a fresh 43-char token whose hash the page accepts", async (
   mem.seed("orders/o1", { ...ORDER, thanksTokenHash: a.hash });
   expect(await render({ order: "o1", t: a.token })).toContain("Fibre guide");
   expectNothingOfTheOrder(await render({ order: "o1", t: b.token }));
+});
+
+it("metadata: never indexed, and the token URL is never sent as a referrer", () => {
+  expect(metadata.referrer).toBe("no-referrer");
+  expect(metadata.robots).toEqual({ index: false, follow: false });
 });

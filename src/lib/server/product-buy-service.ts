@@ -157,6 +157,14 @@ export async function loadBuyBrand(subAccountId: string): Promise<BuyBrand> {
   return loadBrand(subAccountId, sub ?? {});
 }
 
+/** The thanks page's brand, and whether an order confirmation can be emailed. */
+export async function loadThanksShop(
+  subAccountId: string,
+): Promise<{ brand: BuyBrand; emailConfigured: boolean }> {
+  const sub = (await readSub(subAccountId)) ?? {};
+  return { brand: await loadBrand(subAccountId, sub), emailConfigured: emailIsConfigured(sub) };
+}
+
 export function deliverySnapshots(products: Product[]): OrderDeliverySnapshot[] {
   const out: OrderDeliverySnapshot[] = [];
   for (const p of products) {

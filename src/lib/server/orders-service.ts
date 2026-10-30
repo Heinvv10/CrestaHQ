@@ -170,40 +170,6 @@ export async function createPendingOrder(input: {
   return ref.id;
 }
 
-/**
- * Settle the Stripe session of an order written before it (express buy
- * links write the order first, so no provider session exists without a row).
- * With a session: record its id and mode so the reconciler can find the
- * order. Without one (the session call failed): the order can never be paid,
- * so it is marked `failed`. Only an order still `pending` with no session
- * changes; returns false otherwise.
- */
-export async function attachCheckoutSession(
-  orderId: string,
-  session: { id: string; livemode: boolean } | null,
-): Promise<boolean> {
-  const db = getAdminDb();
-  const ref = db.doc(`orders/${orderId}`);
-  return db.runTransaction(async (tx) => {
-    const snap = await tx.get(ref);
-    const order = snap.data() as Partial<Order> | undefined;
-    if (!order || order.status !== "pending" || order.stripeCheckoutSessionId !== "") {
-      return false;
-    }
-    tx.update(
-      ref,
-      session
-        ? {
-            stripeCheckoutSessionId: session.id,
-            livemode: session.livemode,
-            updatedAt: FieldValue.serverTimestamp(),
-          }
-        : { status: "failed", updatedAt: FieldValue.serverTimestamp() },
-    );
-    return true;
-  });
-}
-
 /** Look an order up by its Stripe Checkout Session id — the reconciler's
  *  idempotency key. Equality-only query, no composite index needed. */
 export async function findOrderByCheckoutSession(

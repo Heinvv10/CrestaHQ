@@ -20,7 +20,12 @@ import {
   stripeCanChargeCurrency,
 } from "@/lib/stripe/amount";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { reconcileContactFromCapture } from "@/lib/comms/ai/capture";
+import {
+  handleCheckoutExpired,
+  prepareProductLinkPayment,
+  sessionBuyer,
+} from "@/lib/stripe/product-link-reconcile";
+import { sendOrderConfirmationAfterResponse } from "@/lib/server/order-confirmation-service";
 import { eventTokenSecretConfigured } from "@/lib/booking/event-token";
 import type { Order } from "@/types/orders";
 
@@ -76,6 +81,8 @@ export async function reconcileStripeEvent(input: {
       // later with this event, carrying the same session, now paid.
       case "checkout.session.async_payment_succeeded":
         return await handleCheckoutCompleted(subAccountId, event);
+      case "checkout.session.expired":
+        return await handleCheckoutExpired(subAccountId, event.data.object as Stripe.Checkout.Session);
       case "charge.refunded":
         return await handleChargeRefunded(subAccountId, event);
       case "charge.dispute.created":
@@ -129,49 +136,21 @@ async function handleCheckoutCompleted(
       ? session.payment_intent
       : (session.payment_intent?.id ?? null);
 
-  const marked = await markOrderPaid({
+  // Express buy links: hold a mismatched payment, link the buyer's contact.
+  if (order.source === "product_link") {
+    const pre = await prepareProductLinkPayment(order, session, paymentIntentId);
+    if (pre.held) return { handled: true, detail: `order ${order.id} held: amount mismatch` };
+  }
+
+  const buyer = sessionBuyer(session);
+  const { changed, order: updated } = await markOrderPaid({
     orderId: order.id,
     stripePaymentIntentId: paymentIntentId,
-    // Buyer-typed on Stripe's page: capped before it is stored.
-    buyerEmail: session.customer_details?.email?.trim().toLowerCase().slice(0, 254) || null,
-    buyerName:
-      (session.customer_details?.name ?? session.customer_details?.individual_name)
-        ?.trim()
-        .slice(0, 200) || null,
+    buyerEmail: buyer.email,
+    buyerName: buyer.name,
   });
-  const changed = marked.changed;
-  let updated = marked.order;
 
   if (!updated) return { handled: true, detail: "order no longer exists" };
-
-  // An express buy link knows nobody until Stripe collects the buyer's email,
-  // so the contact is found or created now, before the order's events fire
-  // (a workflow needs the contact). A failure leaves the order unlinked.
-  if (changed && updated.source === "product_link" && !updated.contactId && updated.buyerEmail) {
-    try {
-      const res = await reconcileContactFromCapture({
-        agencyId: updated.agencyId,
-        subAccountId: updated.subAccountId,
-        existingContactId: null,
-        pageUrl: null,
-        source: "checkout",
-        matchStrategy: "email-first",
-        capture: {
-          name: updated.buyerName,
-          email: updated.buyerEmail,
-          phone: session.customer_details?.phone?.slice(0, 40) ?? null,
-        },
-      });
-      if (res?.contactId) {
-        await getAdminDb().doc(`orders/${updated.id}`).update({ contactId: res.contactId });
-        updated = { ...updated, contactId: res.contactId };
-      }
-    } catch (err) {
-      console.error(
-        `[order-reconciler] express contact failed order=${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
-      );
-    }
-  }
 
   // The idempotency point for the order's own events: a redelivered event
   // finds the order already paid, so no duplicate webhook / workflow / activity.
@@ -205,6 +184,9 @@ async function handleCheckoutCompleted(
       console.error(`[order-reconciler] order ${updated.id} vanished before its flag: ${problem}`);
     });
   }
+
+  // Claimed once in a transaction, so every delivery may ask.
+  if (updated.source === "product_link") sendOrderConfirmationAfterResponse(updated.id);
 
   return {
     handled: true,
@@ -253,27 +235,19 @@ async function applySourceEffects(
     return payer == null && surface !== null && ours !== null && surface >= ours;
   };
 
-  // The amount this session collected, which must be the amount the order
-  // was opened for. Adaptive Pricing sessions created before 2025-03-31
-  // report the buyer's converted amount on the session and the integration
-  // amount under `currency_conversion`; newer ones keep the integration
-  // amount on the session itself.
-  const paidAmount = session.currency_conversion?.amount_total ?? session.amount_total;
-  const paidCurrency = (session.currency_conversion?.source_currency ?? session.currency ?? "").toLowerCase();
-  const amountMatches =
-    paidCurrency === order.currency.toLowerCase() &&
-    stripeCanChargeCurrency(paidCurrency) &&
-    paidAmount === centsToStripeAmount(order.totalCents, order.currency);
-
-  if (order.source === "product_link") {
-    return amountMatches
-      ? null
-      : `Paid ${paidAmount ?? "?"} ${paidCurrency.toUpperCase()} (Stripe units), which differs from this order — check it by hand before delivering.`;
-  }
-
   if (order.source === "quote" && order.quoteId) {
-    // The invoice is settled only for the amount this session collected.
-    if (!amountMatches) {
+    // The invoice is settled only for the amount this session collected,
+    // which must be the amount the order was opened for. Adaptive Pricing
+    // sessions created before 2025-03-31 report the buyer's converted amount
+    // on the session and the integration amount under `currency_conversion`;
+    // newer ones keep the integration amount on the session itself.
+    const paidAmount = session.currency_conversion?.amount_total ?? session.amount_total;
+    const paidCurrency = (session.currency_conversion?.source_currency ?? session.currency ?? "").toLowerCase();
+    if (
+      paidCurrency !== order.currency.toLowerCase() ||
+      !stripeCanChargeCurrency(paidCurrency) ||
+      paidAmount !== centsToStripeAmount(order.totalCents, order.currency)
+    ) {
       return `Paid ${paidAmount ?? "?"} ${paidCurrency.toUpperCase()} (Stripe units), which differs from this order — the invoice was not marked paid. Check it by hand.`;
     }
     // Routes through the SAME service the operator's "Mark as paid" button

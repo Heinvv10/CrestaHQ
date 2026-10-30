@@ -210,6 +210,32 @@ it("a failed Stripe session leaves the order failed, never payable", async () =>
   expect(orders()).toEqual([expect.objectContaining({ status: "failed", stripeCheckoutSessionId: "" })]);
 });
 
+it("Stripe returns a session without a URL → 502, order failed", async () => {
+  stripe.createCheckoutSessionForSubAccount.mockResolvedValueOnce({ id: "cs_test_nourl", url: null, livemode: false });
+  expect((await post()).status).toBe(502);
+  expect(orders()).toEqual([expect.objectContaining({ status: "failed", stripeCheckoutSessionId: "" })]);
+});
+
+it("attaching the session fails → 500, and the order is closed, never payable", async () => {
+  const real = mem.db.runTransaction.bind(mem.db);
+  // The first transaction of the request is the attach; the close after it is real.
+  vi.spyOn(mem.db, "runTransaction").mockImplementationOnce(async () => {
+    throw new Error("14 UNAVAILABLE");
+  }).mockImplementation(real);
+  const res = await post();
+  expect(res.status).toBe(500);
+  expect(await res.json()).not.toHaveProperty("url");
+  expect(orders()).toEqual([expect.objectContaining({ status: "failed", stripeCheckoutSessionId: "" })]);
+});
+
+it("a body over 4 KB → 413 before any read", async () => {
+  const doc = vi.spyOn(mem.db, "doc");
+  const res = await post({ pad: "x".repeat(5_000) });
+  expect(res.status).toBe(413);
+  expect(doc).not.toHaveBeenCalled();
+  expect(orders()).toHaveLength(0);
+});
+
 it("the per-IP checkout rate limit applies", async () => {
   mem.seed(`subAccounts/${SA}`, { ...SUB, sellOnlineEnabledByAgency: false });
   const statuses: number[] = [];

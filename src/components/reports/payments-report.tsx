@@ -51,6 +51,7 @@ const STATUS_STYLES: Record<OrderStatus, string> = {
   refunded: "bg-rose-500/10 text-rose-700 dark:text-rose-400",
   partially_refunded: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
   failed: "bg-rose-500/10 text-rose-700 dark:text-rose-400",
+  expired: "bg-muted text-muted-foreground",
 };
 
 /** Revenue actually retained: paid minus anything refunded back. */

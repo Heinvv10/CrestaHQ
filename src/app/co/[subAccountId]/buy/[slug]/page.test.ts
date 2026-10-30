@@ -14,7 +14,7 @@ import { stringsSentToClient } from "@/test/sent-to-client";
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
-const { default: BuyPage } = await import("./page");
+const { default: BuyPage, generateMetadata } = await import("./page");
 
 const SA = "sa1";
 const SUB = {
@@ -119,4 +119,10 @@ it("internal product fields are not sent to the client", async () => {
   expect(sent).toContain("Fibre guide");
   expect(sent).not.toContain("costCents");
   expect(sent).not.toContain("1234");
+});
+
+it("metadata: never indexed", async () => {
+  const meta = await generateMetadata({ params: Promise.resolve({ subAccountId: SA, slug: "fibre-guide" }) });
+  expect(meta.robots).toEqual({ index: false, follow: false });
+  expect(meta.title).toContain("Fibre guide");
 });

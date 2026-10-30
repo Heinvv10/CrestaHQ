@@ -24,7 +24,9 @@ export type OrderStatus =
   | "paid"
   | "refunded"
   | "partially_refunded"
-  | "failed";
+  | "failed"
+  /** A `product_link` order whose Stripe session expired unpaid. */
+  | "expired";
 
 /** Where the order came from. Only `checkout_page` exists in v1; the rest are
  *  Phase B adopters, declared now so the reconciler never needs widening. */
@@ -52,6 +54,13 @@ export interface OrderLineItem {
 export interface OrderDeliverySnapshot {
   productId: string;
   delivery: Exclude<ProductDelivery, { type: "none" }>;
+}
+
+export interface OrderConfirmationStatus {
+  state: "sending" | "sent" | "failed";
+  error: string | null;
+  /** Epoch ms. */
+  at: number;
 }
 
 export interface Order {
@@ -96,6 +105,9 @@ export interface Order {
   /** SHA-256 (hex) of the token in a `product_link` order's thanks-page URL.
    *  The page shows the order only to a holder of that token. */
   thanksTokenHash?: string;
+  /** Set for `product_link`: the order confirmation emailed to the buyer.
+   *  Claimed (`sending`) in a transaction before the send, so it goes once. */
+  confirmationEmail?: OrderConfirmationStatus | null;
 
   // ── Stripe linkage (the client's own account, in BOTH tiers) ──────
   /** Empty on a `product_link` order between its write and the session
@@ -147,5 +159,5 @@ export function computeOrderSubtotalCents(items: OrderLineItem[]): number {
 
 /** Terminal statuses — the reconciler must not move an order out of these. */
 export function isOrderTerminal(status: OrderStatus): boolean {
-  return status === "refunded" || status === "failed";
+  return status === "refunded" || status === "failed" || status === "expired";
 }

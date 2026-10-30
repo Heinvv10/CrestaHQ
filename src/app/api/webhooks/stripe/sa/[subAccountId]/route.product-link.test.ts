@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAfterResponse } from "@/lib/server/after-response";
 
 import { deliverTo, mem, seedConnection, seedOrder, SA, session } from "@/test/stripe-orders-harness";
@@ -7,15 +7,24 @@ import { deliverTo, mem, seedConnection, seedOrder, SA, session } from "@/test/s
  * Express buy-link orders (source "product_link") through the real webhook
  * route and reconciler: payment marks the order paid and finds or creates the
  * buyer's contact from the email Stripe collected, once; a session that
- * collected a different amount than the order was opened for is flagged.
+ * collected a different amount than the order was opened for is held (never
+ * paid) and flagged; a paid order's confirmation is emailed exactly once, and
+ * never for a held one; an expired session closes a pending order.
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/stripe-orders-harness")).adminMock());
 const fireWorkflowTrigger = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("@/lib/workflows/engine", () => ({ fireWorkflowTrigger }));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn(async () => {}) }));
+const sendEmail = vi.hoisted(() => vi.fn(async (_m: { to: string; subject: string; text: string }) => ({ id: "m1" })));
+vi.mock("@/lib/comms/resend", async (orig) => ({
+  ...(await orig<typeof import("@/lib/comms/resend")>()),
+  sendEmail,
+}));
 
 const deliver = deliverTo((await import("./route")).POST);
+const { sendOrderConfirmation } = await import("@/lib/server/order-confirmation-service");
+const DOWNLOAD = "https://files.example.com/guide.pdf";
 
 const productLinkOrder = (over: Record<string, unknown> = {}) =>
   seedOrder("o1", {
@@ -25,6 +34,8 @@ const productLinkOrder = (over: Record<string, unknown> = {}) =>
     subtotalCents: 49_900,
     totalCents: 49_900,
     productLinkProductId: "p1",
+    lineItems: [{ productId: "p1", name: "Fibre guide", description: "", unitPriceCents: 49_900, quantity: 1, isBump: false }],
+    deliveries: [{ productId: "p1", delivery: { type: "download", url: DOWNLOAD, label: "Get the guide" } }],
     ...over,
   });
 const paid = (over: Record<string, unknown> = {}) =>
@@ -38,6 +49,8 @@ const paid = (over: Record<string, unknown> = {}) =>
 beforeEach(() => {
   mem.clear();
   vi.clearAllMocks();
+  process.env.RESEND_API_KEY = "re_test";
+  process.env.EMAIL_FROM = "shop@example.com";
   seedConnection();
   mem.seed(`subAccounts/${SA}`, { agencyId: "ag1", name: "Fixture" });
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -64,16 +77,103 @@ it("paid: the order is paid and linked to the buyer's contact, once across a rep
   expect(orderPaid).toEqual([expect.objectContaining({ contactId: contacts[0].id })]);
 });
 
-it("a session that collected another amount is flagged on the order", async () => {
+it("a session that collected another amount is held, flagged, and never confirmed", async () => {
   productLinkOrder();
   expect((await deliver("checkout.session.completed", paid({ amount_total: 100 }))).status).toBe(200);
+  expect((await deliver("checkout.session.completed", paid({ amount_total: 100 }), "evt_2")).status).toBe(200);
+  await flushAfterResponse();
+  expect(mem.read("orders/o1")).toMatchObject({ status: "pending", attentionOpen: true });
+  expect(mem.read("orders/o1")!.attention).toMatch(/differs from this order/);
+  expect(sendEmail).not.toHaveBeenCalled();
+  expect(fireWorkflowTrigger).not.toHaveBeenCalledWith(expect.objectContaining({ type: "order.paid" }));
+});
+
+it("a session in another currency is held and flagged", async () => {
+  productLinkOrder();
+  expect((await deliver("checkout.session.completed", paid({ currency: "eur" }))).status).toBe(200);
+  expect(mem.read("orders/o1")).toMatchObject({ status: "pending" });
   expect(mem.read("orders/o1")!.attention).toMatch(/differs from this order/);
 });
 
-it("a session in another currency is flagged on the order", async () => {
-  productLinkOrder();
-  expect((await deliver("checkout.session.completed", paid({ currency: "eur" }))).status).toBe(200);
-  expect(mem.read("orders/o1")!.attention).toMatch(/differs from this order/);
+describe("order confirmation", () => {
+  it("paid: one email with the item, the amount and the download link, across replays", async () => {
+    productLinkOrder();
+    await deliver("checkout.session.completed", paid());
+    await deliver("checkout.session.completed", paid(), "evt_2");
+    await flushAfterResponse();
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    const mail = sendEmail.mock.calls[0][0];
+    expect(mail.to).toBe("buyer@example.com");
+    expect(mail.subject).toContain("Fibre guide");
+    expect(mail.text).toContain("Fibre guide");
+    expect(mail.text).toContain("$499.00 USD");
+    expect(mail.text).toContain(DOWNLOAD);
+    expect(mem.read("orders/o1")!.confirmationEmail).toMatchObject({ state: "sent" });
+  });
+
+  it("two concurrent claims send once", async () => {
+    productLinkOrder({ status: "paid", buyerEmail: "buyer@example.com" });
+    const sent = await Promise.all([sendOrderConfirmation("o1"), sendOrderConfirmation("o1")]);
+    expect(sent.filter(Boolean)).toHaveLength(1);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("a flagged paid order, a pending one, or another source is never confirmed", async () => {
+    for (const over of [
+      { status: "paid", attention: "check", attentionOpen: true },
+      { status: "paid", attention: "resolved note", attentionOpen: false },
+      { status: "pending" },
+      { status: "paid", source: "checkout_page" },
+    ]) {
+      productLinkOrder({ buyerEmail: "buyer@example.com", ...over });
+      expect(await sendOrderConfirmation("o1")).toBe(false);
+    }
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("email not configured: recorded as failed, nothing sent, never retried", async () => {
+    delete process.env.RESEND_API_KEY;
+    productLinkOrder({ status: "paid", buyerEmail: "buyer@example.com" });
+    expect(await sendOrderConfirmation("o1")).toBe(false);
+    process.env.RESEND_API_KEY = "re_test";
+    expect(await sendOrderConfirmation("o1")).toBe(false);
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(mem.read("orders/o1")!.confirmationEmail).toMatchObject({ state: "failed" });
+  });
+
+  it("a provider failure is recorded, not retried", async () => {
+    sendEmail.mockRejectedValueOnce(new Error("smtp down"));
+    productLinkOrder({ status: "paid", buyerEmail: "buyer@example.com" });
+    expect(await sendOrderConfirmation("o1")).toBe(false);
+    expect(await sendOrderConfirmation("o1")).toBe(false);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(mem.read("orders/o1")!.confirmationEmail).toMatchObject({ state: "failed" });
+  });
+});
+
+describe("checkout.session.expired", () => {
+  const expired = { id: "cs_o1", object: "checkout.session", status: "expired", payment_status: "unpaid" };
+
+  it("closes a pending buy-link order", async () => {
+    productLinkOrder();
+    expect((await deliver("checkout.session.expired", expired)).status).toBe(200);
+    expect(mem.read("orders/o1")!.status).toBe("expired");
+  });
+
+  it("leaves a paid order, and another source's pending order, alone", async () => {
+    productLinkOrder({ status: "paid" });
+    await deliver("checkout.session.expired", expired);
+    expect(mem.read("orders/o1")!.status).toBe("paid");
+    productLinkOrder({ source: "checkout_page" });
+    await deliver("checkout.session.expired", expired);
+    expect(mem.read("orders/o1")!.status).toBe("pending");
+  });
+
+  it("an expired order is never marked paid afterwards", async () => {
+    productLinkOrder({ status: "expired" });
+    await deliver("checkout.session.completed", paid());
+    expect(mem.read("orders/o1")!.status).toBe("expired");
+  });
 });
 
 it("Stripe's buyer name and email are capped before they are stored", async () => {

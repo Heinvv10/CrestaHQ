@@ -3,8 +3,8 @@ import { notFound } from "next/navigation";
 
 import { BuyShell, formatMoney, readableTextOn, safeAccent } from "@/components/buy/buy-shell";
 import { isDocId } from "@/lib/server/doc-id";
-import { loadBuyBrand, loadThanksOrder } from "@/lib/server/product-buy-service";
-import { isSafeSocialUrl } from "@/lib/website/premium";
+import { loadThanksOrder, loadThanksShop } from "@/lib/server/product-buy-service";
+import { thanksView } from "@/lib/products/thanks-view";
 
 export const dynamic = "force-dynamic";
 
@@ -28,8 +28,9 @@ function one(v: string | string[] | undefined): string | undefined {
  * shows a generic thank-you and nothing about any order.
  *
  * Stripe redirects here before the webhook has marked the order paid, so a
- * pending order shows "processing". Paid content (a download link) comes only
- * from the order's own delivery snapshot, and only once the order is paid.
+ * pending order shows "processing". What each order state shows is
+ * `thanksView` (lib/products/thanks-view.ts): a download only once paid and
+ * unflagged, an email claim only when one can be sent.
  */
 export default async function ExpressBuyThanksPage({
   params,
@@ -41,24 +42,15 @@ export default async function ExpressBuyThanksPage({
   const { subAccountId } = await params;
   if (!isDocId(subAccountId)) notFound();
   const sp = await searchParams;
-  const [brand, order] = await Promise.all([
-    loadBuyBrand(subAccountId),
+  const [{ brand, emailConfigured }, order] = await Promise.all([
+    loadThanksShop(subAccountId),
     loadThanksOrder(subAccountId, one(sp.order), one(sp.t)),
   ]);
   const accent = safeAccent(brand.accent);
-
-  const paid = order?.status === "paid";
+  const view = thanksView(order, emailConfigured);
+  const { state, download } = view;
   const item = order?.lineItems[0] ?? null;
-  const delivery = order?.deliveries?.[0]?.delivery ?? null;
-  const download =
-    paid && delivery?.type === "download" && isSafeSocialUrl(delivery.url) ? delivery : null;
-  const state: "unknown" | "paid" | "processing" | "closed" = !order
-    ? "unknown"
-    : paid
-      ? "paid"
-      : order.status === "pending"
-        ? "processing"
-        : "closed";
+  const waiting = state === "processing" || state === "held";
 
   return (
     <BuyShell brand={brand}>
@@ -68,36 +60,42 @@ export default async function ExpressBuyThanksPage({
           className="mx-auto mb-5 flex h-14 w-14 items-center justify-center rounded-full text-2xl"
           style={{ background: `${accent}1a`, color: accent }}
         >
-          {state === "processing" ? "…" : "✓"}
+          {waiting ? "…" : "✓"}
         </div>
         <h1 className="text-2xl font-semibold tracking-tight">
-          {state === "processing" ? "Payment processing" : "Thank you!"}
+          {state === "processing"
+            ? "Payment processing"
+            : state === "held"
+              ? "Payment received"
+              : state === "expired"
+                ? "Checkout expired"
+                : "Thank you!"}
         </h1>
 
-        {state === "unknown" ? (
-          <p className="mt-3 text-[15px] leading-relaxed text-zinc-600">
-            Thanks for your order. Your receipt has the details.
-          </p>
-        ) : state === "closed" ? (
-          <p className="mt-3 text-[15px] leading-relaxed text-zinc-600">
-            This order is no longer active. If that&apos;s unexpected, reply
-            to your receipt and we&apos;ll help.
-          </p>
-        ) : state === "processing" ? (
-          <p className="mt-3 text-[15px] leading-relaxed text-zinc-600">
-            Your payment is being confirmed. Refresh this page in a moment;
-            there&apos;s no need to pay again.
-          </p>
-        ) : (
-          <p className="mt-3 text-[15px] leading-relaxed text-zinc-600">
-            Your payment went through
-            {order?.buyerEmail ? (
-              <>
-                . A receipt is on its way to <strong className="text-zinc-800">{order.buyerEmail}</strong>.
-              </>
-            ) : (
-              ". A receipt is on its way to your email."
-            )}
+        <p className="mt-3 text-[15px] leading-relaxed text-zinc-600">
+          {state === "unknown" ? (
+            "Thanks for your order."
+          ) : state === "held" ? (
+            "Your payment needs a quick check before your order is released. We'll be in touch; there's no need to pay again."
+          ) : state === "expired" ? (
+            "This checkout expired before payment, so nothing was charged. You can start again from the product page."
+          ) : state === "closed" ? (
+            "This order is no longer active. If that's unexpected, please get in touch and we'll help."
+          ) : state === "processing" ? (
+            "Your payment is being confirmed. Refresh this page in a moment; there's no need to pay again."
+          ) : view.confirmationEmailed ? (
+            <>
+              Your payment went through. A confirmation is on its way to{" "}
+              {order?.buyerEmail ? <strong className="text-zinc-800">{order.buyerEmail}</strong> : "your email"}.
+            </>
+          ) : (
+            "Your payment went through. Keep this page: it has your order details."
+          )}
+        </p>
+
+        {view.partiallyRefunded && (
+          <p className="mt-3 text-sm leading-relaxed text-zinc-600">
+            Part of this payment has been refunded.
           </p>
         )}
 
@@ -118,11 +116,11 @@ export default async function ExpressBuyThanksPage({
             className="mt-6 flex h-12 w-full items-center justify-center rounded-xl text-base font-semibold shadow-sm transition hover:brightness-110"
             style={{ background: accent, color: readableTextOn(accent) }}
           >
-            {download.label || "Download"}
+            {download.label}
           </a>
         )}
 
-        {paid && (
+        {state === "paid" && (
           <p className="mt-5 text-sm leading-relaxed text-zinc-600">
             {download
               ? "Download it now and keep a copy somewhere safe."

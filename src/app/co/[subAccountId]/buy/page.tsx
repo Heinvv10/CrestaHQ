@@ -22,8 +22,9 @@ export const dynamic = "force-dynamic";
  * re-checks the product before anything can be bought.
  *
  * This static folder shadows a checkout page slugged "buy" (`/co/[id]/[slug]`),
- * which could exist from before the slug was reserved. When one does, it is
- * rendered here instead, so its link keeps working.
+ * which could exist from before the slug was reserved. When a published one
+ * does, it is rendered here instead, so its link keeps working; a draft never
+ * hides the catalog.
  */
 
 type Params = Promise<{ subAccountId: string }>;
@@ -32,6 +33,7 @@ async function hasLegacyBuyCheckoutPage(subAccountId: string): Promise<boolean> 
   const snap = await getAdminDb()
     .collection(`subAccounts/${subAccountId}/checkoutPages`)
     .where("slug", "==", "buy")
+    .where("status", "==", "published")
     .limit(1)
     .get();
   return !snap.empty;

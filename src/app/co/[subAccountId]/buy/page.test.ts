@@ -14,7 +14,7 @@ import { checkoutSlugError } from "@/types/checkout-pages";
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 
-const { default: CatalogPage } = await import("./page");
+const { default: CatalogPage, generateMetadata } = await import("./page");
 
 const SA = "sa1";
 const SUB = {
@@ -87,6 +87,18 @@ it("a checkout page slugged 'buy' from before the reservation still renders", as
     successUrl: null,
   });
   expect(await render()).toContain("Legacy offer");
+});
+
+it("a draft checkout page slugged 'buy' never hides the catalog", async () => {
+  product("a");
+  mem.seed(`subAccounts/${SA}/checkoutPages/cp1`, { slug: "buy", name: "Draft", headline: "Draft offer", status: "draft", productId: "a", bumpProductIds: [] });
+  const html = await render();
+  expect(html).toContain(`href="/co/${SA}/buy/slug-a"`);
+  expect(html).not.toContain("Draft offer");
+});
+
+it("metadata: the catalog is never indexed", async () => {
+  expect((await generateMetadata({ params: Promise.resolve({ subAccountId: SA }) })).robots).toEqual({ index: false, follow: false });
 });
 
 it("a new checkout page can't take the slug 'buy'", () => {
