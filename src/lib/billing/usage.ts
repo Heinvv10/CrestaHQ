@@ -16,6 +16,11 @@ export const USAGE_PAYMENT_TERMS_DAYS = 14;
 /** First reminder goes out this many days before the due date. */
 export const USAGE_REMINDER_DAYS_BEFORE = 3;
 
+/** Deterministic so a re-run of the month close can never mint a second charge. */
+export function usageChargeId(subAccountId: string, month: string): string {
+  return `usage_${subAccountId}_${month}`;
+}
+
 function monthKeyOf(year: number, monthIndex: number): string {
   const d = new Date(year, monthIndex, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;

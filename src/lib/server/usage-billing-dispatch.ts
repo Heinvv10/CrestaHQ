@@ -9,9 +9,18 @@ import {
   MAX_PRICE_CENTS,
   stageChargeLink,
 } from "@/lib/server/billing-service";
-import { recordBillingEvent } from "@/lib/server/billing-lifecycle";
 import { billingRecipient } from "@/lib/server/usage-billing-recipient";
 import { resolveUsageSender, sendUsageEmail } from "@/lib/server/usage-billing-email";
+import {
+  announceWithheld,
+  claimFresh,
+  INVOICE_EMAIL_RETRY_DAYS,
+  queuedPastWindow,
+  withheldPatch,
+  withholdUnsent,
+  type WithheldWhy,
+} from "@/lib/server/usage-billing-withhold";
+import { getBillingProvider } from "@/lib/billing/provider";
 import {
   DAY_MS,
   inPool,
@@ -26,87 +35,6 @@ import {
 import { formatUsageMonth, USAGE_PAYMENT_TERMS_DAYS } from "@/lib/billing/usage";
 import type { UsageChargeLine } from "@/types/billing";
 import type { SubAccountDoc } from "@/types";
-
-/** A charge older than this stops retrying its invoice email, and is cancelled if none went out. */
-const INVOICE_EMAIL_RETRY_DAYS = 7;
-/** A claim this old with no send recorded belongs to a run that died; take it over. */
-const CLAIM_TIMEOUT_MS = 15 * 60 * 1000;
-
-type Charge = FirebaseFirestore.DocumentData;
-const claimFresh = (c: Charge, now: Date) => {
-  const claimedMs = toMillis(c.invoiceEmailClaimedAt);
-  return claimedMs !== null && now.getTime() - claimedMs < CLAIM_TIMEOUT_MS;
-};
-
-/**
- * The month is not billed: stamp the ledger and audit it (and the cancel, when
- * a charge was). The amount carried INTO this month stays owed: it is put back
- * on the ledger as `carryOutCents`, so the next billed month (within the
- * 2-month rule) picks it up. The month's own usage is the part that is dropped.
- */
-async function recordWithheld(input: {
-  sub: SubAccountDoc;
-  month: string;
-  chargeId: string;
-  ledgerRef: FirebaseFirestore.DocumentReference;
-  charge: "none" | "canceled";
-  why: string;
-  carryBackCents: number;
-}): Promise<void> {
-  const { sub, month, chargeId, ledgerRef, charge, why, carryBackCents } = input;
-  console.warn(`[usage-close] month withheld sa=${sub.id} month=${month} charge=${charge}: ${why}`);
-  await ledgerRef.update({
-    "closed.withheldAt": FieldValue.serverTimestamp(),
-    "closed.withheldReason": why,
-    "closed.carryOutCents": carryBackCents,
-  });
-  if (charge === "canceled") {
-    recordBillingEvent({
-      agencyId: sub.agencyId,
-      subAccountId: sub.id,
-      event: "charge.canceled",
-      detail: { chargeId, kind: "usage", usageMonth: month, reason: why },
-    });
-  }
-  recordBillingEvent({
-    agencyId: sub.agencyId,
-    subAccountId: sub.id,
-    event: "usage.withheld",
-    detail: { month, chargeId, chargeCanceled: charge === "canceled", reason: why, carryBackCents },
-  });
-}
-
-/**
- * The month is no longer eligible by the time the charge comes to be minted.
- * Before the invoice email there is no debt, so nothing is billed; after it, the
- * debt stands. A send that was ATTEMPTED (`emailAttemptedAt`) may have gone out,
- * so it counts as sent. Returns "withheld" (queue entry can go), "stands" (carry
- * on as normal) or "busy" (an email is being sent right now; leave it).
- */
-async function withholdUnsent(input: {
-  sub: SubAccountDoc;
-  month: string;
-  chargeId: string;
-  now: Date;
-  ledgerRef: FirebaseFirestore.DocumentReference;
-  carryBackCents: number;
-}): Promise<"withheld" | "stands" | "busy"> {
-  const { sub, month, chargeId, now, ledgerRef, carryBackCents } = input;
-  const chargeRef = getAdminDb().doc(`billingCharges/${chargeId}`);
-  const verdict = await getAdminDb().runTransaction(async (tx) => {
-    const c = (await tx.get(chargeRef)).data();
-    if (!c) return "none" as const;
-    if (c.status !== "pending" || c.emailedTo || c.emailAttemptedAt) return "stands" as const;
-    if (claimFresh(c, now)) return "busy" as const;
-    tx.update(chargeRef, { status: "canceled", tokenHash: null, updatedAt: FieldValue.serverTimestamp() });
-    return "canceled" as const;
-  });
-  if (verdict === "stands" || verdict === "busy") return verdict;
-  await recordWithheld({
-    sub, month, chargeId, ledgerRef, charge: verdict, why: "rebilling_switched_off_before_invoice", carryBackCents,
-  });
-  return "withheld";
-}
 
 /** Mint queued charges and email each once; entries stay queued until both are done. */
 export async function processPendingCharges(
@@ -129,11 +57,18 @@ export async function processPendingCharges(
     const chargeId = frozen.chargeId;
     // A BillingError is the service refusing (nothing a retry fixes); anything
     // else is unexpected and stays a failure.
-    const refuse = (why: string): never => {
-      throw new UsageChargeRefused(sub.id, p.month, why);
+    const refuse = (why: string, alreadyFlagged = false): never => {
+      throw new UsageChargeRefused(sub.agencyId, sub.id, p.month, why, alreadyFlagged);
     };
     const held = (err: unknown): never => {
-      throw err instanceof BillingError ? new UsageChargeRefused(sub.id, p.month, err.message) : err;
+      throw err instanceof BillingError ? new UsageChargeRefused(sub.agencyId, sub.id, p.month, err.message) : err;
+    };
+    const carryBackCents = frozen.carriedInCents ?? 0;
+    // A withhold that needs no charge change: ledger stamp, then audit + flag.
+    const withholdMonth = async (why: WithheldWhy): Promise<void> => {
+      await ledgerRef.update(withheldPatch(why, carryBackCents));
+      await announceWithheld({ sub, month: p.month, chargeId, charge: "none", why, carryBackCents });
+      await q.ref.delete();
     };
     // Checked before any path is built from it.
     if (!sub.agencyId) return refuse("the sub-account has no agency");
@@ -156,19 +91,18 @@ export async function processPendingCharges(
 
     // An amount over the ceiling can never be created as a charge. It is held
     // (reported daily) for the retry window, then withheld rather than repeated forever.
-    if (frozen.totalCents > MAX_PRICE_CENTS) {
-      const queuedMs = toMillis(p.createdAt) ?? now.getTime();
-      if (now.getTime() - queuedMs > INVOICE_EMAIL_RETRY_DAYS * DAY_MS) {
-        const why = "over ceiling";
-        await recordWithheld({
-          sub, month: p.month, chargeId, ledgerRef, charge: "none", why, carryBackCents: frozen.carriedInCents ?? 0,
-        });
-        await q.ref.delete();
-        return refuse(`${why}: ${frozen.totalCents} exceeds ${MAX_PRICE_CENTS} minor units for ${INVOICE_EMAIL_RETRY_DAYS} days; the month was withheld`);
-      }
+    if (frozen.totalCents > MAX_PRICE_CENTS && queuedPastWindow(p, now)) {
+      await withholdMonth("over ceiling");
+      return refuse(`over ceiling: ${frozen.totalCents} exceeds ${MAX_PRICE_CENTS} minor units for ${INVOICE_EMAIL_RETRY_DAYS} days; the month was withheld`, true);
     }
 
     const to = await billingRecipient(sub);
+    // Paystack cannot open a payment page without an email. Held (reported daily)
+    // for the retry window, then withheld, so an old month is never billed months later.
+    if (!to && getBillingProvider().id === "paystack" && queuedPastWindow(p, now)) {
+      await withholdMonth("no billing email");
+      return refuse(`no billing email for ${INVOICE_EMAIL_RETRY_DAYS} days; the month was withheld`, true);
+    }
     // The due date counts from when the charge is actually created.
     const dueAt = new Date(now.getTime() + USAGE_PAYMENT_TERMS_DAYS * DAY_MS);
     // A refusal (Paystack with no email, an amount over the ceiling) throws and
@@ -196,9 +130,12 @@ export async function processPendingCharges(
       // Counted from the charge, so a charge created late still gets its email.
       const createdMs = toMillis(c.createdAt) ?? now.getTime();
       if (now.getTime() - createdMs > INVOICE_EMAIL_RETRY_DAYS * DAY_MS) {
-        // A send that was attempted may have gone out: the debt stands.
-        if (c.emailAttemptedAt) return { state: "done" as const };
+        // A send that was attempted may have gone out: the debt stands, and a
+        // person is told it cannot be known (not a silent drop).
+        if (c.emailAttemptedAt) return { state: "unknown" as const };
+        // The cancel and the withheld ledger are ONE commit: a crash cannot lose the carry.
         tx.update(chargeRef, { status: "canceled", tokenHash: null, updatedAt: FieldValue.serverTimestamp() });
+        tx.update(ledgerRef, withheldPatch("invoice could not be sent", carryBackCents));
         return { state: "expired" as const };
       }
       tx.update(chargeRef, { invoiceEmailClaimedAt: FieldValue.serverTimestamp() });
@@ -207,11 +144,15 @@ export async function processPendingCharges(
     if (claim.state === "busy") return;
     if (claim.state === "expired") {
       const why = "invoice could not be sent";
-      await recordWithheld({
-        sub, month: p.month, chargeId, ledgerRef, charge: "canceled", why, carryBackCents: frozen.carriedInCents ?? 0,
-      });
+      await announceWithheld({ sub, month: p.month, chargeId, charge: "canceled", why, carryBackCents });
       await q.ref.delete();
-      return refuse(`${why} within ${INVOICE_EMAIL_RETRY_DAYS} days; the charge was cancelled and the month withheld`);
+      return refuse(`${why} within ${INVOICE_EMAIL_RETRY_DAYS} days; the charge was cancelled and the month withheld`, true);
+    }
+    if (claim.state === "unknown") {
+      await q.ref.delete();
+      return refuse(
+        `the invoice send state is unknown after ${INVOICE_EMAIL_RETRY_DAYS} days (a send was attempted, none confirmed): check the charge ${chargeId}`,
+      );
     }
     if (claim.state !== "claimed") {
       await q.ref.delete();

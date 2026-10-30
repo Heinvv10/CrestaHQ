@@ -37,6 +37,7 @@ import {
   SUB_ACCOUNT_PLAN_KIND,
 } from "@/lib/billing/kinds";
 import { runAfterResponse } from "@/lib/server/after-response";
+import { usageChargeId } from "@/lib/billing/usage";
 import { billingRecipient } from "@/lib/server/usage-billing-recipient";
 import type { SubAccountDoc } from "@/types";
 
@@ -1012,10 +1013,7 @@ export async function createOneTimeCharge(input: {
   };
 }
 
-/** Deterministic so a re-run of the month close can never mint a second charge. */
-export function usageChargeId(subAccountId: string, month: string): string {
-  return `usage_${subAccountId}_${month}`;
-}
+export { usageChargeId };
 
 /**
  * Create the month's usage charge at most once; a repeat returns

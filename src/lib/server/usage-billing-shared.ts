@@ -2,6 +2,7 @@ import "server-only";
 
 import type { FieldValue } from "firebase-admin/firestore";
 import { monthStart } from "@/lib/billing/usage";
+import { flagUsageIssue } from "@/lib/server/usage-billing-flags";
 import type { UsageChargeLine } from "@/types/billing";
 import type { UsageQuotas, UsageRates } from "@/types/usage";
 
@@ -82,11 +83,16 @@ export function reason(err: unknown): string {
  * does not answer 500 and have QStash re-run everything forever.
  */
 export class UsageChargeRefused extends Error {
+  readonly agencyId: string;
   readonly subAccountId: string;
   readonly month: string;
-  constructor(subAccountId: string, month: string, message: string) {
+  /** The raising code already wrote an attention flag for this (a withhold): do not flag again. */
+  readonly alreadyFlagged: boolean;
+  constructor(agencyId: string, subAccountId: string, month: string, message: string, alreadyFlagged = false) {
     super(message);
+    this.alreadyFlagged = alreadyFlagged;
     this.name = "UsageChargeRefused";
+    this.agencyId = agencyId;
     this.subAccountId = subAccountId;
     this.month = month;
   }
@@ -109,10 +115,16 @@ export async function inPool<T>(
   const workers = Array.from({ length: Math.min(CONCURRENCY, items.length) }, async () => {
     while (i < items.length) {
       const item = items[i++];
-      await fn(item).catch((err) => {
+      await fn(item).catch(async (err) => {
         if (err instanceof UsageChargeRefused) {
           refusals.push({ subAccountId: err.subAccountId, month: err.month, reason: err.message });
           console.error(`[usage-close] held, needs a fix sa=${err.subAccountId} month=${err.month}: ${err.message}`);
+          // Visible to the agency on the first day this exact problem appears.
+          if (!err.alreadyFlagged) {
+            await flagUsageIssue({
+              agencyId: err.agencyId, subAccountId: err.subAccountId, month: err.month, reason: err.message,
+            });
+          }
           return;
         }
         failed++;

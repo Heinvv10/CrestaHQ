@@ -44,7 +44,7 @@ export async function sendDueReminders(
     if (!stage || data.remindedAt?.[stage]) return;
     const month = String(data.usageMonth ?? "");
     const refuse = (why: string): never => {
-      throw new UsageChargeRefused(String(data.subAccountId), month, why);
+      throw new UsageChargeRefused(String(data.agencyId ?? ""), String(data.subAccountId), month, why);
     };
     const subSnap = await db.doc(`subAccounts/${data.subAccountId}`).get();
     if (!subSnap.exists) return;
@@ -52,7 +52,7 @@ export async function sendDueReminders(
     // Everything the send needs is resolved BEFORE the stage is stamped or a
     // link staged, so nothing is spent on a send that cannot go.
     const to = await billingRecipient(sub);
-    if (!to) return;
+    if (!to) return refuse("no recipient to send the reminder to: set the workspace's account contact");
     const sender = await resolveUsageSender(sub.id);
     if (!sender) return refuse("no email sender is configured for this workspace");
     // Claim the stamp first so overlapping runs can't both send.
