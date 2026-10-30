@@ -3,6 +3,7 @@ import {
   DEEP_EVERY,
   STALE_MS,
   acquire,
+  holds,
   release,
 } from "./fixture-lock-core.mjs";
 import { fakeGitHub, holder, noSleep, quiet } from "./fixture-lock.fake";
@@ -23,7 +24,17 @@ describe("fixture lock: acquire", () => {
     expect(
       await release(gh.api, { holder: holder("1"), sleep: noSleep, log: quiet })
     ).toBe(true);
-    expect(gh.ref()).toBeNull();
+    expect(await holds(gh.api, { holder: holder("1") })).toBe(false);
+    // The released marker is free: the next run takes it without waiting.
+    const next = await acquire(gh.api, {
+      tree: "t",
+      holder: holder("2"),
+      now: () => clock.t,
+      sleep,
+      log: quiet,
+    });
+    expect(gh.ref()).toBe(next);
+    expect(await holds(gh.api, { holder: holder("2") })).toBe(true);
   });
 
   it("waits (never steals) while the holder's run is still in progress, then takes the freed lock", async () => {
@@ -86,17 +97,46 @@ describe("fixture lock: acquire", () => {
     }
   });
 
-  it("takes over a lock older than the stale limit even if its run looks alive", async () => {
+  it("never takes over a recognised holder by age while its run is live", async () => {
     const clock = { t: 0 };
     const gh = fakeGitHub(clock);
     gh.runs.set("1/1", "in_progress");
-    await acquire(gh.api, {
+    const live = await acquire(gh.api, {
       tree: "t",
       holder: holder("1"),
       now: () => clock.t,
       sleep: quiet as never,
       log: quiet,
     });
+    clock.t = STALE_MS * 3;
+    let waits = 0;
+    const sleep = async () => {
+      if (++waits === 3 * DEEP_EVERY) throw new Error("still waiting");
+      clock.t += 60_000;
+    };
+    await expect(
+      acquire(gh.api, {
+        tree: "t",
+        holder: holder("2"),
+        now: () => clock.t,
+        sleep,
+        log: quiet,
+      })
+    ).rejects.toThrow("still waiting");
+    expect(gh.ref()).toBe(live);
+  });
+
+  it("frees an unrecognised holder only by the age limit", async () => {
+    const clock = { t: 0 };
+    const gh = fakeGitHub(clock);
+    const foreign = (
+      await gh.api("POST", "/git/commits", {
+        message: "not json",
+        tree: "t",
+        parents: [],
+      })
+    ).body as { sha: string };
+    gh.setRef(foreign.sha);
     clock.t = STALE_MS - 1;
     let waits = 0;
     const sleep = async () => {

@@ -113,20 +113,25 @@ two jobs that run `scripts/ci/fixture-lock.mjs` (`e2e-lock` → `E2E (Playwright
   ~55-60 min (the suite took 18 min on velo-server), so the queue drains about
   one run an hour. On a PR it gives up (failing that
   superseded commit's check) once the PR has a newer head or is closed.
-- A lock whose holder run attempt has completed (or no longer exists), or that is
-  older than 150 min, is taken over with a fast-forward-only ref update on top of
-  it, so two waiters cannot both take the same stale lock. The lock is held for
-  the whole suite job (setup + Playwright), and that job's 120-min timeout keeps
-  a live holder inside the limit.
+- A lock whose holder run attempt the actions API shows completed (or no longer
+  exists) is taken over with a fast-forward-only ref update on top of it, so two
+  waiters cannot both take the same stale lock. Age never frees a live holder;
+  the 150-min limit applies only to a ref commit the script did not write. The
+  lock is held for the whole suite job (setup + Playwright, 120-min timeout).
 - The suite job first runs `held` and fails unless this run attempt holds the
   lock. **Re-run all jobs, not "re-run failed jobs"**: the latter reruns the
   suite job but not the lock job, and the first attempt already released it.
-- `release` runs in its own job under `if: always()` and deletes the ref only if
-  its recorded holder is this run attempt.
+- `release` runs in its own job under `if: always()` and, only if the recorded
+  holder is this run attempt, commits a "released" marker on top of the lock
+  commit it read and fast-forwards the ref to it — a compare-and-swap, so it can
+  never free a lock another run took in between. The next waiter takes the
+  marker at once.
 
 Only the lock jobs get `contents: write` (the ref), plus `actions: read` (holder
 check) and, for E2E, `pull-requests: read` (newer head). They check out
-`scripts/ci` and run the script on node built-ins: no install, no secrets, no app
+`scripts/ci` from the **default branch** (never the PR's copy; a one-time
+bootstrap falls back to the PR's copy while main lacks the script) and run it on
+node built-ins: no install, no secrets, no app
 code. The suite job, which installs dependencies and runs the PR's code with the
 fixture secrets, gets `contents: read`. That is not a boundary against a
 same-repo PR's author, who can edit the workflow (fork PRs never run these

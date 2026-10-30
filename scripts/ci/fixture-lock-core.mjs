@@ -14,14 +14,21 @@
 //     commit descends from the current one         -> take over a stale lock
 // A stale lock is taken over by committing ON TOP of it, so two waiters that
 // both judge the same lock stale cannot both win: the second one's commit no
-// longer descends from the ref. Stale = the holder's run attempt has completed
-// (or is gone), or the lock is older than STALE_MS — longer than any holder
-// can live: the lock is held from the end of the acquire job until the
-// release job, and the E2E job's own timeout (in between) bounds that. The
-// holder run stays in progress across those jobs, so it is never judged stale
-// early. Ownership is the holder recorded in the ref's commit, not a sha kept
-// by the job, so a lost API response or a cancel mid-acquire cannot leave
-// this run unable to recognise (and release) its own lock.
+// longer descends from the ref. Stale = the actions API shows the holder's run
+// attempt has completed (or is gone). Age alone never frees a recognised
+// holder — a slow but live run keeps its lock; STALE_MS applies only to a ref
+// commit this script did not write (unparseable holder). Ownership is the
+// holder recorded in the ref's commit, not a sha kept by the job, so a lost API
+// response or a cancel mid-acquire cannot leave this run unable to recognise
+// (and release) its own lock.
+//
+// Release is the same fast-forward-only update: the holder commits a
+// "released" marker on top of its own lock commit. That update is a
+// compare-and-swap on GitHub's side — it fails 422 unless the ref still points
+// at the commit this run read — so a run can never free a lock someone else
+// now holds. (A plain ref DELETE has no such check.) A released marker is
+// taken over at once by the next waiter; the ref is created only the first
+// time, when it does not exist yet.
 //
 // GITHUB_TOKEN allows ~1,000 API calls per hour per repository, shared by
 // every waiter, so a waiter polls once a minute, reads a holder's commit once
@@ -78,12 +85,21 @@ async function readLock(api, sha) {
     "read lock commit"
   ).body;
   let holder = null;
+  let released = false;
   try {
-    holder = JSON.parse(c.message);
+    const msg = JSON.parse(c.message);
+    if (msg?.released) released = true;
+    else if (msg?.runId && msg?.attempt) holder = msg;
   } catch {
     // Not written by this script; only the age limit can free it.
   }
-  return { sha, holder, date: Date.parse(c.committer.date) };
+  return {
+    sha,
+    holder,
+    released,
+    tree: c.tree?.sha,
+    date: Date.parse(c.committer.date),
+  };
 }
 
 /** Why the holder can no longer be using the fixtures, or null if it may be. */
@@ -152,11 +168,17 @@ export async function acquire(
           log(`fixture lock is already held by this run (${heldSha})`);
           return heldSha;
         }
-        const age = now() - held.date;
-        let why =
-          age > STALE_MS ? `held ${Math.round(age / 60_000)} min` : null;
-        if (!why && held.holder && (deep || fresh))
-          why = await holderRunEnded(api, held.holder);
+        // A recognised holder is freed only by its run ending, never by age:
+        // a slow live run must not lose the fixtures mid-suite.
+        let why = null;
+        if (held.released) why = "released";
+        else if (held.holder) {
+          if (deep || fresh) why = await holderRunEnded(api, held.holder);
+        } else {
+          const age = now() - held.date;
+          if (age > STALE_MS)
+            why = `unrecognised holder, held ${Math.round(age / 60_000)} min`;
+        }
         if (why) {
           const mine = await newLockCommit(api, {
             tree,
@@ -169,13 +191,17 @@ export async function acquire(
           });
           if (moved.status === 200) {
             log(
-              `fixture lock taken over from a stale holder: ${why} (${mine})`
+              held.released
+                ? `fixture lock acquired (${mine})`
+                : `fixture lock taken over from a stale holder: ${why} (${mine})`
             );
             return mine;
           }
-          // 422: another run moved or deleted it first (not a fast-forward any more).
+          // 422: another run moved it first (not a fast-forward any more).
           check(moved, [422], "take over lock ref");
-          log("a stale fixture lock was taken by another run first; waiting");
+          log(
+            "a free or stale fixture lock was taken by another run first; waiting"
+          );
         } else {
           const h = held.holder;
           const who = h
@@ -205,9 +231,12 @@ export async function holds(api, { holder }) {
 }
 
 /**
- * Deletes the lock only if its recorded holder is this run; a no-op
- * otherwise. Retries transient failures, so a GitHub blip at the end of a
- * green run neither fails the job nor leaves the lock held.
+ * Frees the lock only if its recorded holder is this run; a no-op otherwise.
+ * Compare-and-swap: commits a released marker on top of the lock commit it
+ * just read and moves the ref there with force:false, which GitHub refuses
+ * (422) if the ref moved in between — then it re-reads. Retries transient
+ * failures, so a GitHub blip at the end of a green run neither fails the job
+ * nor leaves the lock held.
  */
 export async function release(
   api,
@@ -223,17 +252,30 @@ export async function release(
       const heldSha = check(current, [200], "read lock ref").body.object.sha;
       const held = await readLock(api, heldSha);
       if (!sameHolder(held.holder, holder)) {
+        // Includes our own released marker after a lost response.
         log(
-          `fixture lock is held by another run (${heldSha}); not touching it`
+          `fixture lock is not held by this run (${heldSha}); not touching it`
         );
         return false;
       }
-      // 422 = already deleted (a retry after a lost response).
-      check(
-        await api("DELETE", `/git/refs/${LOCK_REF}`),
-        [204, 422],
-        "delete lock ref"
-      );
+      const marker = check(
+        await api("POST", "/git/commits", {
+          message: JSON.stringify({ released: holder }),
+          tree: held.tree,
+          parents: [heldSha],
+        }),
+        [201],
+        "create release commit"
+      ).body.sha;
+      const moved = await api("PATCH", `/git/refs/${LOCK_REF}`, {
+        sha: marker,
+        force: false,
+      });
+      if (moved.status === 422) {
+        log("fixture lock moved while releasing; re-checking");
+        continue;
+      }
+      check(moved, [200], "release lock ref");
       log("fixture lock released");
       return true;
     } catch (err) {

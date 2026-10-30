@@ -41,16 +41,37 @@ jobs:
       actions: read
     timeout-minutes: 230
     steps:
-      # The lock script comes from this workflow's own commit, not the pinned
-      # sha: a rollback's older release may predate the script's commands.
+      # This job holds contents: write, so it runs the lock script from the
+      # default branch, never this commit's copy (node built-ins only: no
+      # install, no app code). Everything the lock needs from the run (PR
+      # number, head sha, run id) comes from env, not from the checkout.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      # One-time BOOTSTRAP: the PR that adds the lock script runs before the
+      # default branch has it, so only then fall back to this commit's copy.
+      # Once it is on the default branch this step never runs; delete it (and
+      # the fallback below) in a follow-up.
+      - name: Bootstrap the lock script from this commit
+        if: ${{ hashFiles('scripts/ci/fixture-lock.mjs') == '' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: .bootstrap-lock
           persist-credentials: false
           sparse-checkout: scripts/ci
 
       - name: Acquire fixture lock
         timeout-minutes: 220
-        run: node scripts/ci/fixture-lock.mjs acquire
+        run: |
+          LOCK=scripts/ci/fixture-lock.mjs
+          if [ ! -f "$LOCK" ]; then
+            echo "::warning::$LOCK is not on the default branch yet; one-time bootstrap, running this commit's copy (possible only until the PR adding it merges)"
+            LOCK=.bootstrap-lock/$LOCK
+          fi
+          node "$LOCK" acquire
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -61,7 +82,7 @@ jobs:
     permissions:
       contents: read
     # The lock is held for this whole job, so this bounds how long it is held
-    # and must stay under the lock's 150-min stale limit.
+    # (a live holder is never taken over by age).
     timeout-minutes: 120
     env:
       # No build step: the target is already running. Only the values the
@@ -141,8 +162,8 @@ jobs:
           path: playwright-report/
           retention-days: 7
 
-  # always(): after a failure, timeout or cancellation too. Deletes the ref
-  # only if its recorded holder is this run attempt; a no-op otherwise.
+  # always(): after a failure, timeout or cancellation too. Frees the lock
+  # (compare-and-swap) only if its recorded holder is this run attempt.
   smoke-unlock:
     name: Smoke fixture unlock
     needs: [smoke-lock, smoke]
@@ -152,14 +173,35 @@ jobs:
       contents: write
     timeout-minutes: 10
     steps:
-      # The lock script comes from this workflow's own commit, not the pinned
-      # sha: a rollback's older release may predate the script's commands.
+      # This job holds contents: write, so it runs the lock script from the
+      # default branch, never this commit's copy (node built-ins only: no
+      # install, no app code). Everything the lock needs from the run (PR
+      # number, head sha, run id) comes from env, not from the checkout.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      # One-time BOOTSTRAP: the PR that adds the lock script runs before the
+      # default branch has it, so only then fall back to this commit's copy.
+      # Once it is on the default branch this step never runs; delete it (and
+      # the fallback below) in a follow-up.
+      - name: Bootstrap the lock script from this commit
+        if: ${{ hashFiles('scripts/ci/fixture-lock.mjs') == '' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: .bootstrap-lock
           persist-credentials: false
           sparse-checkout: scripts/ci
 
       - name: Release fixture lock
-        run: node scripts/ci/fixture-lock.mjs release
+        run: |
+          LOCK=scripts/ci/fixture-lock.mjs
+          if [ ! -f "$LOCK" ]; then
+            echo "::warning::$LOCK is not on the default branch yet; one-time bootstrap, running this commit's copy (possible only until the PR adding it merges)"
+            LOCK=.bootstrap-lock/$LOCK
+          fi
+          node "$LOCK" release
         env:
           GITHUB_TOKEN: ${{ github.token }}

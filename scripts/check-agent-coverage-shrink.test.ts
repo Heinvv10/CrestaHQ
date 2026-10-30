@@ -5,7 +5,6 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { addedKeys } from "./check-agent-coverage-shrink.mjs";
-import { STALE_MS } from "./ci/fixture-lock-core.mjs";
 
 /**
  * Runs the shrink check against a throwaway git repo: a base commit is
@@ -190,7 +189,8 @@ describe("check-agent-coverage-shrink CLI", () => {
     expect(job(ci, "e2e-lock")).toContain(`if: \${{ ${guard} }}`);
     // The required check must never be SKIPPED (a skip counts as passing): it
     // runs whatever e2e-lock did, and its first step fails unless that succeeded.
-    expect(e2e).toContain(`if: \${{ !cancelled() && (${guard}) }}`);
+    // always(), not !cancelled(): a cancelled e2e-lock must fail it, not skip it.
+    expect(e2e).toContain(`if: \${{ always() && (${guard}) }}`);
     expect(e2e).toContain("needs: [e2e-lock]");
     const firstStep = e2e.slice(e2e.indexOf("\n    steps:\n"));
     const gate = firstStep.slice(0, firstStep.indexOf("- uses:"));
@@ -210,16 +210,29 @@ describe("check-agent-coverage-shrink CLI", () => {
       expect(unlock).toContain(`needs: [${lockId}, ${suiteId}]`);
       // Only the lock jobs get a write token, and they run nothing but the
       // lock script: no install, no secrets, no third-party action but checkout.
-      for (const j of [lock, unlock]) {
+      // The script is the default branch's copy; this commit's copy is checked
+      // out only when the default branch has none (the one-time bootstrap).
+      for (const [j, cmd] of [
+        [lock, "acquire"],
+        [unlock, "release"],
+      ]) {
         expect(j).toMatch(/permissions:\n\s+contents: write\n/);
         expect(j).not.toMatch(/secrets\.|pnpm|npm |setup-node|action-setup/);
-        expect(j.match(/uses: /g)).toEqual(["uses: "]);
-        expect(j).toContain("uses: actions/checkout@");
-        expect(j).toContain("persist-credentials: false");
+        expect(j.match(/uses: actions\/checkout@/g)).toHaveLength(2);
+        expect(j.match(/uses: /g)).toHaveLength(2);
+        expect(j.match(/persist-credentials: false/g)).toHaveLength(2);
         expect(j.match(/github\.token/g)).toHaveLength(1);
+        const trusted = j.slice(j.indexOf("uses: actions/checkout@"));
+        expect(trusted).toMatch(
+          /^uses: actions\/checkout@\S+ # v4\n\s+with:\n\s+ref: \$\{\{ github\.event\.repository\.default_branch \}\}\n/
+        );
+        const bootstrap = trusted.slice(trusted.indexOf("- name: Bootstrap"));
+        expect(bootstrap).toMatch(/^- name: [^\n]+\n\s+if: \$\{\{ hashFiles\('scripts\/ci\/fixture-lock\.mjs'\) == '' \}\}\n\s+uses: actions\/checkout@\S+ # v4\n\s+with:\n\s+path: \.bootstrap-lock\n/);
+        expect(j).toContain('LOCK=scripts/ci/fixture-lock.mjs\n');
+        expect(j).toContain('LOCK=.bootstrap-lock/$LOCK\n');
+        expect(j).toContain(`node "$LOCK" ${cmd}\n`);
+        expect(j).not.toMatch(/node scripts\/ci\/fixture-lock\.mjs/);
       }
-      expect(lock).toContain("run: node scripts/ci/fixture-lock.mjs acquire");
-      expect(unlock).toContain("run: node scripts/ci/fixture-lock.mjs release");
       // The suite job is read-only and checks it holds the lock before installing anything.
       expect(suite).toMatch(/permissions:\n\s+contents: read\n\s+(timeout-minutes|#)/);
       expect(suite).not.toContain("contents: write");
@@ -234,13 +247,11 @@ describe("check-agent-coverage-shrink CLI", () => {
       expect(suite).toContain("cache: pnpm");
       expect(suite).not.toContain("corepack enable");
       expect(suite).toContain("persist-credentials: false");
-      // The lock is held for the whole suite job, so its budget (which also
-      // bounds the Playwright step) must stay under the stale limit.
+      // The suite job's budget covers its Playwright step plus setup.
       const minutes = (j: string) => Number(j.match(/\n {4}timeout-minutes: (\d+)/)![1]);
       const step = suite.slice(suite.lastIndexOf("- name:", suite.indexOf("pnpm exec playwright test")));
       const playwright = Number(step.match(/timeout-minutes: (\d+)/)![1]);
       expect(playwright + 15).toBeLessThanOrEqual(minutes(suite));
-      expect(minutes(suite)).toBeLessThan(STALE_MS / 60_000);
       // The lock wait fits its own job budget.
       const wait = Number(lock.slice(lock.indexOf("- name: Acquire fixture lock")).match(/timeout-minutes: (\d+)/)![1]);
       expect(wait).toBeLessThan(minutes(lock));

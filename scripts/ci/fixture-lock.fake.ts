@@ -7,12 +7,13 @@ type Res = { status: number; body: unknown };
  * In-memory stand-in for the four GitHub endpoints the lock uses, with the
  * same semantics the lock relies on: ref create fails 422 when the ref exists,
  * a force:false update fails 422 unless the new commit descends from the
- * current one, and a commit's date is the server clock at creation.
+ * current one, and a commit's date is the server clock at creation. There is
+ * no DELETE: the lock is never freed by a non-CAS delete.
  */
 export function fakeGitHub(clock: { t: number }) {
   const commits = new Map<
     string,
-    { message: string; parents: string[]; date: number }
+    { message: string; tree: string; parents: string[]; date: number }
   >();
   const runs = new Map<string, string>(); // "runId/attempt" -> status
   let ref: string | null = null;
@@ -29,6 +30,7 @@ export function fakeGitHub(clock: { t: number }) {
       const sha = `c${++n}`;
       commits.set(sha, {
         message: body!.message as string,
+        tree: body!.tree as string,
         parents: body!.parents as string[],
         date: clock.t,
       });
@@ -41,6 +43,7 @@ export function fakeGitHub(clock: { t: number }) {
         status: 200,
         body: {
           message: c.message,
+          tree: { sha: c.tree },
           committer: { date: new Date(c.date).toISOString() },
         },
       };
@@ -66,15 +69,11 @@ export function fakeGitHub(clock: { t: number }) {
         : { status: 404, body: null };
     if (method === "PATCH") {
       expect(body!.force).toBe(false);
+      expect(commits.get(body!.sha as string)?.tree).toBeTruthy();
       if (!ref || !descends(body!.sha as string, ref))
         return { status: 422, body: { message: "not a fast forward" } };
       ref = body!.sha as string;
       return { status: 200, body: {} };
-    }
-    if (method === "DELETE") {
-      if (!ref) return { status: 422, body: null };
-      ref = null;
-      return { status: 204, body: null };
     }
     throw new Error(`unexpected ${method} ${path}`);
   };

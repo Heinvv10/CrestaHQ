@@ -284,8 +284,8 @@ jobs:
     runs-on: ubuntu-latest
     # contents: write creates the lock ref; actions: read checks whether a
     # lock holder's run is still alive; pull-requests: read sees a newer head.
-    # A same-repo PR can still edit this file or the lock script; this keeps
-    # the token from the suite and its dependencies, it is not a boundary
+    # The lock script itself comes from the default branch (below). A
+    # same-repo PR can still edit this workflow file; that is not a boundary
     # against the PR's author (who already has write access; fork PRs never
     # run this job).
     permissions:
@@ -300,15 +300,37 @@ jobs:
     timeout-minutes: 230
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
-      # The lock commit records HEAD's tree, so a sparse checkout is enough.
+      # This job holds contents: write, so it runs the lock script from the
+      # default branch, never this commit's copy (node built-ins only: no
+      # install, no app code). Everything the lock needs from the run (PR
+      # number, head sha, run id) comes from env, not from the checkout.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      # One-time BOOTSTRAP: the PR that adds the lock script runs before the
+      # default branch has it, so only then fall back to this commit's copy.
+      # Once it is on the default branch this step never runs; delete it (and
+      # the fallback below) in a follow-up.
+      - name: Bootstrap the lock script from this commit
+        if: ${{ hashFiles('scripts/ci/fixture-lock.mjs') == '' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: .bootstrap-lock
           persist-credentials: false
           sparse-checkout: scripts/ci
 
       - name: Acquire fixture lock
         timeout-minutes: 220
-        run: node scripts/ci/fixture-lock.mjs acquire
+        run: |
+          LOCK=scripts/ci/fixture-lock.mjs
+          if [ ! -f "$LOCK" ]; then
+            echo "::warning::$LOCK is not on the default branch yet; one-time bootstrap, running this commit's copy (possible only until the PR adding it merges)"
+            LOCK=.bootstrap-lock/$LOCK
+          fi
+          node "$LOCK" acquire
         env:
           GITHUB_TOKEN: ${{ github.token }}
           LOCK_PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -322,16 +344,16 @@ jobs:
     permissions:
       contents: read
     # The lock is held for this whole job, so its budget bounds how long a
-    # live holder holds it and must stay under the lock's 150-min stale limit.
+    # live holder holds it (a live holder is never taken over by age).
     # Setup (~15 min) + the Playwright step's 90 + margin. On a hosted runner
     # the 186 specs take ~55-60 min (18 min on velo-server; the
     # Firestore-heavy specs are 2-4x slower).
     timeout-minutes: 120
-    # !cancelled(), not the default success(): this is the required check, and
+    # always(), not success() or !cancelled(): this is the required check, and
     # a SKIPPED required check counts as passing. When e2e-lock fails, is
-    # skipped (ci or secrets failed) or times out, this job still runs and its
-    # first step fails it.
-    if: ${{ !cancelled() && (github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)) }}
+    # skipped (ci or secrets failed), times out or is cancelled, this job still
+    # runs and its first step fails it.
+    if: ${{ always() && (github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)) }}
     env:
       # The build bakes NEXT_PUBLIC_* in, so they must be present at build
       # time, not just at runtime — hence job-level env rather than step-level.
@@ -505,8 +527,8 @@ jobs:
           retention-days: 7
 
   # always(): runs after a failure, timeout or cancellation of either job too.
-  # Deletes the ref only if its recorded holder is this run attempt; a no-op
-  # otherwise. Skipped only when e2e-lock was (draft, fork, failed gate), in
+  # Frees the lock (compare-and-swap) only if its recorded holder is this run
+  # attempt; a no-op otherwise. Skipped only when e2e-lock was (draft, fork, failed gate), in
   # which case this run never touched the lock.
   e2e-unlock:
     name: E2E fixture unlock
@@ -517,12 +539,35 @@ jobs:
       contents: write
     timeout-minutes: 10
     steps:
+      # This job holds contents: write, so it runs the lock script from the
+      # default branch, never this commit's copy (node built-ins only: no
+      # install, no app code). Everything the lock needs from the run (PR
+      # number, head sha, run id) comes from env, not from the checkout.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      # One-time BOOTSTRAP: the PR that adds the lock script runs before the
+      # default branch has it, so only then fall back to this commit's copy.
+      # Once it is on the default branch this step never runs; delete it (and
+      # the fallback below) in a follow-up.
+      - name: Bootstrap the lock script from this commit
+        if: ${{ hashFiles('scripts/ci/fixture-lock.mjs') == '' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: .bootstrap-lock
           persist-credentials: false
           sparse-checkout: scripts/ci
 
       - name: Release fixture lock
-        run: node scripts/ci/fixture-lock.mjs release
+        run: |
+          LOCK=scripts/ci/fixture-lock.mjs
+          if [ ! -f "$LOCK" ]; then
+            echo "::warning::$LOCK is not on the default branch yet; one-time bootstrap, running this commit's copy (possible only until the PR adding it merges)"
+            LOCK=.bootstrap-lock/$LOCK
+          fi
+          node "$LOCK" release
         env:
           GITHUB_TOKEN: ${{ github.token }}

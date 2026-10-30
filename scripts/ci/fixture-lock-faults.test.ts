@@ -98,7 +98,7 @@ describe("fixture lock: ownership and faults", () => {
       path: string,
       body?: Record<string, unknown>
     ) =>
-      method === "DELETE" && failed++ === 0
+      method === "PATCH" && failed++ === 0
         ? { status: 502, body: null }
         : gh.api(method, path, body);
     let slept = 0;
@@ -109,7 +109,44 @@ describe("fixture lock: ownership and faults", () => {
       await release(flaky, { holder: holder("1"), sleep, log: quiet })
     ).toBe(true);
     expect(slept).toBe(1);
-    expect(gh.ref()).toBeNull();
+    expect(await holds(gh.api, { holder: holder("1") })).toBe(false);
+  });
+
+  it("release is compare-and-swap: never frees a lock that moved after it was read", async () => {
+    const clock = { t: 0 };
+    const gh = fakeGitHub(clock);
+    await acquire(gh.api, {
+      tree: "t",
+      holder: holder("1"),
+      now: () => clock.t,
+      sleep: noSleep,
+      log: quiet,
+    });
+    let other: string | null = null;
+    // Another run's commit lands on the ref between release's read and its
+    // update (the race a read-then-DELETE could not survive).
+    const racing = async (
+      method: string,
+      path: string,
+      body?: Record<string, unknown>
+    ) => {
+      if (method === "PATCH" && !other) {
+        other = (
+          (await gh.api("POST", "/git/commits", {
+            message: JSON.stringify(holder("2")),
+            tree: "t",
+            parents: [gh.ref()],
+          })) as { body: { sha: string } }
+        ).body.sha;
+        gh.setRef(other);
+      }
+      return gh.api(method, path, body);
+    };
+    expect(
+      await release(racing, { holder: holder("1"), sleep: noSleep, log: quiet })
+    ).toBe(false);
+    expect(gh.ref()).toBe(other);
+    expect(await holds(gh.api, { holder: holder("2") })).toBe(true);
   });
 
   it("stops waiting once its PR has a newer head", async () => {
