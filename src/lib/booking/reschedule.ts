@@ -154,7 +154,9 @@ export async function runRescheduleSideEffects(args: {
   const db = getAdminDb();
   const { event, page, newRawToken, publicEventUrl, startAt, endAt, actor } =
     args;
-  await pushBookingToGoogle(event.id);
+  // The "Updated:" mail below carries the event's link, so a room the push
+  // makes now may replace the page's fallback.
+  await pushBookingToGoogle(event.id, { replaceFallback: true });
   // The push may have just stored the booking's Google Meet link (a room
   // made now, or found after an earlier push timed out): mail that one.
   let meetingUrl = event.meetingUrl ?? null;

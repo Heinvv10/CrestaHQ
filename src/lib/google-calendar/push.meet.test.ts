@@ -10,8 +10,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/google-oauth-harness")).adminMock());
 vi.mock("./provider/select", () => ({ getGcalProviderFor: vi.fn(async () => provider) }));
 vi.mock("firebase-admin/firestore", async () => (await import("@/test/google-oauth-harness")).firestoreMock());
-const followUp = vi.hoisted(() => vi.fn(async (_eventId: string, _url: string) => undefined));
+const followUp = vi.hoisted(() => vi.fn(async (_eventId: string, _url: string, _o?: unknown) => undefined));
 vi.mock("@/lib/booking/meet-link-follow-up", () => ({ sendMeetLinkFollowUp: followUp }));
+const settle = vi.hoisted(() => vi.fn(async (_eventId: string) => undefined));
+vi.mock("@/lib/booking/meet-link-missing", () => ({ settleMeetLinkPending: settle }));
 
 import { SUB_PATH, state } from "@/test/google-oauth-harness";
 import { PAGE, connect, event, resetGcal, seedEvent, setGate, stubProvider, type StubProvider } from "@/test/gcal-harness";
@@ -51,6 +53,7 @@ function seedMeetBooking(over: Record<string, unknown> = {}, pageFallback: strin
 beforeEach(() => {
   resetGcal();
   followUp.mockClear();
+  settle.mockClear();
   provider = stubProvider();
   provider.putEvent.mockImplementation(async (_t: string, _id: string, input: GcalEventInput) => ({
     created: true,
@@ -120,7 +123,8 @@ describe("a Google Meet booking", () => {
       state.docs.set("events/ev_1", { ...event(), meetingUrl: "https://zoom.example/operator" });
       return { created: true, meetUrl: MEET_LINK };
     });
-    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: null });
+    // The in-time booking push, which may replace the fallback it read.
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 5_000 })).toEqual({ meetUrl: null, pending: false });
     expect(event().meetingUrl).toBe("https://zoom.example/operator");
   });
 
@@ -131,15 +135,34 @@ describe("a Google Meet booking", () => {
       state.docs.set("events/ev_1", { ...event(), meetingUrl: null });
       return { created: true, meetUrl: MEET_LINK };
     });
-    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: MEET_LINK });
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 5_000 })).toEqual({ meetUrl: MEET_LINK, pending: false });
     expect(event().meetingUrl).toBe(MEET_LINK);
   });
 
-  it("a room just made replaces the page's fallback link on the event", async () => {
+  it("the in-time booking push: a room just made replaces the page's fallback link on the event", async () => {
     connect("host_a");
     seedMeetBooking({ meetingUrl: FALLBACK });
-    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: MEET_LINK });
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 5_000 })).toEqual({ meetUrl: MEET_LINK, pending: false });
     expect(event().meetingUrl).toBe(MEET_LINK);
+  });
+
+  it.each([
+    ["Retry sync / reassign (pushBookingToGoogle)", () => pushBookingToGoogle("ev_1")],
+    ["pushBookingAndGetMeetUrl", () => pushBookingAndGetMeetUrl("ev_1")],
+  ])("any other push (%s) leaves the fallback the booker has: the room is not stored over it", async (_l, run) => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: FALLBACK });
+    await run();
+    expect(sentTo("host_a")?.conferenceData).toBeDefined();
+    expect(event().meetingUrl).toBe(FALLBACK);
+    expect(event().googleMeetOwnerUid).toBeUndefined();
+  });
+
+  it("…but it still fills an empty link", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: null });
+    await pushBookingToGoogle("ev_1");
+    expect(event()).toMatchObject({ meetingUrl: MEET_LINK, googleMeetOwnerUid: "host_a" });
   });
 
   it("a reassign of a booking with no recorded room owner: the new host's copy carries the link, no new room", async () => {
@@ -159,16 +182,17 @@ describe("a Google Meet booking", () => {
     provider.putEvent.mockRejectedValueOnce(new GbpProviderError("transient"));
     expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: null });
     expect(event().meetingUrl).toBe(FALLBACK);
-    // Google had made the event and its room: the insert now 409s into an overwrite that finds it.
+    // Google had made the event and its room: the insert now 409s into an
+    // overwrite that finds it. A reschedule (which mails the link) may store it.
     provider.putEvent.mockResolvedValueOnce({ created: false, meetUrl: MEET_LINK });
-    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: MEET_LINK });
+    await pushBookingToGoogle("ev_1", { replaceFallback: true });
     expect(event().meetingUrl).toBe(MEET_LINK);
   });
 
   it("a page whose fallback is a fixed Meet URL still gets the booking its own room", async () => {
     connect("host_a");
     seedMeetBooking({ meetingUrl: STATIC_MEET }, STATIC_MEET);
-    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: MEET_LINK });
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 5_000 })).toEqual({ meetUrl: MEET_LINK, pending: false });
     expect(sentTo("host_a")?.conferenceData).toBeDefined();
     expect(event()).toMatchObject({ meetingUrl: MEET_LINK, googleMeetOwnerUid: "host_a" });
   });
@@ -225,14 +249,65 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
     let release: (v: { created: boolean; meetUrl: string | null }) => void = () => {};
     provider.putEvent.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
     const started = Date.now();
-    expect(await pushBookingAndGetMeetUrlWithin("ev_1", 50)).toEqual({ meetUrl: null, pending: true });
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 50 })).toEqual({ meetUrl: null, pending: true });
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(event().meetingUrl).toBeNull();
     release({ created: true, meetUrl: MEET_LINK });
     await flushAfterResponse();
     expect(event().meetingUrl).toBe(MEET_LINK);
     // The booker was told the link will follow: it does, once.
-    expect(followUp).toHaveBeenCalledWith("ev_1", MEET_LINK);
+    expect(followUp).toHaveBeenCalledWith("ev_1", MEET_LINK, { pinnedEmail: undefined });
+    expect(settle).not.toHaveBeenCalled();
+  });
+
+  it("detached: the follow-up waits for the caller's confirmation and row (`after`)", async () => {
+    connect("host_a");
+    seedMeetBooking();
+    let release: (v: { created: boolean; meetUrl: string | null }) => void = () => {};
+    provider.putEvent.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    let confirmed: () => void = () => {};
+    const after = new Promise<void>((r) => (confirmed = r));
+    await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 50, after });
+    release({ created: true, meetUrl: MEET_LINK });
+    for (let i = 0; i < 20 && event().meetingUrl !== MEET_LINK; i++) await new Promise((r) => setTimeout(r, 5));
+    expect(event().meetingUrl).toBe(MEET_LINK);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(followUp).not.toHaveBeenCalled();
+    confirmed();
+    await flushAfterResponse();
+    expect(followUp).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["withheld (null): nobody", null, 0],
+    ["pinned: that address only", "pinned@example.com", 1],
+  ])("detached, followUpTo %s", async (_l, followUpTo, calls) => {
+    connect("host_a");
+    seedMeetBooking();
+    let release: (v: { created: boolean; meetUrl: string | null }) => void = () => {};
+    provider.putEvent.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 50, followUpTo });
+    release({ created: true, meetUrl: MEET_LINK });
+    await flushAfterResponse();
+    expect(followUp).toHaveBeenCalledTimes(calls);
+    if (calls) expect(followUp).toHaveBeenCalledWith("ev_1", MEET_LINK, { pinnedEmail: "pinned@example.com" });
+  });
+
+  it("detached and ended with no room: the 'being created' row is corrected; in time, it isn't touched", async () => {
+    connect("host_a");
+    seedMeetBooking();
+    let fail: (e: Error) => void = () => {};
+    provider.putEvent.mockImplementationOnce(() => new Promise((_, reject) => (fail = reject)));
+    await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 50 });
+    fail(new GbpProviderError("transient"));
+    await flushAfterResponse();
+    expect(settle).toHaveBeenCalledWith("ev_1");
+    expect(followUp).not.toHaveBeenCalled();
+    settle.mockClear();
+    provider.putEvent.mockRejectedValueOnce(new GbpProviderError("transient"));
+    await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 5_000 });
+    await flushAfterResponse();
+    expect(settle).not.toHaveBeenCalled();
   });
 
   it("detached, it never replaces the fallback the booker was just sent: the room stays off, no follow-up", async () => {
@@ -240,7 +315,7 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
     seedMeetBooking({ meetingUrl: FALLBACK });
     let release: (v: { created: boolean; meetUrl: string | null }) => void = () => {};
     provider.putEvent.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
-    expect(await pushBookingAndGetMeetUrlWithin("ev_1", 50)).toEqual({ meetUrl: null, pending: true });
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 50 })).toEqual({ meetUrl: null, pending: true });
     release({ created: true, meetUrl: MEET_LINK });
     await flushAfterResponse();
     expect(event().meetingUrl).toBe(FALLBACK);
@@ -253,7 +328,7 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
     seedMeetBooking({ meetingUrl: MEET_LINK, googleMeetOwnerUid: "host_a", googleEventIds: { host_a: gid("host_a") } });
     let release: (v: { created: boolean; meetUrl: string | null }) => void = () => {};
     provider.putEvent.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
-    expect((await pushBookingAndGetMeetUrlWithin("ev_1", 50)).pending).toBe(true);
+    expect((await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 50 })).pending).toBe(true);
     release({ created: false, meetUrl: MEET_LINK });
     await flushAfterResponse();
     expect(followUp).not.toHaveBeenCalled();
@@ -262,7 +337,7 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
   it("in time, the same room does replace the fallback, and no follow-up is needed", async () => {
     connect("host_a");
     seedMeetBooking({ meetingUrl: FALLBACK });
-    expect(await pushBookingAndGetMeetUrlWithin("ev_1", 5_000)).toEqual({ meetUrl: MEET_LINK, pending: false });
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 5_000 })).toEqual({ meetUrl: MEET_LINK, pending: false });
     await flushAfterResponse();
     expect(event().meetingUrl).toBe(MEET_LINK);
     expect(followUp).not.toHaveBeenCalled();
@@ -271,14 +346,14 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
   it("returns the link when Google answers in time", async () => {
     connect("host_a");
     seedMeetBooking();
-    expect(await pushBookingAndGetMeetUrlWithin("ev_1", 5_000)).toEqual({ meetUrl: MEET_LINK, pending: false });
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 5_000 })).toEqual({ meetUrl: MEET_LINK, pending: false });
   });
 
   it("a push that finished in time without a room is not pending", async () => {
     connect("host_a");
     seedMeetBooking();
     provider.putEvent.mockRejectedValueOnce(new GbpProviderError("transient"));
-    expect(await pushBookingAndGetMeetUrlWithin("ev_1", 5_000)).toEqual({ meetUrl: null, pending: false });
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", { ms: 5_000 })).toEqual({ meetUrl: null, pending: false });
   });
 });
 
@@ -344,6 +419,15 @@ describe("a reassigned Google Meet booking keeps the room owner's copy", () => {
     state.docs.set(`${SUB_PATH}/subAccountMembers/host_a`, { uid: "host_a", status: "removed" });
     await pushBookingToGoogle("ev_1");
     expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", gid("host_a"), expect.any(AbortSignal));
+  });
+
+  it("an owner who left with no connection: the id goes and the kept state is cleared", async () => {
+    seedReassigned({ googleMeetKeptUid: "host_a" });
+    state.docs.set(`${SUB_PATH}/subAccountMembers/host_a`, { uid: "host_a", status: "removed" });
+    state.docs.delete(`${SUB_PATH}/private/googleCalendar_host_a`);
+    await pushBookingToGoogle("ev_1");
+    expect(event().googleEventIds).toEqual({ host_b: gid("host_b") });
+    expect(event().googleMeetKeptUid).toBeNull();
   });
 
   it("a recorded owner keeps the room's copy even after the event's link was changed", async () => {

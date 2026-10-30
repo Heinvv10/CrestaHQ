@@ -170,11 +170,14 @@ export async function markBookingPaidServerSide(input: {
   if ("ok" in confirmed) return confirmed;
   const { event: updatedEvent, token: newToken } = confirmed;
 
+  let confirmationSent: () => void = () => undefined;
+  const afterConfirmation = new Promise<void>((resolve) => (confirmationSent = resolve));
   const { withheld, pushed } = await runMarkPaidSideEffects({
     event: updatedEvent,
     rawToken: newToken,
     expect: input.expect,
-  });
+    confirmationSent: afterConfirmation,
+  }).finally(confirmationSent);
   if (!pushed) await pushBookingToGoogle(input.eventId);
 
   return {
@@ -194,6 +197,8 @@ async function runMarkPaidSideEffects(args: {
   event: CalendarEvent;
   rawToken: string;
   expect?: BookingPaidExpect;
+  /** Resolved once this returns: a late Meet link's follow-up waits for it. */
+  confirmationSent: Promise<void>;
 }): Promise<{ withheld: boolean; pushed: boolean }> {
   const { event, rawToken, expect } = args;
   const db = getAdminDb();
@@ -228,14 +233,29 @@ async function runMarkPaidSideEffects(args: {
     console.warn("[events/mark-paid] tenancy read failed", err);
   }
 
+  // With `expect`: the address the confirmation would go to now, against
+  // the one the approver reviewed. Changed: no confirmation and no reminders.
+  // Reminders are email-only (events/reminder/step sends to the contact's
+  // email), so the email address is the one recipient to pin.
+  const sendableTo = contact && sub && emailIsConfigured(sub) && contact.email && !contact.emailOptedOut ? contact.email : null;
+  const withheld = !!expect && sendableTo !== expect.emailTo;
+  if (withheld) {
+    console.warn(`[events/mark-paid] confirmation and reminders withheld for event=${event.id}: not the recipient the approver reviewed`);
+  }
+
   // Google Meet: the confirmation carries the booking's own link, so the
   // push runs BEFORE it, within the same overall deadline as the book route
   // (past it the push carries on detached and the mail says the link will
-  // follow). Someone in the workspace is told when no link exists.
+  // follow). Someone in the workspace is told when no link exists. A late
+  // link is emailed only to the address an approver pinned (none when they
+  // reviewed none) — the same rule that withholds this confirmation.
   const meetPage = !!page && effectiveBookingLocation(page)?.type === "google_meet";
   let meetingUrl = event.meetingUrl ?? null;
   if (meetPage) {
-    const got = await pushBookingAndGetMeetUrlWithin(event.id);
+    const got = await pushBookingAndGetMeetUrlWithin(event.id, {
+      followUpTo: expect ? expect.emailTo : undefined,
+      after: args.confirmationSent,
+    });
     if (got.meetUrl) meetingUrl = got.meetUrl;
     if (!meetingUrl) {
       await recordMeetLinkMissing({
@@ -250,15 +270,6 @@ async function runMarkPaidSideEffects(args: {
   const where = meetPage && !meetingUrl ? meetLinkToFollow(event.location || "Google Meet video call") : event.location || "";
   const done = (withheld: boolean) => ({ withheld, pushed: meetPage });
 
-  // With `expect`: the address the confirmation would go to now, against
-  // the one the approver reviewed. Changed: no confirmation and no reminders.
-  // Reminders are email-only (events/reminder/step sends to the contact's
-  // email), so the email address is the one recipient to pin.
-  const sendableTo = contact && sub && emailIsConfigured(sub) && contact.email && !contact.emailOptedOut ? contact.email : null;
-  const withheld = !!expect && sendableTo !== expect.emailTo;
-  if (withheld) {
-    console.warn(`[events/mark-paid] confirmation and reminders withheld for event=${event.id}: not the recipient the approver reviewed`);
-  }
 
   // Reminder pipeline + automation activity/trigger run regardless of
   // email send success.

@@ -25,6 +25,15 @@ import { getGcalProviderFor } from "./provider/select";
 import { meetUrlOf, type GcalEventInput } from "./provider/types";
 import { runAfterResponse } from "@/lib/server/after-response";
 import { sendMeetLinkFollowUp } from "@/lib/booking/meet-link-follow-up";
+import { settleMeetLinkPending } from "@/lib/booking/meet-link-missing";
+
+/** Resolves when `p` settles or after `ms`, whichever is first; never rejects. */
+async function waitAtMost(p: Promise<void> | undefined, ms: number): Promise<void> {
+  if (!p) return;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([p.catch(() => undefined), new Promise<void>((r) => (timer = setTimeout(r, ms)))]);
+  clearTimeout(timer);
+}
 
 /**
  * Mirror one booking into its hosts' primary Google calendars (G3).
@@ -74,13 +83,21 @@ const KEPT_FOR_MEET_DESCRIPTION =
   "This time holds the Google Meet room of a booking that moved to another host. It is removed when the booking is cancelled, deleted or over.";
 
 /**
- * How a push may store a room's link. `detached`: the booker-facing caller
- * gave up waiting (pushBookingAndGetMeetUrlWithin's deadline) and has
- * already emailed its answer — set while the push runs, read at store time.
+ * How a push may store a room's link, read at store time.
+ * `replaceFallback`: the caller emails the booker the link it gets right
+ * after (the in-time booking push, mark-paid, a reschedule), so the room may
+ * replace the page's fallback. Every other push (Retry sync, reassign,
+ * cancel paths, voice) only FILLS an empty link: the booker already has the
+ * fallback. `detached`: the in-time caller gave up waiting
+ * (pushBookingAndGetMeetUrlWithin's deadline) and has already emailed its
+ * answer — from then on, fill only.
  */
 interface PushMode {
   detached: boolean;
+  replaceFallback: boolean;
 }
+
+const FILL_ONLY: PushMode = { detached: false, replaceFallback: false };
 
 type SyncedEvent = CalendarEvent & GoogleSyncFields;
 
@@ -185,12 +202,11 @@ const replaceable = (current: string | null | undefined, fallback: string | null
   !current || current === fallback;
 
 /**
- * May a room's link go onto the event over `current`? Empty, or the page's
- * fallback — except once detached: the booker was already sent the fallback
- * (or told the link will follow), so only an empty link is filled.
+ * May a room's link go onto the event over `current`? Empty always; the
+ * page's fallback only for a caller about to email the link (`PushMode`).
  */
 const mayStore = (current: string | null | undefined, fallback: string | null, mode: PushMode) =>
-  mode.detached ? !current : replaceable(current, fallback);
+  mode.replaceFallback && !mode.detached ? replaceable(current, fallback) : !current;
 
 type Converged = { fingerprint: string; meetUrl: string | null; stored: boolean };
 
@@ -225,7 +241,7 @@ async function storeMeetUrl(
 async function convergeOnce(
   eventId: string,
   removeAll = false,
-  mode: PushMode = { detached: false },
+  mode: PushMode = FILL_ONLY,
 ): Promise<Converged | null> {
   const ref = getAdminDb().collection("events").doc(eventId);
   const snap = await ref.get();
@@ -316,6 +332,7 @@ async function convergeOnce(
       // A host who disconnected (or was revoked) has nothing we can remove.
       if (!conn || conn.status !== "connected") {
         delete ids[uid];
+        if (uid === keptNow) keptNow = null;
         return;
       }
       await withBudget(GOOGLE_PUSH_TIMEOUT_MS, async (signal) => {
@@ -516,6 +533,7 @@ export async function removeMemberGoogleCopies(subAccountId: string, uid: string
           d.ref
             .update({
               googleMeetOwnerUid: null,
+              ...((d.data() as SyncedEvent).googleMeetKeptUid === uid ? { googleMeetKeptUid: null } : {}),
               ...(hasCopy(d)
                 ? {
                     googleSyncError: {
@@ -573,9 +591,13 @@ export async function removeMemberGoogleCopies(subAccountId: string, uid: string
   }
 }
 
-/** Converge Google to `events/{eventId}`. Never throws. */
-export async function pushBookingToGoogle(eventId: string): Promise<void> {
-  await pushBookingAndGetMeetUrl(eventId);
+/**
+ * Converge Google to `events/{eventId}`. Never throws. `replaceFallback`
+ * only for a caller that emails the booker the event's link right after (a
+ * reschedule): see PushMode.
+ */
+export async function pushBookingToGoogle(eventId: string, opts?: { replaceFallback: true }): Promise<void> {
+  await pushWithMode(eventId, { detached: false, replaceFallback: opts?.replaceFallback === true });
 }
 
 /**
@@ -585,7 +607,7 @@ export async function pushBookingToGoogle(eventId: string): Promise<void> {
  * host isn't connected, Google failed). Never throws.
  */
 export async function pushBookingAndGetMeetUrl(eventId: string): Promise<{ meetUrl: string | null }> {
-  const { meetUrl } = await pushWithMode(eventId, { detached: false });
+  const { meetUrl } = await pushWithMode(eventId, FILL_ONLY);
   return { meetUrl };
 }
 
@@ -602,24 +624,54 @@ async function pushWithMode(eventId: string, mode: PushMode): Promise<{ meetUrl:
 /** The longest a booker-facing path waits on Google for a Meet link. */
 export const MEET_PUSH_DEADLINE_MS = 6_000;
 
+/** The longest a detached push's follow-up waits for its caller's `after`. */
+export const FOLLOW_UP_WAIT_CAP_MS = 30_000;
+
+export interface MeetPushWithinOptions {
+  /** Deadline; MEET_PUSH_DEADLINE_MS unless a test shortens it. */
+  ms?: number;
+  /**
+   * Who a late link may be emailed to: undefined = the booking's contact;
+   * a string = only while the contact's email is still that address (an
+   * approver's pin); null = nobody (the caller's own mail was withheld).
+   */
+  followUpTo?: string | null;
+  /**
+   * Resolved by the caller once its confirmation and timeline row are
+   * written. The detached continuation (follow-up email, row rewrites)
+   * waits for it, capped at FOLLOW_UP_WAIT_CAP_MS, so it never overtakes
+   * them.
+   */
+  after?: Promise<void>;
+}
+
 /**
- * pushBookingAndGetMeetUrl for a path that sends the booker's email next
- * (the book route, mark-paid): one overall deadline. Past it the answer is
- * `{ meetUrl: null }` (the caller says the link will follow) and the push
- * carries on detached — registered with after() when it starts, so a
- * serverless host keeps it alive. Detached, it only FILLS an empty link
- * (never replaces the fallback the booker was just sent), and when it does,
- * the booker gets one follow-up email with the link. Never throws.
+ * The booking push for a path that sends the booker's email next (the book
+ * route, mark-paid): one overall deadline, and the room may replace the
+ * page's fallback (the email right after carries it). Past the deadline the
+ * answer is `{ meetUrl: null, pending: true }` (the caller says the link will
+ * follow) and the push carries on detached — registered with after() when it
+ * starts, so a serverless host keeps it alive. Detached, it only FILLS an
+ * empty link; when it does, the booker gets one follow-up email with it;
+ * when it ends with no room, the "being created" timeline row is corrected.
+ * Never throws.
  */
 export async function pushBookingAndGetMeetUrlWithin(
   eventId: string,
-  ms: number = MEET_PUSH_DEADLINE_MS,
+  opts: MeetPushWithinOptions = {},
 ): Promise<{ meetUrl: string | null; pending: boolean }> {
-  const mode: PushMode = { detached: false };
+  const ms = opts.ms ?? MEET_PUSH_DEADLINE_MS;
+  const mode: PushMode = { detached: false, replaceFallback: true };
   const push = pushWithMode(eventId, mode);
   runAfterResponse(async () => {
     const r = await push;
-    if (mode.detached && r.stored && r.meetUrl) await sendMeetLinkFollowUp(eventId, r.meetUrl);
+    if (!mode.detached) return;
+    await waitAtMost(opts.after, FOLLOW_UP_WAIT_CAP_MS);
+    if (r.stored && r.meetUrl) {
+      if (opts.followUpTo !== null) await sendMeetLinkFollowUp(eventId, r.meetUrl, { pinnedEmail: opts.followUpTo });
+    } else {
+      await settleMeetLinkPending(eventId);
+    }
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
   // `pending`: the deadline passed with the push still running — a room may

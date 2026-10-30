@@ -256,11 +256,12 @@ describe("removeMemberGoogleCopies: copies kept for a Google Meet room", () => {
     ["a revoked connection", () => connect("host_a", { status: "revoked" })],
   ])("with %s: nothing can be removed, so the event records it and keeps the id", async (_l, setup) => {
     setup();
-    seedKept();
+    seedKept({ googleMeetKeptUid: "host_a" });
     await removeMemberGoogleCopies(SUB, "host_a");
     expect(provider.deleteEvent).not.toHaveBeenCalled();
     expect(event().googleEventIds).toEqual({ host_a: "g_a", host_b: "g_b" });
     expect(event().googleMeetOwnerUid).toBeNull();
+    expect(event().googleMeetKeptUid).toBeNull();
     expect((event().googleSyncError as { message: string }).message).toMatch(
       /^Still in HOST_A's Google Calendar: .*copy kept for the Google Meet link couldn't be removed/,
     );

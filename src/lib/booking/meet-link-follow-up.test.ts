@@ -15,6 +15,7 @@ vi.mock("@/lib/server/usage-meter", async (orig) => (await s()).seamMocks.usage(
 
 const { SA, AGENCY, mem, resetSeam, smtpSend, suppressionSeed } = await s();
 const { sendMeetLinkFollowUp } = await import("./meet-link-follow-up");
+const { MEET_LINK_NOT_EMAILED_NOTE } = await import("./meet-link-missing");
 
 const MEET_LINK = "https://meet.google.com/abc-defg-hij";
 const ts = (d: Date) => ({ toDate: () => d, toMillis: () => d.getTime() });
@@ -64,6 +65,52 @@ describe("sendMeetLinkFollowUp", () => {
     expect(mails()).toHaveLength(0);
     expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
     expect((mem.read("contacts/c1/activities/a1") as { meta: object }).meta).not.toHaveProperty("resolved");
+  });
+
+  it("the booking was cancelled: no email, no claim (guard on its own)", async () => {
+    mem.seed("events/e1", { ...(mem.read("events/e1") as object), status: "cancelled" });
+    await sendMeetLinkFollowUp("e1", MEET_LINK);
+    expect(mails()).toHaveLength(0);
+    expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
+  });
+
+  it("the booking holds another link than the one made: no email, no claim (guard on its own)", async () => {
+    await sendMeetLinkFollowUp("e1", "https://meet.google.com/some-other-room");
+    expect(mails()).toHaveLength(0);
+    expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
+  });
+
+  it("pinned to the reviewed address: sent when it still matches, withheld (row says so) when it doesn't", async () => {
+    await sendMeetLinkFollowUp("e1", MEET_LINK, { pinnedEmail: "reviewed@example.co.za" });
+    expect(mails()).toHaveLength(0);
+    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_NOT_EMAILED_NOTE });
+    await sendMeetLinkFollowUp("e1", MEET_LINK, { pinnedEmail: "thandi@example.co.za" });
+    expect(mails().map((m) => m.to)).toEqual(["thandi@example.co.za"]);
+  });
+
+  it("sending isn't configured: no email, and the row says the link exists but couldn't be emailed", async () => {
+    mem.seed(`subAccounts/${SA}`, { agencyId: AGENCY });
+    await sendMeetLinkFollowUp("e1", MEET_LINK);
+    expect(mails()).toHaveLength(0);
+    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: MEET_LINK_NOT_EMAILED_NOTE, meta: { pending: false } });
+    expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
+  });
+
+  it("a booking without a usable start is checked before the claim: nothing claimed", async () => {
+    mem.seed("events/e1", { ...(mem.read("events/e1") as object), startAt: null });
+    await sendMeetLinkFollowUp("e1", MEET_LINK);
+    expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
+  });
+
+  it("a send that fails transiently releases the claim and leaves the row open; the next attempt sends", async () => {
+    smtpSend.mockRejectedValueOnce(Object.assign(new Error("421 try again later"), { responseCode: 421 }));
+    await sendMeetLinkFollowUp("e1", MEET_LINK);
+    expect(mem.read("events/e1/reminderSends/meet-link-follow-up")).toBeUndefined();
+    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ content: "owed" });
+    await sendMeetLinkFollowUp("e1", MEET_LINK);
+    // One failed attempt on the wire, then the one that went out.
+    expect(smtpSend).toHaveBeenCalledTimes(2);
+    expect(mem.read("contacts/c1/activities/a1")).toMatchObject({ meta: { resolved: true } });
   });
 
   it("a suppressed address: no email, the refusal on the timeline, the row left open", async () => {

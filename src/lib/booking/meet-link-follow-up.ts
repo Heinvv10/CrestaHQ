@@ -6,23 +6,28 @@ import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
 import { recordSuppressedEmail } from "@/lib/comms/email-suppression";
 import { renderMeetLinkFollowUpEmail } from "@/lib/booking/email";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
+import { meetLinkFollowUpClaimPath, settleMeetLinkRows } from "@/lib/booking/meet-link-missing";
 import { loadEventContact } from "@/lib/server/tenant-ref";
 import { eventOccupiesSlot, eventStatus, type CalendarEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountDoc } from "@/types/tenancy";
-
-/** The once-only claim for the follow-up (reminder claims live beside it). */
-const claimPath = (eventId: string) => `events/${eventId}/reminderSends/meet-link-follow-up`;
 
 /**
  * A Meet room made AFTER the booker was told "the joining link will follow"
  * (the detached continuation of pushBookingAndGetMeetUrlWithin stored it on
  * an event that had no link): email the booker the link once, through the
  * sub-account's own sending (SMTP or Resend, suppression-checked), and mark
- * the booking's meet_link_missing timeline row resolved. Claimed once per
- * event, so a second detached push can't send twice. Never throws.
+ * the booking's meet_link_missing timeline row resolved. When it can't be
+ * emailed (sending off, no address, opted out, suppressed, or not the
+ * address an approver pinned — `pinnedEmail`) the row says so instead.
+ * Claimed once per event, so a second detached push can't send twice; a
+ * send that fails in a way a retry could fix releases the claim. Never throws.
  */
-export async function sendMeetLinkFollowUp(eventId: string, meetUrl: string): Promise<void> {
+export async function sendMeetLinkFollowUp(
+  eventId: string,
+  meetUrl: string,
+  opts: { pinnedEmail?: string } = {},
+): Promise<void> {
   try {
     const db = getAdminDb();
     const snap = await db.collection("events").doc(eventId).get();
@@ -30,6 +35,10 @@ export async function sendMeetLinkFollowUp(eventId: string, meetUrl: string): Pr
     const event = { ...(snap.data() as CalendarEvent), id: eventId };
     // Only for a live booking still holding this very link.
     if (!eventOccupiesSlot(eventStatus(event)) || event.meetingUrl !== meetUrl || !event.contactId) return;
+    const contactId = event.contactId;
+    const startAt = (event.startAt as { toDate?: () => Date } | null)?.toDate?.();
+    const endAt = (event.endAt as { toDate?: () => Date } | null)?.toDate?.();
+    if (!(startAt instanceof Date) || !(endAt instanceof Date)) return;
 
     const [contact, subSnap, pageSnap] = await Promise.all([
       loadEventContact(event),
@@ -40,10 +49,17 @@ export async function sendMeetLinkFollowUp(eventId: string, meetUrl: string): Pr
     ]);
     const sub = (subSnap.exists ? subSnap.data() : null) as SubAccountDoc | null;
     const page = (pageSnap?.data() ?? null) as BookingPage | null;
-    if (!sub || !emailIsConfigured(sub) || !contact?.email || contact.emailOptedOut) return;
+    const to = contact?.email ?? null;
+    const pinnedAway = opts.pinnedEmail !== undefined && to !== opts.pinnedEmail;
+    if (!sub || !emailIsConfigured(sub) || !to || contact?.emailOptedOut || pinnedAway) {
+      if (pinnedAway) console.warn(`[booking/meet-link] follow-up withheld event=${eventId}: not the address the approver reviewed`);
+      await settleMeetLinkRows(contactId, eventId, "not_emailed");
+      return;
+    }
 
+    const claim = db.doc(meetLinkFollowUpClaimPath(eventId));
     try {
-      await db.doc(claimPath(eventId)).create({
+      await claim.create({
         agencyId: event.agencyId,
         subAccountId: event.subAccountId,
         claimedAt: FieldValue.serverTimestamp(),
@@ -55,11 +71,8 @@ export async function sendMeetLinkFollowUp(eventId: string, meetUrl: string): Pr
       return; // 6 = ALREADY_EXISTS: already sent
     }
 
-    const startAt = (event.startAt as { toDate?: () => Date } | null)?.toDate?.();
-    const endAt = (event.endAt as { toDate?: () => Date } | null)?.toDate?.();
-    if (!(startAt instanceof Date) || !(endAt instanceof Date)) return;
     const rendered = renderMeetLinkFollowUpEmail({
-      recipientName: contact.name ?? "",
+      recipientName: contact?.name ?? "",
       businessName: sub.name ?? "Booking",
       businessLogoUrl: sub.logoUrl,
       pageName: bookedEventLabel(page, event, startAt, endAt).name,
@@ -69,7 +82,7 @@ export async function sendMeetLinkFollowUp(eventId: string, meetUrl: string): Pr
     });
     try {
       await sendEmail({
-        to: contact.email,
+        to,
         subject: rendered.subject,
         text: rendered.text,
         html: rendered.html,
@@ -80,31 +93,21 @@ export async function sendMeetLinkFollowUp(eventId: string, meetUrl: string): Pr
       });
     } catch (err) {
       const suppressed = await recordSuppressedEmail(err, {
-        contactId: event.contactId,
+        contactId,
         eventId,
         what: "Google Meet link",
         createdBy: "booking",
       });
-      if (!suppressed) console.warn(`[booking/meet-link] follow-up send failed event=${eventId}`, err instanceof Error ? err.message : String(err));
+      if (suppressed) {
+        await settleMeetLinkRows(contactId, eventId, "not_emailed");
+        return;
+      }
+      // A failure a retry could fix: release the claim, leave the row open.
+      console.warn(`[booking/meet-link] follow-up send failed event=${eventId}`, err instanceof Error ? err.message : String(err));
+      await claim.delete().catch((e) => console.warn(`[booking/meet-link] claim release failed event=${eventId}`, e instanceof Error ? e.message : String(e)));
       return;
     }
-
-    const rows = await db
-      .collection("contacts")
-      .doc(event.contactId)
-      .collection("activities")
-      .where("type", "==", "meet_link_missing")
-      .where("meta.eventId", "==", eventId)
-      .get();
-    await Promise.all(
-      rows.docs.map((d) =>
-        d.ref.update({
-          content: "The Google Meet link was made after the booking and has been emailed to the customer.",
-          "meta.resolved": true,
-          "meta.resolvedAt": FieldValue.serverTimestamp(),
-        }),
-      ),
-    );
+    await settleMeetLinkRows(contactId, eventId, "sent");
   } catch (err) {
     console.warn(`[booking/meet-link] follow-up failed event=${eventId}`, err instanceof Error ? err.message : String(err));
   }

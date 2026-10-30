@@ -551,8 +551,12 @@ export async function POST(
   const meetPushNow = pageLocation?.type === "google_meet" && !paymentRequired;
   let meetingUrl = page.meetingUrl ?? null;
   let meetPending = false;
+  // A late link's follow-up (and timeline rewrites) wait until the
+  // confirmation and this booking's timeline row are written.
+  let confirmationWritten: () => void = () => undefined;
+  const afterConfirmation = new Promise<void>((resolve) => (confirmationWritten = resolve));
   if (meetPushNow) {
-    const pushed = await pushBookingAndGetMeetUrlWithin(created.eventDocRef.id);
+    const pushed = await pushBookingAndGetMeetUrlWithin(created.eventDocRef.id, { after: afterConfirmation });
     if (pushed.meetUrl) meetingUrl = pushed.meetUrl;
     meetPending = pushed.pending;
   }
@@ -718,6 +722,7 @@ export async function POST(
       pending: meetPending,
     });
   }
+  confirmationWritten();
 
   // Reminder schedule (no-op when payment is pending — gets scheduled
   // on mark-paid in Slice 8).

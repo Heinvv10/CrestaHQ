@@ -152,7 +152,8 @@ describe("reschedule", () => {
     expect(startMs()).toBe(at("10:00").getTime());
     expect(doc.publicTokenHash).not.toBe(HASH);
     expect(doc).toMatchObject({ rescheduleCount: 1, icsSequence: 2, isLong: false });
-    expect(fx.push).toHaveBeenCalledWith("e1");
+    // The "Updated:" mail carries the link, so this push may replace a fallback.
+    expect(fx.push).toHaveBeenCalledWith("e1", { replaceFallback: true });
   });
 
   it("with no end keeps the booking's own length", async () => {

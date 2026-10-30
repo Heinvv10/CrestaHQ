@@ -95,7 +95,7 @@ describe("push call sites", () => {
       endAt: new Date(),
       actor: "operator",
     });
-    expect(push.now).toHaveBeenCalledWith("e1");
+    expect(push.now).toHaveBeenCalledWith("e1", { replaceFallback: true });
   });
 
   it("payment expiry (expire-step route)", async () => {
