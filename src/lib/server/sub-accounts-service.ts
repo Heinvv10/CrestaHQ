@@ -222,6 +222,11 @@ export function writeNewSubAccount(
     // Web Voice and the browser dialer are opt-in, standalone gates.
     webVoiceEnabledByAgency: false,
     dialerEnabledByAgency: false,
+    // Agent monitors spend AI credits; selling online moves money; AI texts
+    // reach customers. All opt-in, standalone gates.
+    agentsEnabledByAgency: false,
+    sellOnlineEnabledByAgency: false,
+    aiOutboundSmsEnabledByAgency: false,
     // Email AI drafts spend OpenRouter credits on inbound mail — opt-in.
     emailAiDraftsEnabledByAgency: false,
     // Reviews AI (SP5) spends the agency's OpenRouter credits — opt-in.

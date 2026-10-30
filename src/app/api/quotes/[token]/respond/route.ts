@@ -11,11 +11,18 @@ import {
   recordQuoteActivity,
 } from "@/lib/quotes/lifecycle";
 import {
+  readSignatureInputs,
+  signatureForAccept,
+  signerEmailFor,
+} from "@/lib/quotes/accept-signature";
+import { quoteRequiresSignature } from "@/lib/quotes/signature";
+import {
   DECLINE_REASONS,
   type DeclineReason,
   type QuoteRespondPayload,
 } from "@/types/quotes";
 import type { Quote } from "@/types/quotes";
+import { isDocId } from "@/lib/server/doc-id";
 import { readJsonCapped } from "@/lib/server/read-json-capped";
 import { runAfterResponse } from "@/lib/server/after-response";
 
@@ -31,6 +38,10 @@ export const dynamic = "force-dynamic";
  *     re-send rotated them)
  *   - status gate (refuse to flip a quote that's already terminal)
  *   - expiry check (can't accept past validUntil)
+ *   - a quote that requires a signature also needs a typed name + terms
+ *     agreement; the signature block (with the document fingerprint) is
+ *     written in the same transaction as the accept, so neither can exist
+ *     without the other, and a quote already carrying one is never re-signed
  *
  * Day-4 work will extend this with workflow trigger firing +
  * auto-create-deal on accept + activity timeline entries. For now, the
@@ -40,6 +51,7 @@ export const dynamic = "force-dynamic";
 interface SuccessBody {
   ok: true;
   status: "accepted" | "declined";
+  signed?: boolean;
 }
 
 export async function POST(
@@ -49,7 +61,7 @@ export async function POST(
   const { token } = await params;
 
   const verified = verifyQuoteToken(token);
-  if (!verified) {
+  if (!verified || !isDocId(verified.quoteId)) {
     return NextResponse.json(
       { error: "Invalid or expired link" },
       { status: 404 },
@@ -95,15 +107,24 @@ export async function POST(
     note = trimmedNote ? trimmedNote.slice(0, 2000) : null;
   }
 
+  const signatureInputs = readSignatureInputs(payload, request);
+
   const db = getAdminDb();
   const quoteRef = db.collection("quotes").doc(verified.quoteId);
   const presentedHash = hashQuoteToken(token);
+
+  // Part of the signature record; read before the transaction (see signerEmailFor).
+  const signerEmail = payload.action === "accept" ? await signerEmailFor(verified.quoteId) : null;
+
+  let signedThisRequest = false;
 
   // Transactional state flip. Re-reads inside the txn so two concurrent
   // accepts (e.g. recipient triple-clicks on a slow connection) don't
   // produce inconsistent state.
   try {
     const result = await db.runTransaction(async (tx) => {
+      // Reset per attempt so a retried transaction can't carry a stale flag.
+      signedThisRequest = false;
       const snap = await tx.get(quoteRef);
       if (!snap.exists) {
         return { error: "Quote not found", status: 404 } as const;
@@ -122,6 +143,14 @@ export async function POST(
           status: 409,
         } as const;
       }
+      // Never a second signature: one recorded stays the only one, whatever
+      // the status says now (a re-send racing the accept can flip it back).
+      if (quote.signature) {
+        return {
+          error: "This quote has already been signed — refresh the page to see the latest.",
+          status: 409,
+        } as const;
+      }
       if (payload.action === "accept" && isQuoteExpired(quote)) {
         return {
           error: "This quote has expired and can no longer be accepted.",
@@ -130,11 +159,24 @@ export async function POST(
       }
 
       if (payload.action === "accept") {
-        tx.update(quoteRef, {
-          status: "accepted",
-          acceptedAt: FieldValue.serverTimestamp(),
-          updatedAt: FieldValue.serverTimestamp(),
-        });
+        if (quoteRequiresSignature(quote)) {
+          const signed = await signatureForAccept(quote, signatureInputs, signerEmail);
+          if (!signed.ok) return { error: signed.error, status: signed.status } as const;
+          const signature = signed.signature;
+          tx.update(quoteRef, {
+            status: "accepted",
+            acceptedAt: FieldValue.serverTimestamp(),
+            signature,
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+          signedThisRequest = true;
+        } else {
+          tx.update(quoteRef, {
+            status: "accepted",
+            acceptedAt: FieldValue.serverTimestamp(),
+            updatedAt: FieldValue.serverTimestamp(),
+          });
+        }
       } else {
         tx.update(quoteRef, {
           status: "declined",
@@ -172,7 +214,11 @@ export async function POST(
       ...(freshSnap.data() as Omit<Quote, "id">),
     };
     if (payload.action === "accept") {
-      await recordQuoteActivity(freshQuote, "quote_accepted");
+      await recordQuoteActivity(freshQuote, "quote_accepted", {
+        extra: signedThisRequest && freshQuote.signature
+          ? `signed by ${freshQuote.signature.signerName}`
+          : null,
+      });
       await fireQuoteTrigger(freshQuote, "quote_accepted");
       runAfterResponse(() => emitQuoteWebhook(freshQuote, "quote_accepted"));
       // Pipeline outcome: a linked deal moves to Won; otherwise the
@@ -192,6 +238,7 @@ export async function POST(
   const body: SuccessBody = {
     ok: true,
     status: payload.action === "accept" ? "accepted" : "declined",
+    ...(signedThisRequest ? { signed: true } : {}),
   };
   return NextResponse.json(body);
 }

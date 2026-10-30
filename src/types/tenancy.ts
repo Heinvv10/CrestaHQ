@@ -610,6 +610,24 @@ export interface SubAccountDoc {
    */
   dialerEnabledByAgency?: boolean;
   /**
+   * Agency-controlled gate for the agent monitors (stale-deals and inbox
+   * watchdog). Opt-in because every judgment spends the agency's AI credits.
+   * Standalone (NOT in `PLAN_GATE_KEYS`). Read `=== true`.
+   */
+  agentsEnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for selling products online through the
+   * sub-account's own payment connection. Moves money, so standalone (NOT in
+   * `PLAN_GATE_KEYS`). Controls selling only. Read `=== true`.
+   */
+  sellOnlineEnabledByAgency?: boolean;
+  /**
+   * "Send AI text" workflow step. Opt-in; enabling is refused until the AI
+   * outbound SMS readiness check passes (see `aiOutboundSmsEnableBlock`).
+   * Standalone (NOT in `PLAN_GATE_KEYS`). Read `=== true`.
+   */
+  aiOutboundSmsEnabledByAgency?: boolean;
+  /**
    * Agency-controlled gate for Email AI drafts: the shared AI agent drafts a
    * reply to each new inbound mailbox email for a person to approve in
    * Conversations. DRAFT-ONLY — nothing is ever sent without that approval.

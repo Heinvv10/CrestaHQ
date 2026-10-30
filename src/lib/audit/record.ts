@@ -51,6 +51,9 @@ const GATE_FIELDS: Record<AgencyGateField, true> = {
   googleCalendarEnabledByAgency: true,
   webVoiceEnabledByAgency: true,
   dialerEnabledByAgency: true,
+  agentsEnabledByAgency: true,
+  sellOnlineEnabledByAgency: true,
+  aiOutboundSmsEnabledByAgency: true,
   emailAiDraftsEnabledByAgency: true,
 };
 
