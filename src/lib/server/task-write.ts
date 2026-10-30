@@ -25,6 +25,8 @@ export async function patchTaskServerSide(opts: {
   patch: TaskPatchInput;
   /** Further fields written with the patch (an agent's territory and edit stamp). */
   extra?: Record<string, unknown>;
+  /** Who made the write (see `EmitWebhookEventInput.actorUid`). */
+  actorUid?: string;
 }): Promise<{ ok: true; task: ReturnType<typeof serializeTaskForApi> } | Failure> {
   const { patch, mode } = opts;
   const ref = getAdminDb().doc(`tasks/${opts.taskId}`);
@@ -78,6 +80,7 @@ export async function patchTaskServerSide(opts: {
       mode: wireMode,
       type: "task.completed",
       payload: { task },
+      ...(opts.actorUid ? { actorUid: opts.actorUid } : {}),
     }));
   }
   return { ok: true, task };

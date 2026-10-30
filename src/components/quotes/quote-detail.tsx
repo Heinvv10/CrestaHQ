@@ -3,7 +3,15 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Timestamp } from "firebase/firestore";
-import { ArrowRight, CheckCircle2, Download, Loader2, Send, Trash2 } from "lucide-react";
+import {
+  ArrowRight,
+  CheckCircle2,
+  Download,
+  FileSignature,
+  Loader2,
+  Send,
+  Trash2,
+} from "lucide-react";
 
 import { QuoteBuilder, type QuoteFormValues } from "@/components/quotes/quote-builder";
 import { PaystackInvoiceLinkButton } from "@/components/payments/paystack-invoice-link-button";
@@ -127,8 +135,12 @@ export function QuoteDetail({
   // a pending or unknown charge confirmed in Paystack is marked paid by hand.
   const canMarkCardDraftPaid =
     isInvoice && quote.status === "draft" && !!quote.recurringInvoiceId && !!quote.autoCharge;
-  const canDelete = quote.status === "draft";
+  const signed = !!quote.signature;
+  // A signed document (and the invoice it was converted to) is kept: rules refuse the delete.
+  const canDelete = quote.status === "draft" && !signed;
   const canConvert = quote.kind === "quote" && quote.status === "accepted";
+  const canEdit = !signed;
+  const canResend = !(signed && !isInvoice);
   const sendLabel =
     quote.status === "sent" || quote.status === "viewed"
       ? `Re-send ${docNoun}`
@@ -251,6 +263,7 @@ export function QuoteDetail({
       paymentDueDays: values.paymentDueDays,
       autoCreateDealOnAccept: values.autoCreateDealOnAccept,
       dealId: values.dealId,
+      requireSignature: values.requireSignature,
     });
     setEditing(false);
     setFlash(`${isInvoice ? "Invoice" : "Quote"} saved.`);
@@ -271,11 +284,27 @@ export function QuoteDetail({
                 Invoice
               </span>
             )}
+            {signed && (
+              <span className="inline-flex items-center gap-1 rounded-full bg-violet-500/10 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wider text-violet-700 dark:text-violet-400">
+                <FileSignature className="h-3 w-3" />
+                Signed
+              </span>
+            )}
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
             Created {formatContactDate(quote.createdAt)} · last updated{" "}
             {formatRelativeTime(quote.updatedAt)}
           </p>
+          {signed && quote.signature && (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Signed by{" "}
+              <span className="font-medium text-foreground">
+                {quote.signature.signerName}
+              </span>{" "}
+              on {formatContactDate(quote.signature.signedAt)} · locked against
+              edits
+            </p>
+          )}
         </div>
         {!editing && (
           <div className="flex flex-wrap items-center gap-2">
@@ -307,15 +336,17 @@ export function QuoteDetail({
               <Download className="h-4 w-4" />
               PDF
             </Button>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              onClick={() => setEditing(true)}
-              disabled={busy !== null}
-            >
-              Edit
-            </Button>
+            {canEdit && (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setEditing(true)}
+                disabled={busy !== null}
+              >
+                Edit
+              </Button>
+            )}
             {canConvert && (
               <Button
                 type="button"
@@ -368,7 +399,7 @@ export function QuoteDetail({
                 )}
               </Button>
             )}
-            {canSend && (
+            {canSend && canResend && (
               <Button
                 type="button"
                 size="sm"

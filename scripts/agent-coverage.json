@@ -42,6 +42,12 @@
         "reason": "Public booking-page availability and booking for visitors, with no session."
       }
     },
+    "api/brand": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Uploaded agency and sub-account logos served to any browser or email client (branding bytes only)."
+      }
+    },
     "api/broadcasts": {
       "scope": true
     },
@@ -221,6 +227,12 @@
     },
     "rr": {
       "scope": true
+    },
+    "t": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Broadcast email open pixel and click redirect, loaded by the recipient's mail client and authenticated only by the HMAC token in the URL; the recipient acts, never an agent key."
+      }
     }
   },
   "routes": {
@@ -252,6 +264,18 @@
       "exclude": {
         "category": "key-management",
         "reason": "Mints, lists and revokes the agency API keys agents authenticate with; a key never manages keys."
+      }
+    },
+    "api/agency/logo:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Logo upload and removal from the Branding settings card; the bytes come from the browser canvas resize (lib/brand/render-logo-client.ts), and a pasted logo URL goes through the branding fields instead."
+      }
+    },
+    "api/agency/logo:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Logo upload and removal from the Branding settings card; the bytes come from the browser canvas resize (lib/brand/render-logo-client.ts), and a pasted logo URL goes through the branding fields instead."
       }
     },
     "api/agency/plans:GET": {
@@ -633,6 +657,18 @@
         "invite_member"
       ]
     },
+    "api/sub-accounts/[id]/logo:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Logo upload and removal from the Branding settings card; the bytes come from the browser canvas resize (lib/brand/render-logo-client.ts), and a pasted logo URL goes through the branding fields instead."
+      }
+    },
+    "api/sub-accounts/[id]/logo:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Logo upload and removal from the Branding settings card; the bytes come from the browser canvas resize (lib/brand/render-logo-client.ts), and a pasted logo URL goes through the branding fields instead."
+      }
+    },
     "api/sub-accounts/[id]/members:GET": {
       "tools": [
         "list_members"
@@ -995,6 +1031,42 @@
       "exclude": {
         "category": "human-only",
         "reason": "Connects the sub-account's own ElevenLabs key for Web Voice (probes and stores the key, provisions and re-syncs the voice agent on the client's ElevenLabs account, disconnects); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/google-calendar/import:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Google Calendar import consent: a member chooses to show their OWN Google calendar (times only, or with titles) to the workspace, and a sub-account admin allows it. Consent to share a person's calendar is that person's act; an agent key acts for no member."
+      }
+    },
+    "api/sub-accounts/[id]/slack:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+      }
+    },
+    "api/sub-accounts/[id]/slack:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+      }
+    },
+    "api/sub-accounts/[id]/slack:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+      }
+    },
+    "api/sub-accounts/[id]/slack:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+      }
+    },
+    "api/sub-accounts/[id]/slack/test:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
       }
     }
   }

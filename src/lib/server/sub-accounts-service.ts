@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { deleteDecidedProposals, findDeleteBlockers } from "@/lib/agency/sub-account-delete-guard";
+import { deleteImportedEvents } from "@/lib/google-calendar/import-state";
 import { seedDefaultTemplates } from "@/lib/automations/seed-templates";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 
@@ -122,6 +123,11 @@ export async function deleteSubAccountForAgency(input: {
   }
   for (const doc of templatesSnap.docs) batch.delete(doc.ref);
   await batch.commit();
+
+  // Imported Google events are top-level docs the guard let through: they go
+  // with the workspace (setting the switch off first stops new imports).
+  await subRef.update({ calendarImportAllowed: false, calendarImportGeneration: FieldValue.increment(1) });
+  await deleteImportedEvents(subAccountId);
 
   // Finally remove the sub-account doc and every descendant subcollection
   // (members, counters, aiSuiteUsage, aiAgent, apiKeys, website, …).

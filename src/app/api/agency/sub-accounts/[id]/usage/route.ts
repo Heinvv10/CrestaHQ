@@ -8,6 +8,7 @@ import {
   getEffectiveQuotas,
   getEffectiveRates,
   usageMonthKey,
+  usageRebillingState,
 } from "@/lib/server/usage-meter";
 import { usageCurrency } from "@/lib/billing/currency";
 import type { UsageMonthDoc, UsageQuotas } from "@/types/usage";
@@ -19,7 +20,9 @@ import type { SubAccountDoc } from "@/types";
  * effective quotas (override → plan → null=unlimited). The ledger is
  * server-only in Firestore rules, so this route is the ONLY read surface;
  * usage is deliberately agency-eyes-only in v1 (see
- * USAGE_METERING_V1_PLAN.md).
+ * USAGE_METERING_V1_PLAN.md). `rebilling.previewCents` — what the usage
+ * charge would be — is set only while the client is rebilled (agency
+ * switch AND client switch); the overage line itself shows regardless.
  */
 export async function GET(
   request: Request,
@@ -60,10 +63,12 @@ export async function GET(
     sub,
   );
   const rates = await getEffectiveRates(subAccountId, sub);
+  const rebilling = await usageRebillingState(sub);
 
   // v1.5 — value the current month's usage BEYOND the included quotas at
   // the configured sell rates. Display/accrual only; the owner can invoice
-  // it today via a one-time charge, and v2 automates the monthly charge.
+  // it today via a one-time charge. The rebilling preview is the same
+  // amount, shown only for a rebilled client; no charge is created yet.
   const currentDoc = (snaps[0].data() as UsageMonthDoc | undefined) ?? {};
   const overage = computeOverage(currentDoc, quotas, rates);
 
@@ -78,5 +83,9 @@ export async function GET(
       : sub.billing?.planId && quotas
         ? "plan"
         : "none",
+    rebilling: {
+      ...rebilling,
+      previewCents: rebilling.active ? overage.totalCents : null,
+    },
   });
 }

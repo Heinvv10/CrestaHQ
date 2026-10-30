@@ -62,6 +62,9 @@ const PUBLIC_PATHS = [
   // api-cleanup, gbp-retention and whatsapp-staging-cleanup in sequence (the
   // QStash plan caps schedules at 10). Same auth: the signature, bound to the URL.
   "/api/cron/daily-housekeeping",
+  // Google Calendar import sweep, fanned out by the email-sync tick. Same
+  // auth: the signature, bound to the URL.
+  "/api/cron/calendar-import",
   // Review-request reminders (SP5 d2) — one QStash message per scheduled
   // reminder. Same auth: the signature, bound to this route's URL.
   "/api/cron/review-reminder",
@@ -326,6 +329,13 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // its own on a public path), and applies the widget's origin allow-list,
   // a per-IP limit and a non-enumerating 404 itself. Exactly one segment.
   /^\/api\/public\/gbp\/feed\/[^/]+$/,
+  // Uploaded logo: /api/brand/logo/{agency|sa}/{id}, behind every uploaded
+  // `logoUrl`. Email clients and public-page visitors fetch it with no
+  // session. Branding bytes only: the route reads no identity header, serves
+  // only the PNG/WebP validated at upload, and 404s anything else. Exactly
+  // the two scopes and one id segment; the upload routes
+  // (/api/agency/logo, /api/sub-accounts/{id}/logo) stay behind a session.
+  /^\/api\/brand\/logo\/(agency|sa)\/[^/]+$/,
   // Snapshot share link (SP13): the /s/snapshot/{token} page and its file
   // download /api/public/snapshots/{token}. The recipient usually has no
   // account on this deployment. The share token is the credential — hashed
@@ -357,6 +367,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // Mystery-shop website-form job (Prospecting PR 5c) — same auth: the
   // signature, verified inside the route and bound to its URL.
   /^\/api\/automations\/prospecting\/mystery-shop-form$/,
+  // Broadcast open pixel and click redirect (W4 PR2), loaded by a mail
+  // client with no session. One token segment each, nothing below it; the
+  // HMAC token is verified inside the route, and the click destination comes
+  // only from the link doc the send step stored.
+  /^\/t\/o\/[^/]+$/,
+  /^\/t\/c\/[^/]+$/,
 ];
 
 export function isPublicPath(pathname: string): boolean {

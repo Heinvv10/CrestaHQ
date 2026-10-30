@@ -37,6 +37,7 @@ const CONNECTED: Record<string, unknown> = {
   ghlImportConfig: { locationId: "loc1", connectedByUid: "owner1" },
   webVoiceMeta: { keyLast4: "abcd", ready: false },
   dialerConfig: { enabled: true, recordCalls: false },
+  slackMeta: { connected: true, urlTail: "abc123" },
 };
 
 describe("hasChannelConnection", () => {

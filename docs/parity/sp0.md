@@ -38,7 +38,9 @@ live on crm.crestahq.com instead of on GoHighLevel.
 3. **CI gets its env from GitHub Actions repository secrets.** Rotatable in one
    place, masked in logs, and visible to anyone reading the workflow.
    `ci.yml` already refuses fork PRs (`head.repo.full_name == github.repository`),
-   so no outside PR can reach them on the self-hosted runner.
+   so no outside PR can reach them. The full E2E set is only ever handed to the
+   E2E job on the self-hosted runner; the GitHub-hosted `ci` job gets just the
+   three `FIREBASE_ADMIN_*` secrets, for `pnpm test:rules`.
 
 4. **The E2E identity is an agency owner — of its own dedicated E2E agency.**
    Owner rights are needed for the sub-account-switch spec, which requires more
@@ -76,8 +78,9 @@ Verified in this repo at `ea19ac0` unless stated otherwise.
   feature under test. Global setup therefore signs in through the real form once
   and saves `storageState({ indexedDB: true })`. Found the hard way; the first
   three specs failed on it.
-- **CI runs on `[self-hosted, linux, velo, crestahq]`**, two jobs, nothing
-  `continue-on-error`. Playwright browsers must be installed on that runner.
+- **CI runs on GitHub-hosted `ubuntu-latest` except E2E**, which stays on the
+  self-hosted fixture runner (see docs/agent-workflow.md "CI runner"). Nothing
+  is `continue-on-error`. Playwright browsers must be installed on that runner.
 - **No test-data seeder exists.** The only seeder,
   `src/lib/seed/demo-data.ts`, is hard-gated to `LANDING_VARIANT === "leadstack"`
   and targets `accountNumber === 1004`. SP0 writes its own.

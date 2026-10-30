@@ -30,6 +30,7 @@ import { SubAccountWhatsappSendersSection } from "@/components/settings/sub-acco
 import { SubAccountWhatsappBridgeSection } from "@/components/settings/sub-account-whatsapp-bridge-section";
 import { SubAccountMailboxSection } from "@/components/settings/sub-account-mailbox-section";
 import { SubAccountEmailSuppressionSection } from "@/components/settings/sub-account-email-suppression-section";
+import { SubAccountEmailTrackingSection } from "@/components/settings/sub-account-email-tracking-section";
 import { SubAccountSmtpSection } from "@/components/settings/sub-account-smtp-section";
 import { SubAccountEmailDomainSection } from "@/components/settings/sub-account-email-domain-section";
 import { SubAccountPayPalSection } from "@/components/settings/sub-account-paypal-section";
@@ -39,6 +40,7 @@ import { SubAccountGoogleReviewSection } from "@/components/settings/sub-account
 import { SubAccountStripeSection } from "@/components/settings/sub-account-stripe-section";
 import { SubAccountPaystackSection } from "@/components/settings/sub-account-paystack-section";
 import { SubAccountWebinar1Section } from "@/components/settings/sub-account-webinar1-section";
+import { SubAccountSlackSection } from "@/components/settings/sub-account-slack-section";
 import { SubAccountApexgeoSection } from "@/components/settings/sub-account-apexgeo-section";
 import { SubAccountApiKeysSection } from "@/components/settings/sub-account-api-keys-section";
 import { SubAccountApiRecipesSection } from "@/components/settings/sub-account-api-recipes-section";
@@ -259,6 +261,10 @@ export default function SettingsPage() {
               readiness and AI search presence sections. */}
           <SubAccountApexgeoSection />
 
+          {/* Slack — Incoming-webhook posts from the event stream; self-gates
+              on admin. */}
+          <SubAccountSlackSection />
+
           {/* Data export */}
           <section className="bg-card rounded-2xl border p-5">
             <div className="mb-4 flex items-center gap-2">
@@ -355,6 +361,7 @@ export default function SettingsPage() {
           <SubAccountSmtpSection />
           <SubAccountMailboxSection />
           <SubAccountEmailSuppressionSection />
+          <SubAccountEmailTrackingSection />
           <SubAccountEmailDomainSection />
 
           {/* Google reviews — SMS / WhatsApp review-request sends. */}

@@ -74,6 +74,24 @@ export interface WebChatSession {
   lastMessageAt: Timestamp | FieldValue | null;
 }
 
+export interface WebChatOfferedSlot {
+  /** Exact ISO start, as the booking service expects it. */
+  startIso: string;
+  /** Short label in the booking page's timezone, e.g. "Tue, Jul 28, 10:00 AM". */
+  label: string;
+}
+
+export interface WebChatBookingOffer {
+  /** Page the times belong to. Absent on older offers, which are then ignored. */
+  pageSlug?: string;
+  slots: WebChatOfferedSlot[];
+  /** Host the times were listed for (host-selection pages). Null = anyone. */
+  hostUid: string | null;
+  offeredAtMs: number;
+  /** Set when the times are for moving this booking rather than a new one. */
+  moveEventId?: string | null;
+}
+
 export interface WebChatMessage {
   id: string;
   agencyId: string;

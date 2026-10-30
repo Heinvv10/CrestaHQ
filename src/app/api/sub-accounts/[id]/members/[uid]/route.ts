@@ -6,6 +6,7 @@ import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountAdmin } from "@/lib/auth/require-tenancy";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import { deleteConnectionForRemovedMember } from "@/lib/google-calendar/connection";
+import { deleteImportedEvents } from "@/lib/google-calendar/import-state";
 import { removeMemberGoogleCopies } from "@/lib/google-calendar/push";
 import { runAfterResponse } from "@/lib/server/after-response";
 
@@ -167,6 +168,16 @@ export async function DELETE(
   // tokens (both best-effort; busy and push refuse a non-member anyway).
   await removeMemberGoogleCopies(subAccountId, targetUid);
   await deleteConnectionForRemovedMember(subAccountId, targetUid);
+  // Their imported Google events too (after the connection, so a running
+  // import backs off). Best-effort: the daily orphan sweep is the backstop.
+  try {
+    await deleteImportedEvents(subAccountId, targetUid);
+  } catch (err) {
+    console.error(
+      `[members/DELETE] imported-event cleanup failed sa=${subAccountId} uid=${targetUid}`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 
   // 1.5. Push hygiene — drop the removed member's notification pref for
   // this sub-account so their settings toggle list doesn't keep a stale

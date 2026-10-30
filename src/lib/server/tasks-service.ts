@@ -107,6 +107,7 @@ export async function createTaskServerSide(
     mode: input.mode,
     type: "task.created",
     payload: { task },
+    actorUid: input.createdByUid,
   }));
 
   if (input.contactId && isDocId(input.contactId)) {
@@ -217,6 +218,7 @@ export async function setTaskCompletedServerSide(opts: {
       mode,
       type: "task.completed",
       payload: { task },
+      actorUid: opts.userId,
     }));
   }
 
