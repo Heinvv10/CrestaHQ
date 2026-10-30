@@ -1,6 +1,6 @@
 import "server-only";
 
-import { FieldValue, type QueryDocumentSnapshot } from "firebase-admin/firestore";
+import type { QueryDocumentSnapshot } from "firebase-admin/firestore";
 
 import { BillingError } from "@/lib/billing/errors";
 import { getAdminDb } from "@/lib/firebase/admin";
@@ -8,12 +8,26 @@ import { verifyPaystackTransaction } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { reconcilePaystackCharge } from "@/lib/paystack/payment-link-reconciler";
 import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client";
-import type { PaystackConnectionSecret } from "@/types/paystack-connection";
 import { isNotFound } from "@/lib/paystack/verify-answer";
+import { flagKeyRejected } from "@/lib/server/paystack-key-rejected-flag";
+import {
+  refuseAttempt,
+  retireFlaggedOldKeyAttempts,
+  retireOldKeyAttempt,
+  type RetireCounts,
+} from "@/lib/server/paystack-order-old-key";
+import {
+  EXPIRY_MAX_PAGES,
+  EXPIRY_PAGE,
+  isPastOrderLifetime,
+  PAYSTACK_ORDER_LIFETIME_MS,
+  STUCK_ATTEMPT_LIFETIME_MS,
+} from "@/lib/server/paystack-order-lifetime";
 import { markOrderExpired } from "@/lib/server/product-link-orders";
-import { expireOrderKeepingFlag } from "@/lib/server/product-link-paystack-orders";
-import { toDate } from "@/lib/server/recurring-invoice-cycle";
 import type { PaymentAttempt } from "@/types/payment-attempts";
+import type { PaystackConnectionSecret } from "@/types/paystack-connection";
+
+export { isPastOrderLifetime, PAYSTACK_ORDER_LIFETIME_MS, STUCK_ATTEMPT_LIFETIME_MS };
 
 /**
  * A lifetime for unpaid Paystack buy-page orders. Paystack sends no expiry
@@ -44,77 +58,31 @@ import type { PaymentAttempt } from "@/types/payment-attempts";
  * workspace's attempts that never resolve cannot use up the run's calls: after
  * three unresolved asks the rest of its attempts wait for the next run.
  *
- * Throws (so the housekeeping route answers 500 and QStash retries) only when
- * every ask of a run failed with a network, timeout or 5xx error across at
- * least two workspaces: Paystack is down. A workspace whose key Paystack rejects
- * (401/403) is listed in `keyRejected`; one workspace's trouble never fails the
- * job.
+ * Throws (so the housekeeping route answers 500 and QStash retries) only for a
+ * Paystack-wide failure across at least two workspaces: every ask failed with a
+ * network, timeout or 5xx error, or every ask was refused with 401/403. A
+ * workspace whose key Paystack rejects (401/403) is listed in `keyRejected` and
+ * its admins are emailed once per key; one workspace's trouble never fails the
+ * job. Firestore write failures are counted apart (`writeErrors`) and never make
+ * it look like a Paystack outage.
  */
 
-export const PAYSTACK_ORDER_LIFETIME_MS = 24 * 60 * 60 * 1000;
-/** An attempt Paystack still calls ongoing/pending after this long will not be paid. */
-export const STUCK_ATTEMPT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
 export const EXPIRY_BATCH = 25;
-/** Rows per read; attempts skipped without asking Paystack do not count as calls. */
-const PAGE = 100;
-/** Pages read per run at most (a bound on reads, not on calls). */
-const MAX_PAGES = 10;
 /** Unresolved asks (no answer, still ongoing) one workspace may use per run. */
 const UNRESOLVED_PER_TENANT = 3;
 const BUDGET_MS = 40_000;
 const CLOSED = new Set(["abandoned", "failed", "reversed", "not_found"]);
 
-/** Whether `attempt` (a buy-page one) is past the order lifetime at `now`. */
-export function isPastOrderLifetime(createdAt: unknown, now = Date.now(), lifetimeMs = PAYSTACK_ORDER_LIFETIME_MS): boolean {
-  const at = toDate(createdAt);
-  return !!at && now - at.getTime() >= lifetimeMs;
-}
-
-/** Only ever open (or flagged, where the caller says so) → refused: a payment may have settled the attempt meanwhile. */
-async function refuseAttempt(reference: string, reason: string, from: PaymentAttempt["state"][] = ["open"]): Promise<void> {
-  const db = getAdminDb();
-  const ref = db.doc(`paymentAttempts/${reference}`);
-  await db.runTransaction(async (t) => {
-    const state = ((await t.get(ref)).data() as PaymentAttempt | undefined)?.state;
-    if (!state || !from.includes(state)) return;
-    t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
-  });
-}
-
-/**
- * A buy-page attempt (open or flagged) past 24 h whose key is no longer the
- * workspace's: Paystack can't be asked, so close it without asking. The
- * order's attention note stays (see `expireOrderKeepingFlag`).
- */
-async function retireOldKeyAttempt(attempt: PaymentAttempt, summary: PaystackOrderExpirySummary): Promise<void> {
-  if (!attempt.orderId) return;
-  const outcome = await expireOrderKeepingFlag(attempt.orderId);
-  // A flagged attempt next to an already-closed order is a recorded late
-  // payment: left as it is.
-  if (outcome === "keep" || (outcome === "closed" && attempt.state !== "open")) return;
-  if (outcome === "expired") summary.expired += 1;
-  summary.retired += 1;
-  await refuseAttempt(
-    attempt.id,
-    `${attempt.reason ? `${attempt.reason} ` : ""}Closed after 24 h: the key this checkout was opened with is no longer connected.`,
-    ["open", "flagged"],
-  );
-}
-
-export interface PaystackOrderExpirySummary {
+export interface PaystackOrderExpirySummary extends RetireCounts {
   /** Paystack asks made (at most `EXPIRY_BATCH`). */
   checked: number;
-  /** Orders this run actually moved pending → expired. */
-  expired: number;
   reconciled: number;
-  /** Asks that got no answer (network, timeout, 5xx), or whose follow-up write failed. */
+  /** Asks that got no answer from Paystack (network, timeout, 5xx). */
   errors: number;
-  /** Workspaces whose key Paystack rejected (401/403) this run: reported, not an error. */
+  /** Workspaces whose key Paystack rejected (401/403) this run: reported and emailed, not an error. */
   keyRejected: string[];
   /** Skipped for a workspace's attempts that keep not resolving this run. */
   skipped: number;
-  /** Attempts closed without asking Paystack: opened with a key no longer connected. */
-  retired: number;
   /** Not started because the run's time budget was spent. */
   overBudget: number;
 }
@@ -135,6 +103,7 @@ export async function expireStalePaystackOrders(
     expired: 0,
     reconciled: 0,
     errors: 0,
+    writeErrors: 0,
     keyRejected: [],
     skipped: 0,
     retired: 0,
@@ -148,9 +117,10 @@ export async function expireStalePaystackOrders(
   const unresolved = new Map<string, number>();
   const askedWorkspaces = new Set<string>();
   const connections = new Map<string, PaystackConnectionSecret | null>();
+  let rejectedAsks = 0;
   let cursor: QueryDocumentSnapshot | null = null;
-  pages: for (let page = 0; page < MAX_PAGES; page += 1) {
-    const snap = await (cursor ? stale.startAfter(cursor) : stale).limit(PAGE).get();
+  pages: for (let page = 0; page < EXPIRY_MAX_PAGES; page += 1) {
+    const snap = await (cursor ? stale.startAfter(cursor) : stale).limit(EXPIRY_PAGE).get();
     for (const doc of snap.docs) {
       if (summary.checked >= EXPIRY_BATCH) break pages;
       const attempt = { ...doc.data(), id: doc.id } as PaymentAttempt;
@@ -160,17 +130,11 @@ export async function expireStalePaystackOrders(
         summary.skipped += 1;
         continue;
       }
-      // Opened with a key this workspace no longer holds: a connection change
-      // flags those, it is not this sweep's to judge.
       if (!connections.has(sa)) connections.set(sa, await readPaystackConnectionSecret(sa));
       const conn = connections.get(sa);
+      // Opened with a key this workspace no longer holds: Paystack can't be asked.
       if (!conn || paystackKeyFingerprint(conn.secretKey) !== attempt.keyFingerprint) {
-        try {
-          await retireOldKeyAttempt(attempt, summary);
-        } catch (err) {
-          summary.errors += 1;
-          console.error(`[paystack/order-expiry] ref=${attempt.id} not retired: ${err instanceof Error ? err.message : String(err)}`);
-        }
+        await retireOldKeyAttempt(attempt, summary);
         continue;
       }
       if (Date.now() - startedAt >= budgetMs) {
@@ -178,88 +142,69 @@ export async function expireStalePaystackOrders(
         continue;
       }
       summary.checked += 1;
+      askedWorkspaces.add(sa);
+      const answer = await paystackStatus(attempt.id, conn.secretKey);
       let resolved = false;
-      try {
-        askedWorkspaces.add(sa);
-        const answer = await paystackStatus(attempt.id, conn.secretKey);
-        const status = answer && "status" in answer ? answer.status : null;
-        if (answer && "rejected" in answer) {
-          // This workspace's own key: its problem, not Paystack's. Reported.
-          if (!summary.keyRejected.includes(sa)) summary.keyRejected.push(sa);
-        } else if (status === null) {
-          summary.errors += 1;
-        } else if (status === "success") {
-          const result = await reconcilePaystackCharge({ subAccountId: sa, secretKey: conn.secretKey, reference: attempt.id });
-          if (result.retry) summary.errors += 1;
-          else {
-            summary.reconciled += 1;
-            resolved = true;
-          }
-        } else if (CLOSED.has(status) || isPastOrderLifetime(attempt.createdAt, now.getTime(), STUCK_ATTEMPT_LIFETIME_MS)) {
-          if (await markOrderExpired(attempt.orderId)) summary.expired += 1;
-          await refuseAttempt(attempt.id, `Checkout ended without payment (Paystack: ${status}).`);
-          resolved = true;
-        }
-      } catch (err) {
+      if (answer === null) {
         summary.errors += 1;
-        console.error(`[paystack/order-expiry] ref=${attempt.id} left open: ${err instanceof Error ? err.message : String(err)}`);
+      } else if ("rejected" in answer) {
+        rejectedAsks += 1;
+        // This workspace's own key: its problem, not Paystack's. Reported once per key.
+        if (!summary.keyRejected.includes(sa)) {
+          summary.keyRejected.push(sa);
+          await flagKeyRejected(attempt);
+        }
+      } else {
+        try {
+          resolved = await settle(attempt, answer.status, conn.secretKey, now, summary);
+        } catch (err) {
+          summary.writeErrors += 1;
+          console.error(`[paystack/order-expiry] ref=${attempt.id} left open: ${err instanceof Error ? err.message : String(err)}`);
+        }
       }
       if (!resolved) unresolved.set(sa, (unresolved.get(sa) ?? 0) + 1);
     }
-    if (snap.size < PAGE) break;
+    if (snap.size < EXPIRY_PAGE) break;
     cursor = snap.docs[snap.docs.length - 1];
   }
-  await retireFlaggedOldKeyAttempts(now, connections, summary, startedAt, budgetMs);
-  // A real Paystack outage: every ask failed (network, timeout, 5xx), across
-  // more than one workspace. One workspace's trouble is reported, not thrown:
-  // a 500 makes QStash retry ALL of daily-housekeeping.
-  if (summary.checked > 0 && summary.errors >= summary.checked && askedWorkspaces.size >= 2) {
-    throw new Error(`paystack-order-expiry: all ${summary.checked} Paystack ask(s) failed across ${askedWorkspaces.size} workspaces`);
+  await retireFlaggedOldKeyAttempts(now, connections, summary, startedAt + budgetMs);
+  // A Paystack-wide failure: every ask failed on the network or with a 5xx, or
+  // every ask was refused (401/403), across more than one workspace. One
+  // workspace's trouble is reported, not thrown: a 500 makes QStash retry ALL of
+  // daily-housekeeping.
+  if (askedWorkspaces.size >= 2 && (summary.errors === summary.checked || rejectedAsks === summary.checked)) {
+    const what = rejectedAsks === summary.checked ? "were refused (401/403)" : "failed";
+    console.error(`[paystack/order-expiry] all ${summary.checked} Paystack ask(s) ${what} across ${askedWorkspaces.size} workspaces`);
+    throw new Error(`paystack-order-expiry: all ${summary.checked} Paystack ask(s) ${what} across ${askedWorkspaces.size} workspaces`);
   }
   return summary;
 }
 
-/**
- * The flagged side of `retireOldKeyAttempt`: attempts a connection change
- * flagged ("may have paid, not recorded") whose order is still pending 24 h
- * later. Same index as the open query. Asks Paystack nothing, so no quota.
- */
-async function retireFlaggedOldKeyAttempts(
+/** Acts on Paystack's answer for one attempt; true when the attempt is resolved. Throws on a failed write. */
+async function settle(
+  attempt: PaymentAttempt,
+  status: string,
+  secretKey: string,
   now: Date,
-  connections: Map<string, PaystackConnectionSecret | null>,
   summary: PaystackOrderExpirySummary,
-  startedAt: number,
-  budgetMs: number,
-): Promise<void> {
-  const flagged = getAdminDb()
-    .collection("paymentAttempts")
-    .where("state", "==", "flagged")
-    .where("paymentLinkId", "==", "")
-    .where("createdAt", "<=", new Date(now.getTime() - PAYSTACK_ORDER_LIFETIME_MS))
-    .orderBy("createdAt");
-  let cursor: QueryDocumentSnapshot | null = null;
-  for (let page = 0; page < MAX_PAGES; page += 1) {
-    const snap = await (cursor ? flagged.startAfter(cursor) : flagged).limit(PAGE).get();
-    for (const doc of snap.docs) {
-      if (Date.now() - startedAt >= budgetMs) return;
-      const attempt = { ...doc.data(), id: doc.id } as PaymentAttempt;
-      if (!attempt.orderId) continue;
-      if (!connections.has(attempt.subAccountId)) {
-        connections.set(attempt.subAccountId, await readPaystackConnectionSecret(attempt.subAccountId));
-      }
-      const conn = connections.get(attempt.subAccountId);
-      // Still the workspace's key (a held mismatch, a late payment): not ours.
-      if (conn && paystackKeyFingerprint(conn.secretKey) === attempt.keyFingerprint) continue;
-      try {
-        await retireOldKeyAttempt(attempt, summary);
-      } catch (err) {
-        summary.errors += 1;
-        console.error(`[paystack/order-expiry] ref=${attempt.id} not retired: ${err instanceof Error ? err.message : String(err)}`);
-      }
+): Promise<boolean> {
+  if (status === "success") {
+    const result = await reconcilePaystackCharge({ subAccountId: attempt.subAccountId, secretKey, reference: attempt.id });
+    if (!result.retry) {
+      summary.reconciled += 1;
+      return true;
     }
-    if (snap.size < PAGE) return;
-    cursor = snap.docs[snap.docs.length - 1];
+    // "verify unavailable" is Paystack not answering; any other retry is ours (Firestore).
+    if (result.detail === "verify unavailable") summary.errors += 1;
+    else summary.writeErrors += 1;
+    return false;
   }
+  if (CLOSED.has(status) || isPastOrderLifetime(attempt.createdAt, now.getTime(), STUCK_ATTEMPT_LIFETIME_MS)) {
+    if (await markOrderExpired(attempt.orderId as string)) summary.expired += 1;
+    await refuseAttempt(attempt.id, `Checkout ended without payment (Paystack: ${status}).`);
+    return true;
+  }
+  return false;
 }
 
 /**

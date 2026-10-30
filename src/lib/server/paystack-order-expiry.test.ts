@@ -264,6 +264,48 @@ describe("an attempt whose key is no longer the workspace's", () => {
   });
 });
 
+describe("a rejected key reaches the operator", () => {
+  const sentSubjects = () => (sendEmail.mock.calls as unknown as [{ subject: string }][]).map(([m]) => m.subject);
+
+  beforeEach(() => {
+    mem.seed(`subAccounts/${SA}/subAccountMembers/a1`, { role: "admin", status: "active", email: "admin@example.com" });
+    verifyAnswer = () => refused(401, "Invalid key");
+  });
+
+  it("emails the workspace's admins once for the key, not once per buy or per run", async () => {
+    seedBuy(1);
+    seedBuy(2);
+    seedBuy(3);
+    await expireStalePaystackOrders(NOW);
+    await expireStalePaystackOrders(NOW);
+    await expireStalePaystackOrders(NOW);
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    const [mail] = sendEmail.mock.calls[0] as unknown as [{ to: string; subject: string; text: string }];
+    expect(mail.to).toBe("admin@example.com");
+    expect(mail.subject).toContain("Paystack rejected your key");
+    expect(mail.text).toContain("Reconnect Paystack under Settings → Payments");
+    expect(mail.text).not.toContain("Amount");
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("[paystack/key-rejected]"));
+  });
+
+  it("a different key later rejected is a new flag", async () => {
+    seedBuy(1);
+    await expireStalePaystackOrders(NOW);
+    seedSub(SA, OTHER_KEY);
+    seedBuy(2, OLD, {}, { sa: SA, key: OTHER_KEY });
+    mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "refused" });
+    await expireStalePaystackOrders(NOW);
+    expect(sentSubjects()).toHaveLength(2);
+  });
+
+  it("nothing is sent for a workspace whose key is fine", async () => {
+    seedBuy(1);
+    verifyAnswer = (reference) => verified({ reference, status: "abandoned" });
+    await expireStalePaystackOrders(NOW);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+});
+
 describe("one workspace cannot starve the others", () => {
   const B = { sa: OTHER_SA, key: OTHER_KEY };
 
@@ -355,6 +397,57 @@ describe("the run's summary", () => {
       seedBuy(1);
       seedBuy(2, OLD, {}, B);
       verifyAnswer = () => refused(503, "Service unavailable");
+      await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/failed across 2 workspaces/);
+    });
+
+    it("every ask refused (401/403) across two workspaces is Paystack-wide: logged at error level and thrown", async () => {
+      seedBuy(1);
+      seedBuy(2, OLD, {}, B);
+      verifyAnswer = (_ref, auth) => (auth === `Bearer ${KEY}` ? refused(401, "Invalid key") : refused(403, "Forbidden"));
+      await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/were refused \(401\/403\) across 2 workspaces/);
+      expect(console.error).toHaveBeenCalledWith(expect.stringContaining("were refused (401/403) across 2 workspaces"));
+    });
+
+    it("every ask refused in ONE workspace is just that workspace's key", async () => {
+      seedBuy(1);
+      seedBuy(2);
+      verifyAnswer = () => refused(401, "Invalid key");
+      await expect(expireStalePaystackOrders(NOW)).resolves.toMatchObject({ keyRejected: [SA] });
+    });
+
+    it("Firestore failing inside an ask is a write error, never mislabelled as a Paystack outage", async () => {
+      seedBuy(1);
+      seedBuy(2, OLD, {}, B);
+      const tx = vi.spyOn(mem.db, "runTransaction").mockRejectedValue(new Error("firestore unavailable"));
+      const summary = await expireStalePaystackOrders(NOW);
+      tx.mockRestore();
+      expect(summary).toMatchObject({ checked: 2, errors: 0, writeErrors: 2, expired: 0 });
+      expect(order(1)).toMatchObject({ status: "pending" });
+    });
+
+    it("a payment found but not recorded because Firestore failed is a write error, not a failed ask", async () => {
+      seedBuy(1);
+      seedBuy(2, OLD, {}, B);
+      verifyAnswer = (reference) => verified({ reference, status: "success", amount: 49_900 });
+      const tx = vi.spyOn(mem.db, "runTransaction").mockRejectedValue(new Error("firestore unavailable"));
+      const summary = await expireStalePaystackOrders(NOW);
+      tx.mockRestore();
+      expect(summary).toMatchObject({ checked: 2, errors: 0, writeErrors: 2, reconciled: 0 });
+    });
+
+    it("closing an attempt whose key is gone, with Firestore failing, is a write error too", async () => {
+      seedBuy(1);
+      seedSub(SA, OTHER_KEY);
+      const tx = vi.spyOn(mem.db, "runTransaction").mockRejectedValue(new Error("firestore unavailable"));
+      const summary = await expireStalePaystackOrders(NOW);
+      tx.mockRestore();
+      expect(summary).toMatchObject({ writeErrors: 1, retired: 0, errors: 0 });
+    });
+
+    it("a Paystack outage is still an outage when some writes also fail", async () => {
+      seedBuy(1);
+      seedBuy(2, OLD, {}, B);
+      verifyAnswer = () => "network-error";
       await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/failed across 2 workspaces/);
     });
 
