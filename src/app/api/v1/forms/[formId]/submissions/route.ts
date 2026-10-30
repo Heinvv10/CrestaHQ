@@ -177,6 +177,7 @@ export const POST = withApiAuth<{ formId: string }>(
       agencyId: ctx.agencyId,
       mode: ctx.mode,
       type: "form.submitted",
+      actorUid: `apikey:${ctx.keyPrefix}`,
       payload: {
         submission: {
           id: submissionRef.id,

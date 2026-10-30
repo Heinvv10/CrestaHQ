@@ -113,7 +113,7 @@ type Filter = [field: string, op: "==" | "array-contains", value: unknown];
 const fieldOf = (d: Record<string, unknown> | undefined, field: string): unknown =>
   field.split(".").reduce<unknown>((v, k) => (isPlain(v) ? v[k] : undefined), d);
 
-function collectionRef(path: string, filters: Filter[] = []) {
+function collectionRef(path: string, filters: Filter[] = [], max: number | null = null) {
   const matches = (d: Record<string, unknown> | undefined) =>
     filters.every(([field, op, value]) => {
       const v = fieldOf(d, field);
@@ -122,14 +122,15 @@ function collectionRef(path: string, filters: Filter[] = []) {
   return {
     get: async () => {
       const all = listUnder(path);
-      const docs = all.docs.filter((d) => matches(d.data()));
+      const docs = all.docs.filter((d) => matches(d.data())).slice(0, max ?? undefined);
       return { empty: docs.length === 0, size: docs.length, docs };
     },
     /** `==` and `array-contains` only — add operators when a test needs them. */
     where: (field: string, op: Filter[1], value: unknown) => {
       if (op !== "==" && op !== "array-contains") throw new Error(`harness: ${op} is not modelled`);
-      return collectionRef(path, [...filters, [field, op, value]]);
+      return collectionRef(path, [...filters, [field, op, value]], max);
     },
+    limit: (n: number) => collectionRef(path, filters, n),
     doc: (id?: string) => docRef(`${path}/${id ?? `auto_${++autoId}`}`),
     add: async (data: Record<string, unknown>) => {
       const id = `auto_${++autoId}`;

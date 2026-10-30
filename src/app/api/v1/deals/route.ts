@@ -228,6 +228,7 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     mode: ctx.mode,
     deal: wire,
     events: [{ type: "deal.created" }],
+    actorUid: `apikey:${ctx.keyPrefix}`,
   });
 
   return apiOk(ctx, { deal: wire }, { status: 201 });

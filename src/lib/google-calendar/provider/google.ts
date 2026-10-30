@@ -7,6 +7,7 @@ import { GbpProviderError } from "@/lib/gbp/provider/types";
 import { GCAL_SCOPES } from "../scopes";
 import {
   GCAL_EVENT_ID_RE,
+  GcalSyncTokenExpiredError,
   type GcalEvent,
   type GcalProvider,
 } from "./types";
@@ -23,6 +24,14 @@ const USERINFO = "https://openidconnect.googleapis.com/v1/userinfo";
 const REQUEST_TIMEOUT_MS = 5_000;
 /** 250 events per page × 10 pages is far beyond any real two-week window. */
 const MAX_PAGES = 10;
+/**
+ * The import's field masks: never descriptions, attendee emails, conference
+ * links or attachments, and no title or place unless the member shares
+ * details — what is not fetched cannot be stored.
+ */
+const SYNC_ITEM = "id,status,visibility,transparency,eventType,start,end,attendees(self,responseStatus),extendedProperties/private";
+const syncFields = (details: boolean) =>
+  `nextPageToken,nextSyncToken,timeZone,items(${SYNC_ITEM}${details ? ",summary,location" : ""})`;
 
 function init(accessToken: string, method = "GET", body?: unknown, signal?: AbortSignal): RequestInit {
   const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
@@ -81,6 +90,39 @@ export const googleGcalProvider: GcalProvider = {
     // A window that still has pages left is not fully read: busy time would
     // be missing. Refuse, so the caller records it and fails open visibly.
     throw new GbpProviderError("malformed");
+  },
+
+  async syncEvents(accessToken, { syncToken, timeMin, timeMax, maxPages, details, ordered }, signal) {
+    const items: GcalEvent[] = [];
+    let timeZone: string | null = null;
+    let pageToken: string | null = null;
+    for (let page = 0; page < maxPages; page++) {
+      // A sync token may not be combined with timeMin/timeMax (Google 400s).
+      const params = new URLSearchParams({ singleEvents: "true", maxResults: "250", fields: syncFields(details) });
+      if (syncToken) params.set("syncToken", syncToken);
+      else {
+        params.set("timeMin", timeMin.toISOString());
+        params.set("timeMax", timeMax.toISOString());
+        if (ordered) params.set("orderBy", "startTime");
+      }
+      if (pageToken) params.set("pageToken", pageToken);
+      let body: { items?: unknown; timeZone?: unknown; nextPageToken?: unknown; nextSyncToken?: unknown } | null;
+      try {
+        body = (await fetchJson(`${EVENTS}?${params}`, init(accessToken, "GET", undefined, signal))) as typeof body;
+      } catch (err) {
+        if (syncToken && err instanceof GbpProviderError && err.status === 410) throw new GcalSyncTokenExpiredError();
+        throw err;
+      }
+      if (!body || !Array.isArray(body.items)) throw new GbpProviderError("malformed");
+      items.push(...(body.items as GcalEvent[]));
+      if (typeof body.timeZone === "string") timeZone = body.timeZone;
+      pageToken = typeof body.nextPageToken === "string" ? body.nextPageToken : null;
+      if (!pageToken) {
+        const next = typeof body.nextSyncToken === "string" && body.nextSyncToken ? body.nextSyncToken : null;
+        return { items, timeZone, nextSyncToken: next, truncated: false };
+      }
+    }
+    return { items, timeZone, nextSyncToken: null, truncated: true };
   },
 
   async putEvent(accessToken, eventId, input, signal) {

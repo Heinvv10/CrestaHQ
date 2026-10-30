@@ -1,50 +1,71 @@
 import type { Timestamp, FieldValue } from "firebase/firestore";
 
 /**
- * Custom Agents v1 — the Inbox Follow-up Watchdog (Labs).
- * Full locked scope: CUSTOM_AGENTS_V1_PLAN.md (repo root).
+ * Agent monitors: background agents that watch the CRM and only ever ADD
+ * internal items (a Task, a push, an activity row, a dedupe stamp).
  *
- * Storage: ONE agent doc per sub-account at top-level
- * `customAgents/{subAccountId}` (doc id == subAccountId). Top-level rather
- * than a subcollection so the hourly sweep's fan-out is a plain
- * `where("enabled", "==", true)` query — no collection-group index, and the
- * collection stays server-only (default-deny rules; the UI reads config +
- * runs through the admin API). Runs log at `customAgents/{said}/runs/{id}`.
+ * One doc per agent at top-level `customAgents/{docId}`, so the hourly sweep
+ * is a plain where("enabled") query with no collection-group index. The inbox
+ * watchdog keeps its original id (= the sub-account id) and reads as
+ * `type: "inbox-watchdog"` when the field is absent; every later agent uses
+ * `{subAccountId}_{type}`. Server-only; runs log under `customAgents/{id}/runs`.
  */
 
+export type AgentType = "inbox-watchdog" | "stale-deals";
+
+export function agentDocId(subAccountId: string, type: AgentType): string {
+  return type === "inbox-watchdog" ? subAccountId : `${subAccountId}_${type}`;
+}
+
 export interface WatchdogQuietHours {
-  /** 0–23 local hour the quiet window starts (push suppressed). */
+  /** Local hour 0-23. */
   startHour: number;
-  /** 0–23 local hour it ends. Overnight windows (22 → 7) supported. */
+  /** Local hour 0-23. Overnight windows (22 to 7) work. */
   endHour: number;
-  /** IANA timezone the window is evaluated in. */
+  /** IANA zone. */
   timezone: string;
 }
 
-export interface WatchdogConfigDoc {
-  /** == doc id. Denormalized for serialization. */
+/** Fields every agent doc carries. */
+export interface AgentConfigBase {
   subAccountId: string;
   agencyId: string;
-  /** Master switch. Default false — the workspace admin opts in. */
+  /** Absent on the original watchdog doc = "inbox-watchdog". */
+  type?: AgentType;
+  /** Off by default; admin opts in. */
   enabled: boolean;
-  /** Hours an inbound conversation may sit unanswered before judging. 1–24. */
-  thresholdHours: number;
-  /**
-   * Optional operator criteria fed verbatim to the LLM judge (≤1000 chars),
-   * e.g. "prioritise anything mentioning price or cancellation".
-   */
+  /** Extra criteria passed verbatim to the model, max 1000 chars. */
   instructions: string | null;
-  /** Suppresses PUSH inside the window; the Task is still created. */
+  /** Suppresses push only; the task is still created. */
   quietHours: WatchdogQuietHours | null;
-  /** Judge-token budget per UTC day; the run skips once exceeded. */
+  /** Per UTC day. Runs skip once exceeded. */
   dailyTokenBudget: number;
-  /** UTC YYYY-MM-DD the `tokensToday` counter belongs to. */
+  /** UTC YYYY-MM-DD that tokensToday counts for. */
   tokensTodayDate: string | null;
   tokensToday: number;
-  /** Lifetime counter (mirrors the AI channel docs' totalTokensUsed). */
   totalTokensUsed: number;
   createdAt: Timestamp | FieldValue | Date | null;
   updatedAt: Timestamp | FieldValue | Date | null;
+}
+
+export interface WatchdogConfigDoc extends AgentConfigBase {
+  /** Hours an inbound conversation can sit unanswered before judging (1-24). */
+  thresholdHours: number;
+}
+
+export interface StaleDealsConfigDoc extends AgentConfigBase {
+  /** Days a deal may sit in one non-terminal stage before it is flagged (3-60). */
+  thresholdDays: number;
+  /** Null = every pipeline. "default" is allowed. */
+  pipelineIds: string[] | null;
+  /** `${pipelineId}:${stageId}` keys never flagged (e.g. a Parked stage). */
+  excludeStageKeys: string[];
+  /**
+   * Where the next sweep resumes in the (stageChangedAt, doc id) order, so
+   * deals it can never flag don't pin the window. Null = from the oldest.
+   * Server-written by the sweep only.
+   */
+  scanCursor?: { stageChangedAtMs: number; dealId: string } | null;
 }
 
 export const WATCHDOG_DEFAULT_THRESHOLD_HOURS = 3;
@@ -52,11 +73,24 @@ export const WATCHDOG_DEFAULT_DAILY_TOKEN_BUDGET = 20_000;
 /** Max LLM judgments per sweep run (cost ceiling). */
 export const WATCHDOG_MAX_JUDGMENTS_PER_RUN = 20;
 
+export const STALE_DEALS_DEFAULT_THRESHOLD_DAYS = 7;
+export const STALE_DEALS_MIN_THRESHOLD_DAYS = 3;
+export const STALE_DEALS_MAX_THRESHOLD_DAYS = 60;
+export const STALE_DEALS_DEFAULT_DAILY_TOKEN_BUDGET = 10_000;
+/** Max deals flagged per sweep run. */
+export const STALE_DEALS_MAX_FLAGS_PER_RUN = 20;
+
 export type WatchdogRunStatus = "completed" | "skipped" | "failed";
 
+/**
+ * The inbox watchdog keeps its Labs + AI Suite gates (`labs_gate_off`,
+ * `ai_gate_off`); only the stale deals monitor reads `agentsEnabledByAgency`
+ * (`agents_gate_off`).
+ */
 export type WatchdogSkippedReason =
   | "labs_gate_off"
   | "ai_gate_off"
+  | "agents_gate_off"
   | "ai_not_configured"
   | "budget_exceeded";
 
@@ -64,33 +98,49 @@ export interface WatchdogRunAction {
   contactId: string;
   contactName: string;
   taskId: string;
-  /** The judge's one-line reason (≤140 chars). */
+  /** Max 140 chars. */
   reason: string;
   urgency: "high" | "normal";
+  /** Stale-deals runs only. */
+  dealId?: string;
+  dealTitle?: string;
 }
 
 export interface WatchdogRunDoc {
   status: WatchdogRunStatus;
   skippedReason: WatchdogSkippedReason | null;
-  /** Conversations matching the deterministic pre-filter. */
+  /** Matched the pre-filter. */
   scanned: number;
-  /** Shortlist entries dropped by the per-run judgment cap. */
+  /** Dropped by the per-run cap. */
   droppedByCap: number;
-  /** LLM calls actually made. */
+  /** LLM calls made. */
   judged: number;
-  /** Judged true → alerted. */
   flagged: number;
   actions: WatchdogRunAction[];
   tokensUsed: number;
+  /** Run-level failure, or (stale deals) the first per-deal error. */
   error: string | null;
+  /** Stale deals: deals whose check or action threw this run. */
+  errors?: number;
   startedAt: Timestamp | FieldValue | Date | null;
   finishedAt: Timestamp | FieldValue | Date | null;
 }
 
-/** Wire shapes for the config API (timestamps → ISO strings). */
+/** Config API wire shapes; timestamps are ISO strings. */
 export interface WatchdogConfigResponse {
   enabled: boolean;
   thresholdHours: number;
+  instructions: string | null;
+  quietHours: WatchdogQuietHours | null;
+  dailyTokenBudget: number;
+  totalTokensUsed: number;
+}
+
+export interface StaleDealsConfigResponse {
+  enabled: boolean;
+  thresholdDays: number;
+  pipelineIds: string[] | null;
+  excludeStageKeys: string[];
   instructions: string | null;
   quietHours: WatchdogQuietHours | null;
   dailyTokenBudget: number;

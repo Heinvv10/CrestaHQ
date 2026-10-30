@@ -68,3 +68,8 @@ overrides:
   '@grpc/grpc-js': ^1.14.5
   # form-data: @types/request wants 2.x; axios (bumped above) already requires 4.0.6+
   '@types/request>form-data': ^2.5.6
+  follow-redirects: ^1.16.1
+  '@fastify/busboy': ^3.2.2
+  # re2js: stay on the patched 2.8.x line; 2.9.x is a fresh minor
+  re2js: ~2.8.7
+  source-map-js: ^1.2.2

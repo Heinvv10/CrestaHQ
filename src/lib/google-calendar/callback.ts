@@ -6,6 +6,7 @@ import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { googleRedirectUri, type GoogleStateClaims } from "@/lib/google/oauth";
 import { gcalConnectionPath, type GoogleCalendarConnection } from "./connection";
 import { googleCalendarGateOn } from "./gate";
+import { deleteImportedEvents } from "./import-state";
 import { gcalAppConfigured } from "./provider/mode";
 import { getGcalProviderFor } from "./provider/select";
 import { GCAL_SCOPE } from "./scopes";
@@ -67,6 +68,11 @@ export async function completeCalendarConnect(
     }
 
     const agencyId = (await getAdminDb().doc(`subAccounts/${sa}`).get()).data()?.agencyId as string;
+    const ref = getAdminDb().doc(gcalConnectionPath(sa, access.uid));
+    // Carried forward and bumped, so an import pass that started under the
+    // old connection never sees its generation come round again (with
+    // `connectedAt`, part of the import fingerprint).
+    const priorGeneration = (await ref.get()).data()?.importGeneration;
     const conn: GoogleCalendarConnection = {
       uid: access.uid,
       agencyId,
@@ -80,9 +86,18 @@ export async function completeCalendarConnect(
       connectedAt: new Date(),
       lastError: null,
       lastErrorAt: null,
+      importGeneration: (typeof priorGeneration === "number" ? priorGeneration : 0) + 1,
     };
-    // Whole-doc set: a reconnect replaces a revoked grant and its warning.
-    await getAdminDb().doc(gcalConnectionPath(sa, access.uid)).set(conn);
+    // Whole-doc set: a reconnect replaces a revoked grant and its warning —
+    // and the import opt-in, which may have been for another Google account.
+    // Its imported events go with it; the member opts in again.
+    await ref.set(conn);
+    try {
+      await deleteImportedEvents(sa, access.uid);
+    } catch (err) {
+      // The daily orphan sweep is the backstop: no opt-in means not kept.
+      console.error(`[google-calendar/callback] import cleanup failed sa=${sa}`, err instanceof Error ? err.message : String(err));
+    }
     return finish("connected");
   } catch (err) {
     // Name + message only. GbpProviderError messages are fixed per kind.

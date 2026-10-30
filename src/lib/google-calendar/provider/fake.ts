@@ -4,7 +4,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import type { GoogleTokens } from "@/lib/google/oauth";
 import { GbpProviderError, type GbpProviderErrorKind } from "@/lib/gbp/provider/types";
 import { GCAL_SCOPE } from "../scopes";
-import type { GcalEvent, GcalEventInput, GcalProvider } from "./types";
+import { GcalSyncTokenExpiredError, type GcalEvent, type GcalEventInput, type GcalProvider } from "./types";
 
 /**
  * Deterministic stand-in for one member's Google Calendar. Reachable only
@@ -23,7 +23,7 @@ import type { GcalEvent, GcalEventInput, GcalProvider } from "./types";
  * tokens stop working, as at Google).
  */
 
-export type FakeGcalOp = "exchangeCode" | "refresh" | "listEvents" | "putEvent" | "deleteEvent";
+export type FakeGcalOp = "exchangeCode" | "refresh" | "listEvents" | "syncEvents" | "putEvent" | "deleteEvent";
 
 export interface FakeGcalEvent extends GcalEvent {
   description?: string;
@@ -34,6 +34,13 @@ export interface FakeCalendar {
   email?: string;
   revoked?: boolean;
   events: FakeGcalEvent[];
+  /**
+   * Import sync: ids reported as cancelled by the next incremental walk (a
+   * spec deletes an event by moving its id here), and a one-shot 410 on the
+   * next incremental walk.
+   */
+  deletedIds?: string[];
+  expireSyncToken?: boolean;
   /** Fail the next call of `op` once with `kind`, then clear. */
   failNext?: { op: FakeGcalOp; kind: GbpProviderErrorKind };
 }
@@ -157,6 +164,36 @@ export function createFakeGcalProvider(
         return start < timeMax.getTime() && end > timeMin.getTime();
       };
       return { items: calendar.events.filter(overlaps), timeZone: "UTC" };
+    },
+
+    async syncEvents(accessToken, { syncToken, timeMin, timeMax, details, ordered }) {
+      const calendar = await authed(accessToken, "syncEvents");
+      const shown = (e: FakeGcalEvent): GcalEvent => {
+        const { description: _d, location, summary, ...rest } = e;
+        return details ? { ...rest, summary, location } : rest;
+      };
+      let items: GcalEvent[];
+      const startMs = (e: GcalEvent) => Date.parse(e.start?.dateTime ?? `${e.start?.date}T00:00:00Z`);
+      if (syncToken) {
+        if (!mine("fake-gcal-sync", syncToken) || calendar.expireSyncToken) {
+          if (calendar.expireSyncToken) await save({ ...calendar, expireSyncToken: false });
+          throw new GcalSyncTokenExpiredError();
+        }
+        // Every event counts as changed; deletions come from `deletedIds`.
+        items = [
+          ...calendar.events.map(shown),
+          ...(calendar.deletedIds ?? []).map((id) => ({ id, status: "cancelled" })),
+        ];
+      } else {
+        const overlaps = (e: FakeGcalEvent) => {
+          const end = Date.parse(e.end?.dateTime ?? `${e.end?.date}T00:00:00Z`);
+          return startMs(e) < timeMax.getTime() && end > timeMin.getTime();
+        };
+        items = calendar.events.filter(overlaps).map(shown);
+        // As Google: ordered by start, and no sync token for an ordered walk.
+        if (ordered) return { items: items.sort((a, b) => startMs(a) - startMs(b)), timeZone: "UTC", nextSyncToken: null, truncated: false };
+      }
+      return { items, timeZone: "UTC", nextSyncToken: `fake-gcal-sync:${who}:${next()}`, truncated: false };
     },
 
     async putEvent(accessToken, eventId, input) {
