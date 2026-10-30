@@ -95,6 +95,7 @@ export const AUDIT_ALLOWED_VALUES: Record<
   "agent.write": { capability: "identifier", keyPrefix: "identifier", keyLevel: ["sub-account", "agency"] },
   // No changes: the row records THAT a reply was posted, never its text.
   "review.auto_replied": {},
+  "calendar_import.workspace_changed": { calendarImportAllowed: GATE_VALUES },
   "usage_rebilling.updated": { usageRebillingEnabled: GATE_VALUES },
 };
 

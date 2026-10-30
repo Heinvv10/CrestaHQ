@@ -1395,7 +1395,10 @@ service cloud.firestore {
     match /events/{eventId} {
       // Territory inherited from the linked contact. Standalone events
       // (no contact) have territoryId null → admin-triage when scoping
-      // is on, same as null-territory deals/contacts.
+      // is on, same as null-territory deals/contacts. Imported Google events
+      // are territory "global" and stored times-only ("Busy") unless their
+      // owner chose to share titles, so reading one needs no extra condition
+      // (a per-doc read condition would also break the calendar's list queries).
       allow read: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1422,11 +1425,17 @@ service cloud.firestore {
         // decides v1 exposure and whether status changes fire side effects.
         && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug", "icsSequence", "paidFromTokenHash"])
         && linkInTenant("contactId", "contacts");
+      // source "google" = imported from a member's Google Calendar
+      // (lib/google-calendar/import.ts): a copy the import owns, so no
+      // client may edit or delete one — it would block or free the owner's
+      // time, or come straight back on the next sync. (`source` itself is
+      // already server-set only, so no client can create one either.)
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
-      ) && tenantFieldsLockedOnUpdate()
+      ) && resource.data.get("source", "manual") != "google"
+        && tenantFieldsLockedOnUpdate()
         && territoryIdUnchangedOrAdmin(
           resource.data.subAccountId,
           resource.data.agencyId
@@ -1442,7 +1451,8 @@ service cloud.firestore {
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
-      ) && resource.data.get("googleEventIds", {}).size() == 0;
+      ) && resource.data.get("source", "manual") != "google"
+        && resource.data.get("googleEventIds", {}).size() == 0;
     }
 
     match /forms/{formId} {

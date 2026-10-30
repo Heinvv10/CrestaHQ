@@ -143,6 +143,11 @@ describe("connect", () => {
 });
 
 describe("callback (calendar purpose)", () => {
+  it("a first connect starts the import generation at 1", async () => {
+    await callback(calState(), "uid_member");
+    expect(state.docs.get(CAL_PATH("uid_member"))?.importGeneration).toBe(1);
+  });
+
   it("stores the member's own connection with the Google email, and nothing on the sub-account doc", async () => {
     const res = await callback(calState(), "uid_member");
     expect(gcal(res)).toBe("connected");
@@ -157,6 +162,21 @@ describe("callback (calendar purpose)", () => {
       lastError: null,
     });
     expect(JSON.stringify(state.docs.get(SUB_PATH))).not.toMatch(TOKEN_MARKERS);
+  });
+
+  it("a reconnect replaces the import opt-in, and the member's imported events go with it", async () => {
+    const imp = (uid: string) => ({ subAccountId: SUB, source: "google", importOwnerUid: uid, title: "Busy" });
+    state.docs.set(CAL_PATH("uid_member"), { uid: "uid_member", status: "revoked", importMode: "details", importGeneration: 3 });
+    state.docs.set("events/gcal_mine", imp("uid_member"));
+    state.docs.set("events/gcal_colleague", imp("uid_admin"));
+    state.docs.set("events/manual", { subAccountId: SUB, title: "Call", importOwnerUid: "uid_member" });
+    expect(gcal(await callback(calState(), "uid_member"))).toBe("connected");
+    expect(state.docs.get(CAL_PATH("uid_member"))).not.toHaveProperty("importMode");
+    // Carried forward and bumped: a pass started under the old connection never sees 3 again.
+    expect(state.docs.get(CAL_PATH("uid_member"))?.importGeneration).toBe(4);
+    expect(state.docs.has("events/gcal_mine")).toBe(false);
+    expect(state.docs.has("events/gcal_colleague")).toBe(true);
+    expect(state.docs.has("events/manual")).toBe(true);
   });
 
   it("refuses a state replayed by a different member, writing nothing", async () => {
@@ -213,6 +233,15 @@ describe("status + disconnect", () => {
     expect(JSON.parse(text)).toEqual({ gateOff: true, connected: true, googleEmail: "host@example.com" });
     expect(text).not.toMatch(TOKEN_MARKERS);
     expect(await (await status("uid_admin")).json()).toEqual({ gateOff: true, connected: false, googleEmail: null });
+  });
+
+  it("DELETE also removes the caller's imported events, with the gate off too", async () => {
+    state.docs.set(SUB_PATH, { ...state.docs.get(SUB_PATH), googleCalendarEnabledByAgency: false });
+    state.docs.set("events/gcal_mine", { subAccountId: SUB, source: "google", importOwnerUid: "uid_member" });
+    state.docs.set("events/gcal_colleague", { subAccountId: SUB, source: "google", importOwnerUid: "uid_admin" });
+    expect((await disconnect()).status).toBe(200);
+    expect(state.docs.has("events/gcal_mine")).toBe(false);
+    expect(state.docs.has("events/gcal_colleague")).toBe(true);
   });
 
   it("DELETE is ungated, removes only the caller's doc, and never revokes at Google", async () => {

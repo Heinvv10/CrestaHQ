@@ -45,7 +45,7 @@
 | `deals/{id}` | sub-account | One contact → many deals. `pipelineId` names the pipeline; absent = `default` (every pre-multi-pipeline doc). Optional `assignedToUid` (validated by the deals API) |
 | `dealStageHistory/{id}` | server-only | Append-only: one row per stage a deal enters (`fromStageId: null` on create), written in the same transaction/batch as the deal write by every stage writer. `{dealId, pipelineId, stageId, fromPipelineId, fromStageId, fromStageEnteredAt, enteredAt, source, mode, territoryId, assignedToUid}` + tenancy keys; no PII, outlives a deleted deal. Read only by `/api/sub-accounts/[id]/reports/stage-history` (territory-scoped). Spec: [w3-stage-history](../programme/w3-stage-history.md) |
 | `subAccounts/{id}/pipelines/{pipelineId}` | server-only | Deal pipelines with stages embedded (`{ id, label, tone, terminal? }[]`; `terminal` = `won`/`lost` drives `deal.won`/`deal.lost`). `pipelines/default` is seeded lazily on first read from the canonical six stages + the legacy `subAccounts/{id}.pipelineStages` label/order overrides, keeping the SAME stage ids. Read via `GET /api/sub-accounts/[id]/pipelines`; written only by those Admin-SDK routes and the GHL import start route (`import/ghl/start`, opt-in "Recreate my GoHighLevel pipelines": one pipeline per GHL pipeline at `pipelines/ghl_<ghlPipelineId>`, its stage names + appended Won/Lost (a GHL stage named Won / Lost / Closed Won / Closed Lost maps onto those), stamped `externalSource: "ghl"`, `externalId` and `externalStageIds {ghlStageId: stageId}`; a re-import reuses the doc in a transaction, only adds GHL stages it has not seen, never re-adds a stage the operator deleted, and when it cannot update the doc maps deals onto its existing stages rather than back onto the default). Deleting a stage / pipeline that still holds deals is refused (409) |
-| `events/{id}` | sub-account | Calendar events. Booking-page events may carry `hostUids` (collective) and `serviceId`/`serviceName` (service pages) — server-written only; rules refuse them from clients. `isLong` (> 8 h) is written with the event's times and read by availability's long-event query. `source: "google"` (test with `isImportedEvent()`) = imported from a member's Google Calendar, owner in `importOwnerUid` (never `assignedToUid`/`hostUids`/`mode`/`publicTokenHash`); no importer writes it yet. Availability treats it as busy for its owner only (never on a hostless schedule); every other reader that books, pushes, reminds, feeds, links, counts, searches or answers the API/assistant skips it. Index `(subAccountId, source, startAt)` serves the assistant's upcoming count |
+| `events/{id}` | sub-account | Calendar events. Booking-page events may carry `hostUids` (collective) and `serviceId`/`serviceName` (service pages) — server-written only; rules refuse them from clients. `isLong` (> 8 h) is written with the event's times and read by availability's long-event query. `source: "google"` (test with `isImportedEvent()`) = imported from a member's Google Calendar, owner in `importOwnerUid` (never `assignedToUid`/`hostUids`/`mode`/`publicTokenHash`/`bookingPageSlug`), written only by the calendar import (`lib/google-calendar/import.ts`) under the id `gcal_` + 40 hex of sha256(sub-account, member, Google id), with `importMode` (`busy`: title "Busy", no place — the default; `details`: the owner shares title and place), `allDay`, territory `global`, `createdByUid` = the owner. Rules refuse every client update and delete of one. Availability treats it as busy for its owner only (never on a hostless schedule); every other reader that books, pushes, reminds, feeds, links, counts, searches or answers the API/assistant skips it. Index `(subAccountId, source, startAt)` serves the assistant's upcoming count |
 | `events/{id}/reminderSends/{offset_tokenHash}` | server only | Create-only claim per booking reminder (offset × schedule), so a QStash redelivery doesn't email twice. Deleted again when a send fails in a way a retry could fix |
 | `tasks/{id}` | sub-account | Todos; optional `assignedToUid` (a `subAccountMembers` uid or null — rules refuse any other value) |
 | `forms/{id}` | sub-account | Form config |
@@ -107,6 +107,22 @@ queried only by `resolvedAt == null` inside one sub-account, so no composite
 index. `private/whatsappFakeScenario` holds the dev/CI fake settings provider's
 scenario (Admin SDK only under the `private/{docId}` deny rule). The business
 profile and message links are NOT cached — Meta is the source of truth.
+
+### Google Calendar
+`subAccounts/{id}/private/googleCalendar_{uid}` is one member's connection
+(tokens, status, errors — [google-calendar-sync.md](../features/google-calendar-sync.md))
+and their calendar-import state: `importMode` (`off`/`busy`/`details`, set only
+by that member), `importGeneration`, `importSyncToken`, `importLastSyncAt`,
+`importLastFullSyncAt`, `importLastAttemptAt`, `importLastFullAttemptAt`,
+`importLeaseId`, `importLeaseUntil`, `importLeasePrint`, `importStatus`, `importError`,
+`importedCount`. Admin SDK only under the `private/{docId}` deny rule; the
+member sees their own through `GET /api/sub-accounts/[id]/google-calendar`.
+The sub-account doc carries `calendarImportAllowed` (the admin's workspace
+switch) and `calendarImportGeneration`, server-written. Import queries are
+equality-only (`events` by `subAccountId` + `source` [+ `importOwnerUid`],
+`private` by `importMode in`), so no composite index. `system/calendarImportSweep`
+`{cursor, updatedAt}` is where the daily orphan sweep stopped (Admin SDK only:
+the `system/*` rule lets clients read only `gitpageStatus`).
 
 ### Google Business Profile
 `subAccounts/{id}/private/googleConnection` holds the OAuth refresh/access

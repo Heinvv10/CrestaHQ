@@ -14,6 +14,9 @@ export const AUDIT_ACTIONS = [
   // A Google review reply posted by the auto-reply engine, no click
   // (lib/reputation/auto-reply/post.ts). Target: the cached review's doc id.
   "review.auto_replied",
+  // A sub-account admin allowed or stopped Google Calendar import for the
+  // workspace (api/sub-accounts/[id]/google-calendar/import). Target: the sub-account.
+  "calendar_import.workspace_changed",
   // A usage-rebilling switch flipped: the agency master switch (agency-level
   // event, target "agency") or one client's switch (target "subAccount").
   "usage_rebilling.updated",
