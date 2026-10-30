@@ -77,6 +77,16 @@ export async function deliverReminderSms(input: {
         `${noteId}_collapsed`,
       );
     }
+    if (lock.reason === "still_sending" || lock.reason === "lock_contended") {
+      // The last delivery: nothing will retry, so the timeline says why there is no text.
+      await writeHoldActivity(
+        event.contactId,
+        lock.reason === "still_sending"
+          ? "A booking reminder text was not sent: another reminder for this booking was still sending."
+          : "A booking reminder text was not sent: another reminder for this booking was being sent at the same moment.",
+        `${noteId}_${lock.reason}`,
+      );
+    }
     return lock.reason;
   }
 

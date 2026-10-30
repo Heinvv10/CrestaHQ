@@ -532,12 +532,69 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     expect(windowNotes()).toEqual([]);
   });
 
-  it("...and on QStash's last delivery a lock that never resolved is taken as crashed", async () => {
+  it("...and on QStash's last delivery a lock that never resolved (2+ minutes old) is taken as crashed", async () => {
     vi.setSystemTime(MORNING);
-    mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 720, state: "sending", at: MORNING.getTime() - 1000 });
+    mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 720, state: "sending", at: MORNING.getTime() - 2 * 60_000 });
     const res = await remind({ smsOnly: true, attempt: 1 }, 60, { "upstash-retried": "3" });
     expect(await res.json()).toMatchObject({ sms: "sent" });
     expect(lockDoc()).toMatchObject({ state: "sent", offsetMinutes: 60 });
+  });
+
+  it("...but a YOUNGER one is probably still sending: no takeover, 200, and a note, since nothing will retry", async () => {
+    vi.setSystemTime(MORNING);
+    const held = { offsetMinutes: 720, state: "sending", at: MORNING.getTime() - 2 * 60_000 + 1 };
+    mem.seed(`events/e1/reminderSends/${lockId()}`, held);
+    const res = await remind({ smsOnly: true, attempt: 1 }, 60, { "upstash-retried": "3" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ sms: "still_sending" });
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(lockDoc()).toMatchObject(held);
+    expect(mem.list("contacts/c1/activities")).toEqual([
+      expect.objectContaining({ content: "A booking reminder text was not sent: another reminder for this booking was still sending." }),
+    ]);
+  });
+
+  it("an earlier delivery of that same step still waits (503) and writes no note", async () => {
+    vi.setSystemTime(MORNING);
+    mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 720, state: "sending", at: MORNING.getTime() - 5 * 60_000 });
+    for (const retried of ["0", "2"]) {
+      expect((await remind({ smsOnly: true, attempt: 1 }, 60, { "upstash-retried": retried })).status).toBe(503);
+    }
+    expect(mem.list("contacts/c1/activities")).toEqual([]);
+  });
+
+  describe("a takeover that loses the race", () => {
+    afterEach(() => vi.restoreAllMocks());
+    const staleLock = () =>
+      mem.seed(`events/e1/reminderSends/${lockId()}`, { offsetMinutes: 1440, state: "sent", at: MORNING.getTime() - 40 * 60_000 });
+    const failTakeover = () =>
+      vi.spyOn(mem.db, "runTransaction").mockImplementation((() =>
+        Promise.reject(Object.assign(new Error("10 ABORTED"), { code: 10 }))) as never);
+
+    it("on the last delivery is noted instead of dropped silently", async () => {
+      vi.setSystemTime(MORNING);
+      staleLock();
+      failTakeover();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const res = await remind({ smsOnly: true, attempt: 1 }, 60, { "upstash-retried": "3" });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ sms: "lock_contended" });
+      expect(sendSmsVia).not.toHaveBeenCalled();
+      expect(mem.list("contacts/c1/activities")).toEqual([
+        expect.objectContaining({ content: "A booking reminder text was not sent: another reminder for this booking was being sent at the same moment." }),
+      ]);
+    });
+
+    it("on an earlier delivery waits for the retry (503), with no note", async () => {
+      vi.setSystemTime(MORNING);
+      staleLock();
+      failTakeover();
+      vi.spyOn(console, "warn").mockImplementation(() => {});
+      const res = await remind({ smsOnly: true, attempt: 1 }, 60, { "upstash-retried": "1" });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toMatchObject({ sms: "in_flight" });
+      expect(mem.list("contacts/c1/activities")).toEqual([]);
+    });
   });
 
   it.each(["sent", "sending"])("a %s lock older than half an hour is free", async (state) => {

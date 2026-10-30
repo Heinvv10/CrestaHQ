@@ -714,6 +714,22 @@ export function validateReminderOffsets(
   return { ok: true, value: cleaned };
 }
 
+/** Reminder texts go at most one per half hour per booking, so with texts on the reminder times must be more than that apart. */
+export const MIN_TEXT_REMINDER_GAP_MINUTES = 30;
+
+export function validateTextReminderSpacing(offsets: number[]): Validated<number[]> {
+  const sorted = [...offsets].sort((a, b) => b - a);
+  for (let i = 1; i < sorted.length; i++) {
+    if (sorted[i - 1] - sorted[i] <= MIN_TEXT_REMINDER_GAP_MINUTES) {
+      return {
+        ok: false,
+        error: `With text reminders on, reminder times must be more than ${MIN_TEXT_REMINDER_GAP_MINUTES} minutes apart (only one text goes per half hour): ${sorted[i - 1]} and ${sorted[i]} minutes before are too close.`,
+      };
+    }
+  }
+  return { ok: true, value: offsets };
+}
+
 export function validateTerritoryId(
   input: unknown,
 ): Validated<string | null> {
@@ -1004,6 +1020,11 @@ export function validateBookingPageFormData(
     b.reminderOffsetsMinutes,
   );
   if (!reminderOffsetsMinutes.ok) return reminderOffsetsMinutes;
+  // A page's existing offsets are only checked when its texts are on.
+  if (smsRemindersEnabled.value) {
+    const spaced = validateTextReminderSpacing(reminderOffsetsMinutes.value);
+    if (!spaced.ok) return spaced;
+  }
 
   const payment = validatePayment(b.payment);
   if (!payment.ok) return payment;

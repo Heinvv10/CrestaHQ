@@ -14,7 +14,9 @@ import { getAdminDb } from "@/lib/firebase/admin";
  *   - `sent` by another offset inside RECENT_MS: this one collapses onto it;
  *   - `sending` by another offset: it may still fail (then this one must send),
  *     so this one is told to try again (`in_flight`, a 503 for QStash); on QStash's
- *     last delivery it is taken as crashed and taken over;
+ *     last delivery it is taken as crashed and taken over, if it is at least
+ *     FINAL_TAKEOVER_MS old (a younger one is left alone: `still_sending`, and the
+ *     caller says so on the timeline, because nothing will retry);
  *   - this offset's own, `sending`: a crashed attempt or a twin delivery of this
  *     very step, taken over; the per-offset claim in sendBookingSms keeps the
  *     send exactly-once either way;
@@ -25,10 +27,14 @@ import { getAdminDb } from "@/lib/firebase/admin";
  */
 
 export const RECENT_TEXT_MS = 30 * 60_000;
+/** On the last delivery another offset's `sending` lock is taken over only once it is this old: a younger one is a send that is probably still going. */
+export const FINAL_TAKEOVER_MS = 2 * 60_000;
 
 export type TextLock =
   | { ok: true; at: number; mine: boolean; release: () => Promise<void>; markSent: () => Promise<void> }
-  | { ok: false; reason: "already_sent" | "in_flight"; collapsed: boolean };
+  | { ok: false; reason: "already_sent" | "in_flight"; collapsed: boolean }
+  /** The last delivery, and no text can be sent for it: the caller notes it (nothing will retry). */
+  | { ok: false; reason: "still_sending" | "lock_contended"; collapsed: false };
 
 const code = (err: unknown) => (err as { code?: unknown } | null)?.code;
 const message = (err: unknown) => (err instanceof Error ? err.message : String(err));
@@ -84,6 +90,8 @@ export async function takeTextLock(input: {
         if (await input.ownClaimExists()) return lock(at, true);
       } else if (!input.finalAttempt) {
         return { ok: false, reason: "in_flight", collapsed: false };
+      } else if (now - at < FINAL_TAKEOVER_MS) {
+        return { ok: false, reason: "still_sending", collapsed: false };
       }
     }
     // Stale, a crashed attempt of this offset, or (last delivery) a holder gone silent: take over.
@@ -100,9 +108,10 @@ export async function takeTextLock(input: {
         return false;
       });
     if (took) return lock(now, false);
-    return { ok: false, reason: "in_flight", collapsed: false };
+    // Another step changed the lock first. Retry later, unless this is the last delivery.
+    return input.finalAttempt ? { ok: false, reason: "lock_contended", collapsed: false } : { ok: false, reason: "in_flight", collapsed: false };
   }
-  return { ok: false, reason: "in_flight", collapsed: false };
+  return input.finalAttempt ? { ok: false, reason: "lock_contended", collapsed: false } : { ok: false, reason: "in_flight", collapsed: false };
 }
 
 async function markSent(ref: DocumentReference, offsetMinutes: number, at: number): Promise<void> {
