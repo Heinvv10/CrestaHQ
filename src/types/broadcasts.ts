@@ -171,6 +171,10 @@ export interface BroadcastSendDoc {
   /** A permanent bounce (also one reported after a transient bounce). */
   hardBounce?: boolean;
   complainedAt?: Timestamp | FieldValue | null;
+  /** Set once a complaint's opt-out landed; the opt-out is never re-applied. */
+  optOutAppliedAt?: Timestamp | FieldValue | null;
+  /** Set once a bounce or complaint put the address on the suppression list; never re-added. */
+  suppressedAt?: Timestamp | FieldValue | null;
 }
 
 /**

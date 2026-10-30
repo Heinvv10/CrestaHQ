@@ -56,18 +56,21 @@ export class ProviderEventNotReadyError extends Error {
 /**
  * Whether a provider event for `emailId` may land on `send`: `ready` (sent,
  * with this id, in this sub-account), `pending` (still queued with this id
- * or none yet: retry later), or `foreign` (ignore).
+ * or none yet: retry later), `unconfirmed` (failed as "delivery unknown"
+ * after the provider took it: bounce and complaint effects only), or
+ * `foreign` (ignore).
  */
 export function providerRowState(
   send: BroadcastSendDoc,
   emailId: string,
   subAccountId: string,
-): "ready" | "pending" | "foreign" {
+): "ready" | "pending" | "unconfirmed" | "foreign" {
   if (send.subAccountId !== subAccountId) return "foreign";
   if (send.status === "queued" && (send.resendMessageId == null || send.resendMessageId === emailId)) {
     return "pending";
   }
-  return send.status === "sent" && send.resendMessageId === emailId ? "ready" : "foreign";
+  if (send.resendMessageId !== emailId) return "foreign";
+  return send.status === "sent" ? "ready" : send.status === "failed" ? "unconfirmed" : "foreign";
 }
 
 export type EngagementKind = "opened" | "clicked";

@@ -36,9 +36,14 @@ import type { EmailSuppressionDoc, EmailSuppressionReason } from "@/types/email"
  *     complaint suppresses the sent address (`complaint`) and opts the
  *     contact out of email whatever address they have now: the person asked
  *     this workspace to stop. A complaint after a bounce still counts.
- *   - the opt-out and the suppression run on EVERY delivery of the event, not
- *     only the first, and throw on failure, so Resend's retry lands them.
- *     The timeline row and the bounce flag are first-only and best-effort.
+ *   - the opt-out and the suppression are applied once per send row
+ *     (`optOutAppliedAt` / `suppressedAt`, stamped after the write): a
+ *     failure throws and Resend's retry lands it, but a later replay never
+ *     re-applies one an admin has since undone. The timeline row and the
+ *     bounce flag are first-only and best-effort.
+ *   - a row the step failed as "delivery unknown" that carries this Resend
+ *     id still takes bounce and complaint effects (the email did go out);
+ *     it never counts in totals, and takes no delivered / open / click.
  *
  * Firestore errors propagate: the webhook answers 5xx and Resend retries.
  * No workflow trigger fires here (I3 adds email.opened / email.clicked).
@@ -182,12 +187,19 @@ export async function handleResendDeliveryEvent(event: ResendDeliveryEvent): Pro
     const send = snap.data() as BroadcastSendDoc;
     const state = providerRowState(send, emailId, lookup.subAccountId);
     if (state === "pending") throw new ProviderEventNotReadyError(sendRef.path);
-    if (state !== "ready") return { first: false, send: null };
+    // `unconfirmed`: the email went out but the row was failed as "delivery
+    // unknown". A bounce or complaint still takes effect; nothing is counted.
+    if (state === "foreign" || (state === "unconfirmed" && type === "email.delivered")) {
+      return { first: false, send: null };
+    }
+    const count = (field: string) => {
+      if (state === "ready") tx.update(broadcastRef, { [field]: FieldValue.increment(1) });
+    };
     switch (type) {
       case "email.delivered":
         if (send.deliveredAt || send.bouncedAt) return { first: false, send };
         tx.update(sendRef, { deliveredAt: at });
-        tx.update(broadcastRef, { "totals.delivered": FieldValue.increment(1) });
+        count("totals.delivered");
         return { first: true, send };
       case "email.bounced":
         if (send.bouncedAt) {
@@ -197,12 +209,12 @@ export async function handleResendDeliveryEvent(event: ResendDeliveryEvent): Pro
           return { first: true, send };
         }
         tx.update(sendRef, { bouncedAt: at, bounceReason, hardBounce });
-        tx.update(broadcastRef, { "totals.bounced": FieldValue.increment(1) });
+        count("totals.bounced");
         return { first: true, send };
       case "email.complained":
         if (send.complainedAt) return { first: false, send };
         tx.update(sendRef, { complainedAt: at });
-        tx.update(broadcastRef, { "totals.complained": FieldValue.increment(1) });
+        count("totals.complained");
         return { first: true, send };
     }
   });
@@ -210,9 +222,17 @@ export async function handleResendDeliveryEvent(event: ResendDeliveryEvent): Pro
   const { send } = outcome;
   if (!send || type === "email.delivered") return;
   if (outcome.first) await firstOccurrence(lookup, send, type, { at, bounceReason, hardBounce });
-  if (type === "email.complained") await optOutContact(lookup, send);
-  if (hardBounce) await ensureSuppressed(lookup, send, "hard_bounce");
-  if (type === "email.complained") await ensureSuppressed(lookup, send, "complaint");
+  // Each applied ONCE per send row: the stamp lands after the write succeeds,
+  // and a retry re-runs only what has no stamp yet. So a failed write is
+  // retried, but a replay can't undo an admin's later re-opt-in or removal.
+  if (type === "email.complained" && !send.optOutAppliedAt) {
+    await optOutContact(lookup, send);
+    await sendRef.update({ optOutAppliedAt: FieldValue.serverTimestamp() });
+  }
+  if ((hardBounce || type === "email.complained") && !send.suppressedAt) {
+    await ensureSuppressed(lookup, send, hardBounce ? "hard_bounce" : "complaint");
+    await sendRef.update({ suppressedAt: FieldValue.serverTimestamp() });
+  }
 }
 
 /** Adds the sent address to the sub-account's suppression list unless it is already there. */

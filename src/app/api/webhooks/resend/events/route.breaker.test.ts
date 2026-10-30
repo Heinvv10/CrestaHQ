@@ -21,6 +21,7 @@ process.env.RESEND_WEBHOOK_SECRET = SECRET;
 process.env.NEXT_PUBLIC_APP_URL = "https://app.test";
 
 const { POST } = await import("@/app/api/webhooks/resend/events/route");
+const { recordBroadcastEmailLookup } = await import("@/lib/comms/email-events");
 
 const EMAIL = "4ef9a417-02e9-4d39-ad75-9611e0fcc33c";
 const EMAIL2 = "9b2c1f00-1111-4222-8333-444455556666";
@@ -294,5 +295,146 @@ describe("breaker — payload shape and transport", () => {
     const [a, b] = await Promise.all([POST(signed(body, { id: "msg_c" })), POST(signed(body, { id: "msg_c" }))]);
     expect(totals().delivered).toBe(1);
     expect([a.status, b.status]).toEqual([200, 200]);
+  });
+});
+
+const sendRef = () => mem.db.doc("broadcasts/b1/sends/c1");
+const broadcastRef = () => mem.db.doc("broadcasts/b1");
+const claimed = (claimId: string) => ({ sendRef: sendRef(), broadcastRef: broadcastRef(), claimId }) as never;
+const queue = (extra: Record<string, unknown> = {}) =>
+  mem.seed("broadcasts/b1/sends/c1", { agencyId: "ag1", subAccountId: "sa1", contactId: "c1", toEmail: ADDRESS, status: "queued", claimId: "A", ...extra });
+
+/** Breaker round 2: side effects once per row, late retries, upgrades. */
+describe("breaker round 2", () => {
+  it("A stale replay (fresh svix-id) of a complaint must not re-opt-out a re-subscribed contact", async () => {
+    expect((await POST(signed(ev("email.complained")))).status).toBe(200);
+    expect(mem.read("contacts/c1")!.emailOptedOut).toBe(true);
+    // admin re-subscribes the contact and clears the suppression
+    mem.seed("contacts/c1", { ...mem.read("contacts/c1")!, emailOptedOut: false });
+    await mem.db.doc(suppressionPath("sa1", ADDRESS)).delete();
+    expect((await POST(signed(ev("email.complained")))).status).toBe(200);
+    expect(mem.read("contacts/c1")!.emailOptedOut).toBe(false);
+  });
+  it("A2 same svix-id replayed after the 24h marker is swept re-opts-out too", async () => {
+    await POST(signed(ev("email.complained"), { id: "msg_x" }));
+    mem.seed("contacts/c1", { ...mem.read("contacts/c1")!, emailOptedOut: false });
+    await mem.db.doc("resendWebhookDeliveries/msg_x").delete();
+    await POST(signed(ev("email.complained"), { id: "msg_x" }));
+    expect(mem.read("contacts/c1")!.emailOptedOut).toBe(false);
+  });
+  it("B replayed hard bounce re-adds a suppression an admin removed", async () => {
+    await POST(signed(ev("email.bounced", hard)));
+    await mem.db.doc(suppressionPath("sa1", ADDRESS)).delete();
+    await POST(signed(ev("email.bounced", hard)));
+    expect(mem.read(suppressionPath("sa1", ADDRESS))).toBeUndefined();
+  });
+  it("D a legit retry after a failed suppression write still lands opt-out + suppression", async () => {
+    const orig = mem.db.doc.bind(mem.db);
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation(((p: string) => {
+      const r = orig(p);
+      if (p.includes("emailSuppressions")) r.create = async () => { throw new Error("blip"); };
+      return r;
+    }) as typeof mem.db.doc);
+    const r1 = await POST(signed(ev("email.complained"), { id: "msg_d" }));
+    spy.mockRestore();
+    expect(r1.status).toBe(500);
+    const r2 = await POST(signed(ev("email.complained"), { id: "msg_d" }));
+    expect(r2.status).toBe(200);
+    expect(mem.read("contacts/c1")!.emailOptedOut).toBe(true);
+    expect(mem.read(suppressionPath("sa1", ADDRESS))).toBeDefined();
+    expect(totals().complained).toBe(1);
+  });
+  it("E superseded claim cannot stamp id or write lookup", async () => {
+    queue({ claimId: "B" });
+    await recordBroadcastEmailLookup({ row: claimed("A"), emailId: EMAIL2, toEmail: ADDRESS, subAccountId: "sa1", agencyId: "ag1" });
+    expect(row().resendMessageId).toBeUndefined();
+    expect(mem.read(`emailEvents/${EMAIL2}`)).toBeUndefined();
+  });
+  it("E2 after a settled row, a late lookup call (same claim) cannot rewrite the id", async () => {
+    await recordBroadcastEmailLookup({ row: claimed("A"), emailId: EMAIL2, toEmail: ADDRESS, subAccountId: "sa1", agencyId: "ag1" });
+    expect(row().resendMessageId).toBe(EMAIL);
+    expect(mem.read(`emailEvents/${EMAIL2}`)).toBeUndefined();
+  });
+  it("E3 stamp then reclaim by B: E1 event is not 500-looping once B settles with E2", async () => {
+    queue();
+    await recordBroadcastEmailLookup({ row: claimed("A"), emailId: EMAIL2, toEmail: ADDRESS, subAccountId: "sa1", agencyId: "ag1" });
+    const ev2 = { type: "email.delivered", data: { email_id: EMAIL2 } };
+    expect((await POST(signed(ev2, { id: "msg_e3" }))).status).toBe(500);
+    expect(mem.read("resendWebhookDeliveries/msg_e3")).toBeUndefined();
+    mem.seed("broadcasts/b1/sends/c1", { ...row(), status: "sent" });
+    expect((await POST(signed(ev2, { id: "msg_e3" }))).status).toBe(200);
+    expect(row().deliveredAt).toBeDefined();
+  });
+  it("G1 queued row stuck then marked failed (interrupted) with the stamped id: event answers 200, not a loop", async () => {
+    queue({ resendMessageId: EMAIL });
+    expect((await POST(signed(ev("email.bounced", hard), { id: "msg_g1" }))).status).toBe(500);
+    mem.seed("broadcasts/b1/sends/c1", { ...row(), status: "failed" });
+    expect((await POST(signed(ev("email.bounced", hard), { id: "msg_g1" }))).status).toBe(200);
+  });
+  it("G2 …and the hard bounce of an email that DID go out is still suppressed", async () => {
+    queue({ resendMessageId: EMAIL });
+    mem.seed("broadcasts/b1/sends/c1", { ...row(), status: "failed" });
+    await POST(signed(ev("email.bounced", hard)));
+    expect(mem.read(suppressionPath("sa1", ADDRESS))).toBeDefined();
+  });
+  it("G2b a failed row with the id takes bounce/complaint effects but no counts, deliveries, opens or clicks", async () => {
+    mem.seed("broadcasts/b1/sends/c1", { ...row(), status: "failed" });
+    for (const body of [ev("email.delivered"), ev("email.opened"), ev("email.clicked", { click: { link: "https://shop.example/x" } })]) {
+      expect((await POST(signed(body))).status).toBe(200);
+    }
+    await POST(signed(ev("email.complained")));
+    expect(mem.read("contacts/c1")!.emailOptedOut).toBe(true);
+    expect(mem.read(suppressionPath("sa1", ADDRESS))).toMatchObject({ reason: "complaint" });
+    expect(row()).toMatchObject({ status: "failed" });
+    expect(row().deliveredAt).toBeUndefined();
+    expect(row().openedAt).toBeUndefined();
+    expect(row().clickedAt).toBeUndefined();
+    expect(totals()).toEqual({ sent: 1 });
+  });
+  it("G3 queued row with a different id stamped: 200 (no loop)", async () => {
+    queue({ resendMessageId: EMAIL2 });
+    expect((await POST(signed(ev("email.delivered")))).status).toBe(200);
+  });
+  it("G4 unstamped queued row; an opened event also 500s and deletes marker", async () => {
+    queue();
+    const r = await POST(signed(ev("email.opened"), { id: "msg_g4" }));
+    expect(r.status).toBe(500);
+    expect(mem.read("resendWebhookDeliveries/msg_g4")).toBeUndefined();
+  });
+  it("F upgrade: transient, permanent, permanent, transient, delivered => counted once, flagged once", async () => {
+    await POST(signed(ev("email.bounced", { bounce: { type: "Transient" } })));
+    await POST(signed(ev("email.bounced", hard)));
+    await POST(signed(ev("email.bounced", hard)));
+    await POST(signed(ev("email.bounced", { bounce: { type: "Transient" } })));
+    await POST(signed(ev("email.delivered")));
+    expect(totals().bounced).toBe(1);
+    expect(totals().delivered ?? 0).toBe(0);
+    expect(row().hardBounce).toBe(true);
+    expect(mem.read("contacts/c1")!.emailBouncedAt).toBeDefined();
+    expect(activities().length).toBe(2);
+  });
+  it("F2 permanent first then transient does not downgrade", async () => {
+    await POST(signed(ev("email.bounced", hard)));
+    await POST(signed(ev("email.bounced", { bounce: { type: "Transient" } })));
+    expect(row().hardBounce).toBe(true);
+    expect(String(row().bounceReason)).toContain("No such user");
+  });
+  it("F3 concurrent permanent + permanent counts once", async () => {
+    await Promise.all([POST(signed(ev("email.bounced", hard))), POST(signed(ev("email.bounced", hard)))]);
+    expect(totals().bounced).toBe(1);
+  });
+  it("F4 legacy bounced row without hardBounce field gets upgraded once and not double counted", async () => {
+    mem.seed("broadcasts/b1/sends/c1", { ...row(), bouncedAt: new Date(), bounceReason: "x" });
+    mem.seed("broadcasts/b1", { ...mem.read("broadcasts/b1")!, totals: { sent: 1, bounced: 1 } });
+    await POST(signed(ev("email.bounced", hard)));
+    expect(totals().bounced).toBe(1);
+  });
+  it("H complaint after bounce counts and opts out; complaint twice (new ids) counts once", async () => {
+    await POST(signed(ev("email.bounced", hard)));
+    await POST(signed(ev("email.complained")));
+    await POST(signed(ev("email.complained")));
+    expect(totals().complained).toBe(1);
+    expect(mem.read("contacts/c1")!.emailOptedOut).toBe(true);
+    expect(activities().filter((a) => a.type === "email_complained").length).toBe(1);
   });
 });
