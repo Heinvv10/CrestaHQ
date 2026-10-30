@@ -290,6 +290,18 @@ describe("the batch", () => {
     expect(asked).not.toContain(`ra-${SCHEDULE}-c5`);
   });
 
+  it("abandoned buy-page orders (open attempts, no link) cannot fill the page and starve a card charge", async () => {
+    const base = Date.now() - 2 * HOUR;
+    for (let i = 0; i < 101; i += 1) {
+      seedAttempt(`po-ord${i}`, { paymentLinkId: "", orderId: `ord${i}`, createdAt: new Date(base - 100 * HOUR + i) });
+    }
+    const reference = `ra-${SCHEDULE}-c1`;
+    seedInvoice("inv1", { autoCharge: { reference, mandateId: MANDATE, state: "pending", reason: null } });
+    seedAttempt(reference, { mandateId: MANDATE, invoiceId: "inv1", recurringInvoiceId: SCHEDULE, amountCents: AMOUNT, createdAt: new Date(base) });
+    verifyAnswers("pending");
+    expect(await sweep(0)).toMatchObject({ checked: 1 });
+  });
+
   it("one attempt's re-check throwing does not stop the next", async () => {
     await cycle("send_otp");
     seedInvoice("inv9", { autoCharge: { reference: "ra-other-c1", mandateId: MANDATE, state: "pending", reason: null } });

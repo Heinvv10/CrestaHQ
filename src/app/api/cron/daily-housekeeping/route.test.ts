@@ -37,8 +37,12 @@ vi.mock("@/lib/comms/whatsapp/staged-upload", () => ({
   sweepStaleStaged: async () => (calls.push("whatsapp-staging-cleanup"), jobs.staging()),
 }));
 
+vi.mock("@/lib/server/paystack-order-expiry", () => ({
+  expireStalePaystackOrders: async () => (calls.push("paystack-order-expiry"), { checked: 0, expired: 0, reconciled: 0, overBudget: 0 }),
+}));
+
 const { POST } = await import("./route");
-const ALL = ["gitpage-heartbeat", "ai-models", "api-cleanup", "gbp-retention", "calendar-import-orphans", "whatsapp-staging-cleanup"];
+const ALL = ["gitpage-heartbeat", "ai-models", "api-cleanup", "gbp-retention", "calendar-import-orphans", "whatsapp-staging-cleanup", "paystack-order-expiry"];
 const run = (headers: Record<string, string> = { "upstash-signature": "sig" }) =>
   POST(new Request("https://app.example.com/api/cron/daily-housekeeping", { method: "POST", headers, body: "" }));
 
@@ -76,7 +80,7 @@ it("keeps going past a throwing job and a failed api-cleanup, and names both in 
     { job: "gitpage-heartbeat", message: "gitpage down" },
     { job: "api-cleanup", message: "sweep_failed: apiRequestLogs" },
   ]);
-  expect(Object.keys(body.results)).toEqual(["ai-models", "gbp-retention", "calendar-import-orphans", "whatsapp-staging-cleanup"]);
+  expect(Object.keys(body.results)).toEqual(["ai-models", "gbp-retention", "calendar-import-orphans", "whatsapp-staging-cleanup", "paystack-order-expiry"]);
   expect(console.error).toHaveBeenCalledWith(
     "[cron/daily-housekeeping] job failed job=gitpage-heartbeat",
     expect.any(Error),

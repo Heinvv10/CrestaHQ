@@ -119,9 +119,15 @@ export interface Order {
    *  Claimed (`sending`) in a transaction before the send, so it goes once. */
   confirmationEmail?: OrderConfirmationStatus | null;
 
+  /** `product_link` on the Paystack rail: the reference of its one checkout
+   *  (`paymentAttempts/{reference}`), set in the same transaction that writes
+   *  the attempt, before Paystack is called. */
+  paystackReference?: string | null;
+
   // ── Stripe linkage (the client's own account, in BOTH tiers) ──────
   /** Empty on a `product_link` order between its write and the session
-   *  creation that follows (the order is written first). */
+   *  creation that follows (the order is written first), and for good on the
+   *  Paystack rail (`paystackReference` is its checkout). */
   stripeCheckoutSessionId: string;
   stripePaymentIntentId: string | null;
   /** False when the connection was a test-mode key — keeps play money out of

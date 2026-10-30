@@ -26,13 +26,17 @@ export function BuyButton({
   slug,
   accent,
   label,
+  askEmail = false,
 }: {
   subAccountId: string;
   slug: string;
   accent: string;
   label: string;
+  /** Paystack's hosted page shows the buyer's email but doesn't ask for it. */
+  askEmail?: boolean;
 }) {
   const [requestId] = useState(newRequestId);
+  const [email, setEmail] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -58,7 +62,7 @@ export function BuyButton({
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ requestId }),
+          body: JSON.stringify(askEmail ? { requestId, email } : { requestId }),
         },
       );
       const data = (await res.json().catch(() => ({}))) as {
@@ -77,10 +81,23 @@ export function BuyButton({
 
   return (
     <div>
+      {askEmail && (
+        <label className="mb-3 block text-sm font-medium text-zinc-700">
+          Your email (for the receipt)
+          <input
+            type="email"
+            required
+            autoComplete="email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className="mt-1 h-11 w-full rounded-xl border border-zinc-300 px-3 text-base font-normal"
+          />
+        </label>
+      )}
       <button
         type="button"
         onClick={go}
-        disabled={busy}
+        disabled={busy || (askEmail && !email.trim())}
         className="flex h-12 w-full items-center justify-center gap-2 rounded-xl text-base font-semibold shadow-sm transition hover:brightness-110 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 disabled:opacity-70"
         style={{ background: color, color: textColor, outlineColor: color }}
       >

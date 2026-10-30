@@ -6,9 +6,9 @@ import { stringsSentToClient } from "@/test/sent-to-client";
 
 /**
  * The express buy page through its real loader: it renders only a product
- * that passes every sell-online re-check right now, 404s otherwise, says "not
- * available yet" on the Paystack rail (unit F3), hands an on-sale checkout
- * page the sale, and lets no stored accent or logo reach the markup unchecked.
+ * that passes every sell-online re-check right now, 404s otherwise, asks a
+ * Paystack buyer for an email (unit F3), hands an on-sale checkout page the
+ * sale, and lets no stored accent or logo reach the markup unchecked.
  */
 
 const mem = createMemoryFirestore();
@@ -78,7 +78,7 @@ describe("404 for anything not for sale", () => {
   });
 });
 
-it("a Paystack-rail product says not available yet, with no buy button", async () => {
+it("a Paystack-rail product asks for the buyer's email and names Paystack", async () => {
   mem.seed(`subAccounts/${SA}`, {
     ...SUB,
     stripeConnectionMeta: null,
@@ -86,8 +86,15 @@ it("a Paystack-rail product says not available yet, with no buy button", async (
   });
   mem.seed("products/p1", { ...PRODUCT, currency: "ZAR" });
   const html = await render();
-  expect(html).toContain("available yet");
-  expect(html).not.toContain("Continue to payment");
+  expect(html).toContain("Continue to payment");
+  expect(html).toContain('type="email"');
+  expect(html).toContain("securely by Paystack");
+});
+
+it("a Stripe-rail product asks for no email: Stripe's page collects it", async () => {
+  const html = await render();
+  expect(html).toContain("Continue to payment");
+  expect(html).not.toContain('type="email"');
 });
 
 it("a published checkout page selling this product takes the buyer there", async () => {
