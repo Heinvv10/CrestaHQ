@@ -10,6 +10,17 @@ import { readableTextOn, safeAccent } from "@/components/buy/buy-shell";
  * request id minted once per page load, so a double click (or a click after
  * coming back from Stripe) reuses the session just opened instead of a second.
  */
+/** A UUID v4. `randomUUID` exists only in secure contexts on newer browsers;
+ *  `getRandomValues` everywhere, so build one from it when it's missing. */
+export function newRequestId(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+  const b = crypto.getRandomValues(new Uint8Array(16));
+  b[6] = (b[6] & 0x0f) | 0x40;
+  b[8] = (b[8] & 0x3f) | 0x80;
+  const h = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+}
+
 export function BuyButton({
   subAccountId,
   slug,
@@ -21,7 +32,7 @@ export function BuyButton({
   accent: string;
   label: string;
 }) {
-  const [requestId] = useState(() => crypto.randomUUID());
+  const [requestId] = useState(newRequestId);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

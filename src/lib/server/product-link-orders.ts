@@ -1,5 +1,7 @@
 import "server-only";
 
+import { randomUUID } from "node:crypto";
+
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
@@ -47,6 +49,45 @@ export async function attachCheckoutSession(
   });
 }
 
+/** How long a contact-link claim holds before another delivery may take over. */
+const CONTACT_CLAIM_MS = 60_000;
+
+/**
+ * Claims the contact step of a paid order, so concurrent deliveries create
+ * at most one contact: "claimed" (run it; the token releases it on failure),
+ * "busy" (another delivery holds a fresh claim — answer 5xx so Stripe
+ * retries), or "linked" (nothing to do). A claim older than 60 s is taken
+ * over (its holder died).
+ */
+export async function claimContactLink(
+  orderId: string,
+): Promise<{ state: "claimed"; token: string } | { state: "busy" | "linked" }> {
+  const db = getAdminDb();
+  const ref = db.doc(`orders/${orderId}`);
+  return db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    const order = snap.data() as Partial<Order> | undefined;
+    if (!order || order.contactId) return { state: "linked" as const };
+    const at = order.contactLinkClaimedAt;
+    if (typeof at === "number" && Date.now() - at < CONTACT_CLAIM_MS) return { state: "busy" as const };
+    const token = randomUUID();
+    tx.update(ref, { contactLinkClaimedAt: Date.now(), contactLinkClaimToken: token });
+    return { state: "claimed" as const, token };
+  });
+}
+
+/** Gives up a contact-link claim this caller holds (its step failed), so the
+ *  next delivery need not wait out the lease. */
+export async function releaseContactLink(orderId: string, token: string): Promise<void> {
+  const db = getAdminDb();
+  const ref = db.doc(`orders/${orderId}`);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (snap.data()?.contactLinkClaimToken !== token) return;
+    tx.update(ref, { contactLinkClaimedAt: null, contactLinkClaimToken: null });
+  });
+}
+
 /**
  * Link an order to its buyer's contact, once: a no-op when the order already
  * has one, so a redelivery (or a racing one) never re-points it.
@@ -68,8 +109,9 @@ export type ProductLinkSettlement =
   | { kind: "already"; order: Order }
   /** Held: the money didn't match (now or on an earlier delivery). Never paid. */
   | { kind: "held"; order: Order }
-  /** Expired, failed or refunded before this payment arrived. Never paid. */
-  | { kind: "closed"; order: Order };
+  /** Expired, failed or refunded before this payment arrived. Never paid.
+   *  `firstPayment`: this delivery recorded the order's first payment. */
+  | { kind: "closed"; order: Order; firstPayment: boolean };
 
 /**
  * The ONLY way a `product_link` order becomes `paid`: from `pending`, not
@@ -98,8 +140,6 @@ export async function settleProductLinkPayment(input: {
     if (order.status === "paid" || order.status === "partially_refunded") {
       return { kind: "already", order };
     }
-    if (order.status !== "pending") return { kind: "closed", order };
-
     const recorded = {
       stripePaymentIntentId: input.stripePaymentIntentId ?? order.stripePaymentIntentId,
       buyerEmail: order.buyerEmail ?? input.buyerEmail,
@@ -109,6 +149,18 @@ export async function settleProductLinkPayment(input: {
       ...recorded,
       updatedAt: FieldValue.serverTimestamp(),
     };
+    if (order.status !== "pending") {
+      // Expired, failed or refunded: the status stands, but the money is
+      // recorded so a refund finds the order and a replay is recognised.
+      // The first payment recorded wins.
+      const firstPayment = !order.stripePaymentIntentId && !!input.stripePaymentIntentId;
+      if (firstPayment) tx.update(ref, patch);
+      return {
+        kind: "closed",
+        order: firstPayment ? { ...order, ...recorded } : order,
+        firstPayment,
+      };
+    }
     if (!input.matches(order)) {
       tx.update(ref, { ...patch, heldAt: FieldValue.serverTimestamp() });
       return { kind: "held", order: { ...order, ...recorded, heldAt: new Date() } };

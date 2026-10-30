@@ -109,6 +109,10 @@ export interface Order {
    *  currency). A held order is never `paid`, never delivered and never
    *  counted as revenue, whatever later events say. */
   heldAt?: Timestamp | FieldValue | Date | null;
+  /** `product_link`: a delivery's claim on the contact step (epoch ms, a
+   *  60 s lease) and its token, so concurrent deliveries create one contact. */
+  contactLinkClaimedAt?: number | null;
+  contactLinkClaimToken?: string | null;
   /** `product_link`: when its `order.paid` events were claimed (once). */
   paidEventsFiredAt?: Timestamp | FieldValue | null;
   /** Set for `product_link`: the order confirmation emailed to the buyer.
