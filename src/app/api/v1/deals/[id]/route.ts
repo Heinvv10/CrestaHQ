@@ -167,6 +167,7 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
     mode: ctx.mode,
     deal: wire,
     events,
+    actorUid: `apikey:${ctx.keyPrefix}`,
   });
 
   return apiOk(ctx, { deal: wire });
@@ -189,6 +190,7 @@ export const DELETE = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
     mode: ctx.mode,
     deal: serializeDealForApi(snap.id, existing, ctx.mode),
     events: [{ type: "deal.deleted" }],
+    actorUid: `apikey:${ctx.keyPrefix}`,
   });
   return apiOk(ctx, { id: params.id, object: "deal", deleted: true });
 });

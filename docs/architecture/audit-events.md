@@ -86,6 +86,8 @@ field:
 | `workflow.status_changed` | `status`, `keyLevel` | `status`: `draft`, `active`, `paused`. `keyLevel` (agent writes only, actor `api_key`): `sub-account` or `agency` |
 | `member.role_changed` | `role` | `admin`, `collaborator` |
 | `agent.write` | `capability`, `keyPrefix`, `keyLevel` | `capability`, `keyPrefix`: `"identifier"`, a code identifier (`[A-Za-z0-9_]{1,64}`), anything else redacted. `keyLevel`: `sub-account` or `agency` (an agency key is not in the sub-account's own key list). Every `args.*` field is redacted: the row records which args were set, never their values |
+| `calendar_import.workspace_changed` | `calendarImportAllowed` | `true`, `false` (a sub-account admin's Google Calendar import switch; target the sub-account) |
+| `usage_rebilling.updated` | `usageRebillingEnabled` | `true`, `false`. Target `agency` (agency-level, `subAccountId: null`) for the master switch, `subAccount` for a client's switch |
 | `review.auto_replied` | none | No changes are recorded (an empty list): the row says THAT an automatic reply was posted to the target review, never its text |
 
 An action can also declare a field as `"staffUid"`, for a field that holds a staff

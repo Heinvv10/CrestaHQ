@@ -91,7 +91,7 @@ export const TASK_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       const extra: Record<string, unknown> = { ...agentEditStamp(agentActor(ctx, "update_task")) };
       // The task's territory follows its contact, as the Tasks page sets it.
       if (patch.contactId !== undefined) extra.territoryId = await territoryForContact(patch.contactId);
-      const result = await patchTaskServerSide({ taskId: task.id, subAccountId: ctx.subAccountId!, agencyId: ctx.agencyId, patch, extra });
+      const result = await patchTaskServerSide({ taskId: task.id, subAccountId: ctx.subAccountId!, agencyId: ctx.agencyId, patch, extra, actorUid: ctx.uid });
       if (!result.ok) throw new CapabilityUserError(NOT_FOUND[result.code]);
       return { resultText: "Updated the task.", ref: { kind: "task", id: task.id } };
     },

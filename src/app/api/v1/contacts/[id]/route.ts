@@ -196,6 +196,7 @@ export const DELETE = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
     agencyId: ctx.agencyId,
     mode: ctx.mode,
     type: "contact.deleted",
+    actorUid: `apikey:${ctx.keyPrefix}`,
     payload: {
       contact: { id: params.id, object: "contact", deleted: true },
     },

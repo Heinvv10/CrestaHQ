@@ -132,6 +132,14 @@ export interface CalendarEvent {
    * event a booking for its hosts.
    */
   importOwnerUid?: string | null;
+  /**
+   * Imported events only: "busy" = times only (title "Busy", no place) —
+   * the default; "details" = the owner chose to share titles and places
+   * with the workspace. Never descriptions, guests or links in either.
+   */
+  importMode?: "busy" | "details";
+  /** Imported events only: a Google all-day event (midnight to midnight in its calendar's zone). */
+  allDay?: boolean;
   /** SEQUENCE of the last invite update sent; see `nextIcsSequence`. */
   icsSequence?: number;
   /**

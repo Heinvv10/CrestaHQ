@@ -411,6 +411,21 @@ export async function emitQuoteWebhook(
           declined_at: tsToIsoOrNull(quote.declinedAt),
           decline_reason: quote.declineReason ?? null,
           paid_at: tsToIsoOrNull(quote.paidAt),
+          signature: quote.signature
+            ? {
+                signer_name: quote.signature.signerName,
+                signed_at: tsToIsoOrNull(quote.signature.signedAt),
+                document_hash: quote.signature.documentHash,
+                // The signer's address and IP go out once, on the accept
+                // they were recorded for, not on every later event.
+                ...(event === "quote_accepted"
+                  ? {
+                      signer_email: quote.signature.signerEmail,
+                      ip_address: quote.signature.ipAddress,
+                    }
+                  : {}),
+              }
+            : null,
         },
       },
     });
