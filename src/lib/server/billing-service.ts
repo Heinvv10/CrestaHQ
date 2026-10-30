@@ -913,6 +913,9 @@ function serializeCharge(
         : "pending",
     createdAt: tsToIso(data.createdAt),
     paidAt: tsToIso(data.paidAt),
+    kind: data.kind === "usage" ? "usage" : "manual",
+    usageMonth: typeof data.usageMonth === "string" ? data.usageMonth : null,
+    dueAt: tsToIso(data.dueAt),
     extraPaymentCount: Array.isArray(data.extraPaymentRefs) ? data.extraPaymentRefs.length : 0,
   };
 }
@@ -1016,9 +1019,15 @@ export function usageChargeId(subAccountId: string, month: string): string {
 /**
  * Create the month's usage charge at most once; a repeat returns
  * `created: false`. The id is deterministic and the write is `create()`, so
- * two overlapping runs cannot both mint it. Paystack opens a payment page only
- * for an email, so a usage charge with no `payerEmail` is refused HERE, before
- * anything is written, rather than minting a link nobody can pay.
+ * two overlapping runs cannot both mint it. The same amount/description/
+ * currency checks as a manual charge apply (including its ceiling): an
+ * out-of-range charge is refused here and writes nothing. Paystack opens a
+ * payment page only for an email, so a Paystack usage charge with no
+ * `payerEmail` is refused too.
+ *
+ * The charge is born with NO live pay link (`tokenHash: null`) and no stored
+ * URL: the raw token exists only in the email it is sent in, minted when that
+ * email goes out (`mintChargeCheckoutLink`), like any re-sent link.
  */
 export async function createUsageCharge(input: {
   agencyId: string;
@@ -1030,7 +1039,7 @@ export async function createUsageCharge(input: {
   lineItems: UsageChargeLine[];
   dueAt: Date;
   payerEmail: string | null;
-}): Promise<{ created: boolean; chargeId: string; checkoutUrl: string | null }> {
+}): Promise<{ created: boolean; chargeId: string }> {
   const provider = getBillingProvider();
   if (!provider.isConfigured()) {
     throw new BillingError(
@@ -1038,6 +1047,7 @@ export async function createUsageCharge(input: {
       503,
     );
   }
+  const valid = validateChargeInput(input.description, input.amountCents, input.currency);
   if (provider.id === "paystack" && !input.payerEmail) {
     throw new BillingError(
       "Paystack needs an email to open a payment page — set this workspace's account contact first.",
@@ -1047,20 +1057,15 @@ export async function createUsageCharge(input: {
   await getSubInAgencyOrThrow(input.agencyId, input.subAccountId);
   const chargeId = usageChargeId(input.subAccountId, input.month);
   const ref = chargesCollection().doc(chargeId);
-  const { token, hash } = issueChargeToken(chargeId);
-  const checkoutUrl = buildChargeCheckoutUrl(token);
-  if (!checkoutUrl) {
-    throw new BillingError("NEXT_PUBLIC_APP_URL isn't configured, so no pay link can be built.", 503);
-  }
   const doc: Omit<BillingChargeDoc, "createdAt" | "paidAt" | "updatedAt"> = {
     id: chargeId,
     agencyId: input.agencyId,
     subAccountId: input.subAccountId,
-    description: input.description,
-    amountCents: input.amountCents,
-    currency: input.currency,
+    description: valid.description,
+    amountCents: valid.amountCents,
+    currency: valid.currency,
     status: "pending",
-    tokenHash: hash,
+    tokenHash: null,
     stripeCheckoutSessionId: null,
     stripePaymentIntentId: null,
     createdByUid: "system:usage-close",
@@ -1068,7 +1073,6 @@ export async function createUsageCharge(input: {
     usageMonth: input.month,
     lineItems: input.lineItems,
     dueAt: Timestamp.fromDate(input.dueAt),
-    payUrl: checkoutUrl,
     remindedAt: {},
     emailedTo: null,
   };
@@ -1081,9 +1085,7 @@ export async function createUsageCharge(input: {
     });
   } catch (err) {
     // gRPC ALREADY_EXISTS: an earlier run already minted it.
-    if ((err as { code?: number }).code === 6) {
-      return { created: false, chargeId, checkoutUrl: null };
-    }
+    if ((err as { code?: number }).code === 6) return { created: false, chargeId };
     throw err;
   }
   recordBillingEvent({
@@ -1094,11 +1096,11 @@ export async function createUsageCharge(input: {
       chargeId,
       kind: "usage",
       usageMonth: input.month,
-      amountCents: input.amountCents,
-      currency: input.currency,
+      amountCents: valid.amountCents,
+      currency: valid.currency,
     },
   });
-  return { created: true, chargeId, checkoutUrl };
+  return { created: true, chargeId };
 }
 
 export async function listChargesForSubAccount(
@@ -1145,14 +1147,11 @@ export async function mintChargeCheckoutLink(input: {
     );
   }
   const { token, hash } = issueChargeToken(input.chargeId);
-  const url = buildChargeCheckoutUrl(token);
   await ref.update({
     tokenHash: hash,
-    // Reminders reuse the stored link, so keep it pointing at the live token.
-    ...(data.kind === "usage" ? { payUrl: url || null } : {}),
     updatedAt: FieldValue.serverTimestamp(),
   });
-  return url;
+  return buildChargeCheckoutUrl(token);
 }
 
 /** Void a pending charge: kills the link; paid charges can't be canceled here. */
@@ -1173,7 +1172,6 @@ export async function cancelOneTimeCharge(input: {
   await ref.update({
     status: "canceled" satisfies BillingChargeStatus,
     tokenHash: null,
-    ...(data.kind === "usage" ? { payUrl: null } : {}),
     updatedAt: FieldValue.serverTimestamp(),
   });
   recordBillingEvent({
@@ -1218,11 +1216,19 @@ export async function createChargeCheckoutSession(input: {
     ? readBilling(subSnap.data() as Record<string, unknown>)
     : null;
 
-  // The account contact, else an active non-owner admin (what a usage invoice
-  // is emailed to), so the link that was emailed there can be paid.
-  const payerEmail = subSnap.exists
-    ? await billingRecipient({ ...(subSnap.data() as SubAccountDoc), id: subSnap.id })
+  const contact = subSnap.exists
+    ? ((subSnap.data() as Record<string, unknown>).accountContact as {
+        email?: string | null;
+      } | null)
     : null;
+  // A manual charge keeps the account contact exactly as before. Only a usage
+  // charge on Paystack (the one provider that needs an email) falls back to
+  // the invoice recipient, so the link emailed there can be paid; Stripe never
+  // reaches the members lookup.
+  const payerEmail =
+    subSnap.exists && charge.kind === "usage" && getBillingProvider().id === "paystack"
+      ? await billingRecipient({ ...(subSnap.data() as SubAccountDoc), id: subSnap.id })
+      : (contact?.email ?? null);
 
   const { url, sessionId } = await getBillingProvider().createOneTimeCheckout({
     customerId: billing?.stripeCustomerId ?? null,

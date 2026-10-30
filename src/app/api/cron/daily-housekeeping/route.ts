@@ -59,7 +59,16 @@ const JOBS: Array<[string, () => Promise<unknown>]> = [
   // Closes last month on the first run of a new month (server-local, SAST on
   // velo), then reminds. Idempotent, so the other days only send reminders.
   // Dark: only clients with usage rebilling on, under an agency with it on.
-  ["usage-close", () => runUsageClose()],
+  [
+    "usage-close",
+    async () => {
+      const result = await runUsageClose();
+      // An item that could not be closed, charged or reminded is held and
+      // retried tomorrow; answering 500 names the job, like api-cleanup.
+      if (result.failed > 0) throw new Error(`usage_close_failed: ${result.failed} item(s)`);
+      return result;
+    },
+  ],
 ];
 
 export async function POST(request: Request) {

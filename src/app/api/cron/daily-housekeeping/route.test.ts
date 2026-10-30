@@ -91,6 +91,15 @@ it("a failure in the LAST job still answers 500", async () => {
   expect((await res.json()).failed).toEqual([{ job: "usage-close", message: "boom" }]);
 });
 
+it("a usage close that held items answers 500 naming the job, and a clean one answers 200", async () => {
+  jobs.usageClose.mockResolvedValueOnce({ closed: 1, charged: 0, reminded: 0, failed: 2 });
+  const res = await run();
+  expect(calls).toEqual(ALL);
+  expect(res.status).toBe(500);
+  expect((await res.json()).failed).toEqual([{ job: "usage-close", message: "usage_close_failed: 2 item(s)" }]);
+  expect((await run()).status).toBe(200);
+});
+
 it("verifies the signature against its own URL and runs nothing without one", async () => {
   expect((await run({})).status).toBe(401);
   jobs.verify.mockResolvedValueOnce(false);

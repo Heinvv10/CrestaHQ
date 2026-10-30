@@ -9,6 +9,7 @@ import {
   getEffectiveRates,
 } from "@/lib/server/usage-meter";
 import { usageChargeId } from "@/lib/server/billing-service";
+import { recordBillingEvent } from "@/lib/server/billing-lifecycle";
 import { processPendingCharges, sendDueReminders } from "@/lib/server/usage-billing-dispatch";
 import {
   inPool,
@@ -20,7 +21,7 @@ import {
 import {
   formatUsageMonth,
   monthBefore,
-  monthEndExclusive,
+  monthStart,
   previousMonthKey,
   USAGE_MIN_CHARGE_CENTS,
 } from "@/lib/billing/usage";
@@ -41,8 +42,10 @@ import type { UsageMonthDoc, UsageUnit } from "@/types/usage";
  * Not here (G3): the overdue flag on the sub-account and the banner/paywall.
  */
 
-/** How far back an amount below the minimum can still be carried from. */
+/** How far back to look for the last billed month. */
 const CARRY_LOOKBACK_MONTHS = 12;
+/** A carry older than this many months before the one closing is never applied. */
+const CARRY_MAX_AGE_MONTHS = 2;
 
 const UNIT_LABEL: Record<UsageUnit, string> = {
   emailsSent: "Emails",
@@ -54,7 +57,10 @@ const UNIT_LABEL: Record<UsageUnit, string> = {
 
 /**
  * Sub-minimum amount carried into `month` from the last billed month before
- * it, stepping over skipped months so a gap can't lose it.
+ * it, stepping over skipped and empty months so a gap can't lose it. A carry
+ * is applied only from one of the two months before `month`, and only in the
+ * same currency; otherwise it is NOT applied, a warning names the amount, and
+ * it stays recorded as `carryOutCents` on that month's ledger doc.
  */
 export async function carriedInFor(
   subAccountId: string,
@@ -71,9 +77,19 @@ export async function carriedInFor(
       | { closed?: UsageClosedSnapshot }
       | undefined)?.closed;
     if (!closed || closed.skipped) continue;
-    return closed.currency === currency
-      ? { cents: Math.max(0, closed.carryOutCents ?? 0), fromMonth: m }
-      : { cents: 0, fromMonth: null };
+    const cents = Math.max(0, closed.carryOutCents ?? 0);
+    if (cents === 0) return { cents: 0, fromMonth: null };
+    const why =
+      closed.currency !== currency
+        ? `currency ${closed.currency} is not ${currency}`
+        : i >= CARRY_MAX_AGE_MONTHS
+          ? `it is from ${m}, older than ${CARRY_MAX_AGE_MONTHS} months`
+          : null;
+    if (why) {
+      console.warn(`[usage-close] carry of ${cents} not applied sa=${subAccountId} month=${month}: ${why}`);
+      return { cents: 0, fromMonth: null };
+    }
+    return { cents, fromMonth: m };
   }
   return { cents: 0, fromMonth: null };
 }
@@ -104,6 +120,11 @@ export async function runUsageClose(now: Date = new Date()): Promise<{
   };
 }
 
+type FreezeOutcome =
+  | { kind: "already" }
+  | { kind: "skipped"; agencyId: string; reason: string }
+  | { kind: "frozen"; agencyId: string; totalCents: number; currency: string; chargeId: string | null };
+
 /** Freeze `month` for one client once, queueing its charge in the same write. */
 export async function freezeMonthForSubAccount(input: {
   sub: SubAccountDoc;
@@ -116,33 +137,42 @@ export async function freezeMonthForSubAccount(input: {
   if ((await ref.get()).data()?.closed) return false;
 
   const [quotas, rates] = await Promise.all([getEffectiveQuotas(sub.id, sub), getEffectiveRates(sub.id, sub)]);
-  const monthEnd = monthEndExclusive(month).getTime();
+  const monthStartMs = monthStart(month).getTime();
   const currency = usageCurrency(sub.billing).toLowerCase();
 
-  return db.runTransaction(async (tx) => {
+  const outcome = await db.runTransaction(async (tx): Promise<FreezeOutcome> => {
     const [snap, subSnap] = await Promise.all([tx.get(ref), tx.get(db.doc(`subAccounts/${sub.id}`))]);
     const usage = (snap.data() as (UsageMonthDoc & { closed?: UsageClosedSnapshot }) | undefined) ?? {};
-    if (usage.closed) return false;
+    if (usage.closed) return { kind: "already" };
     const fresh = subSnap.data() ?? {};
     const agencyId = typeof fresh.agencyId === "string" ? fresh.agencyId : "";
     const agency = agencyId ? (await tx.get(db.doc(`agencies/${agencyId}`))).data() : undefined;
 
-    // Only a month during which both switches were already on is billed. A
-    // switch turned off and on again after the month ended counts as off.
-    const onBeforeEnd = (since: unknown) => {
+    // Only a month that STARTED with both switches already on is billed: a
+    // client enabled mid-month is billed from its first full month, and a
+    // switch turned off and on again during the month does not bill it. The
+    // `since` stamp must be readable and at or before the month's start; an
+    // unreadable or missing one with the switch on fails closed.
+    const startedOn = (since: unknown) => {
       const ms = toMillis(since);
-      return ms === null || ms < monthEnd;
+      return ms !== null && ms <= monthStartMs;
     };
-    const billable =
-      agency?.usageRebillingEnabled === true &&
-      fresh.usageRebillingEnabled === true &&
-      onBeforeEnd(agency.usageRebillingSince) &&
-      onBeforeEnd(fresh.usageRebillingSince);
+    const skipReason =
+      agency?.usageRebillingEnabled !== true
+        ? "agency_off"
+        : fresh.usageRebillingEnabled !== true
+          ? "client_off"
+          : !startedOn(agency.usageRebillingSince)
+            ? "agency_switched_on_after_month_start"
+            : !startedOn(fresh.usageRebillingSince)
+              ? "client_switched_on_after_month_start"
+              : null;
 
-    if (!billable) {
+    if (skipReason) {
       const skipped: UsageClosedSnapshot = {
         at: FieldValue.serverTimestamp(),
         skipped: true,
+        skippedReason: skipReason,
         totalCents: 0,
         currency,
         lineItems: [],
@@ -153,7 +183,7 @@ export async function freezeMonthForSubAccount(input: {
         chargeId: null,
       };
       tx.set(ref, { closed: skipped }, { merge: true });
-      return true;
+      return { kind: "skipped", agencyId, reason: skipReason };
     }
 
     const carry = await carriedInFor(sub.id, month, currency, (r) => tx.get(r));
@@ -197,7 +227,20 @@ export async function freezeMonthForSubAccount(input: {
       const pending: PendingChargeDoc = { subAccountId: sub.id, month, createdAt: FieldValue.serverTimestamp() };
       tx.set(db.doc(`${PENDING_COLLECTION}/${chargeId}`), pending);
     }
-    return true;
+    return { kind: "frozen", agencyId, totalCents, currency, chargeId };
   });
+
+  if (outcome.kind === "already") return false;
+  // Audited after the commit (a retried transaction would repeat it).
+  recordBillingEvent({
+    agencyId: outcome.agencyId,
+    subAccountId: sub.id,
+    event: outcome.kind === "skipped" ? "usage.skipped" : "usage.frozen",
+    detail:
+      outcome.kind === "skipped"
+        ? { month, reason: outcome.reason }
+        : { month, totalCents: outcome.totalCents, currency: outcome.currency, chargeId: outcome.chargeId },
+  });
+  return true;
 }
 

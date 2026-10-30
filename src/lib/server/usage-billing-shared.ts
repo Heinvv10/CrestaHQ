@@ -15,6 +15,7 @@ export interface UsageClosedSnapshot {
   at: FieldValue | { toMillis(): number };
   /** Not billed (client or agency not rebilled at close, or switched on after the month). */
   skipped?: boolean;
+  skippedReason?: string;
   totalCents: number;
   currency: string;
   lineItems: UsageChargeLine[];

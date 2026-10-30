@@ -294,8 +294,6 @@ export interface BillingChargeDoc {
   /** Itemized breakdown shown in the invoice email. */
   lineItems?: UsageChargeLine[];
   dueAt?: Timestamp | FieldValue | Date | null;
-  /** Pay link kept for reminders so they don't rotate the link in the first email. */
-  payUrl?: string | null;
   /** Reminder stamps, one each per charge. */
   remindedAt?: {
     beforeDue?: Timestamp | FieldValue | null;
@@ -332,6 +330,10 @@ export interface BillingChargeResponse {
   paidAt: string | null;
   /** Times it was paid again after being paid (see `extraPaymentRefs`). */
   extraPaymentCount: number;
+  kind: BillingChargeKind;
+  /** "YYYY-MM" a usage charge covers. */
+  usageMonth: string | null;
+  dueAt: string | null;
 }
 
 /**

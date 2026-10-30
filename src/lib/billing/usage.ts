@@ -32,10 +32,10 @@ export function monthBefore(key: string): string {
   return monthKeyOf(y, m - 2);
 }
 
-/** First instant after the month ends (local midnight). */
-export function monthEndExclusive(key: string): Date {
+/** First instant of the month (local midnight). */
+export function monthStart(key: string): Date {
   const [y, m] = key.split("-").map(Number);
-  return new Date(y, m, 1);
+  return new Date(y, m - 1, 1);
 }
 
 /** "YYYY-MM-DD" in server-local time, so reminders key off calendar days, not the second the job ran. */
