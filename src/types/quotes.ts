@@ -78,6 +78,29 @@ export const DECLINE_REASONS = [
 ] as const;
 export type DeclineReason = (typeof DECLINE_REASONS)[number];
 
+export const SIGNER_NAME_MIN = 2;
+export const SIGNER_NAME_MAX = 120;
+
+/**
+ * Typed-name electronic signature recorded inside the accept transaction.
+ * Written once, never edited; the quote locks against edits once it is set so
+ * `documentHash` keeps matching the content the signer saw.
+ */
+export interface QuoteSignature {
+  signerName: string;
+  /** Document number at signing; convert-to-invoice renumbers the doc. */
+  signedAsNumber: string;
+  /** The contact email the quote was sent to. */
+  signerEmail: string | null;
+  signedAt: Timestamp | FieldValue;
+  ipAddress: string | null;
+  userAgent: string | null;
+  /** SHA-256 hex of the canonical document body (lib/quotes/signature.ts). */
+  documentHash: string;
+  /** Lets a later version change the hash recipe without invalidating old records. */
+  hashVersion: 1;
+}
+
 export interface Quote {
   id: string;
 
@@ -166,6 +189,15 @@ export interface Quote {
    *  unlinked — the pre-linkage behavior, unchanged. */
   dealId?: string | null;
 
+  /**
+   * Accepting requires a typed signature. Opt-in per quote (default false);
+   * absent on older docs reads as false, so outstanding links keep one-click
+   * accept. Ignored for invoices.
+   */
+  requireSignature?: boolean;
+  /** Set on a signed accept. Carried onto the invoice on convert. */
+  signature?: QuoteSignature | null;
+
   // ── Lifecycle timestamps ─────────────────────────────────────────
   sentAt: Timestamp | FieldValue | null;
   viewedAt: Timestamp | FieldValue | null;
@@ -238,6 +270,8 @@ export const DEFAULT_QUOTE: Omit<
   paymentDueDays: null,
   autoCreateDealOnAccept: true,
   dealId: null,
+  requireSignature: false,
+  signature: null,
   sentAt: null,
   viewedAt: null,
   acceptedAt: null,
@@ -260,6 +294,13 @@ export interface QuoteRespondPayload {
   reason?: DeclineReason;
   /** Required when reason === "Other". Optional otherwise. */
   note?: string;
+  /** Required for accept when the quote requires a signature. */
+  signerName?: string;
+  /** Must be true for a signed accept. */
+  agreedToTerms?: boolean;
+  /** Required for a signed accept: computeQuoteDocumentHash of the content
+   *  the page rendered, so the signature binds to what the signer saw. */
+  documentHash?: string;
 }
 
 /** See `Quote.paidVia`. */

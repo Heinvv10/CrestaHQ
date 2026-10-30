@@ -83,6 +83,7 @@ export async function POST(
       kind: "invoice",
       quoteNumber: invoiceNumber,
       status: "draft",
+      paymentDueDays: quote.paymentDueDays ?? 7,
       publicTokenHash: "",
       sentAt: null,
       viewedAt: null,

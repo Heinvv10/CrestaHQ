@@ -6,6 +6,7 @@ import {
   Clock,
   CreditCard,
   Download,
+  FileSignature,
   Loader2,
   ShieldCheck,
   XCircle,
@@ -13,6 +14,7 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -20,18 +22,22 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
 import { computeQuoteTotals } from "@/lib/quotes/calc";
 import { formatCurrency } from "@/lib/format";
+import { computeQuoteDocumentHash } from "@/lib/quotes/signature";
 import { cn } from "@/lib/utils";
 import {
   DECLINE_REASONS,
+  SIGNER_NAME_MAX,
+  SIGNER_NAME_MIN,
   type DeclineReason,
   type QuoteRespondPayload,
 } from "@/types/quotes";
-import type { SerializableQuote } from "@/app/q/[token]/page";
+import type { SerializableQuote } from "@/lib/quotes/public-quote";
 
 /**
  * Recipient-facing quote view rendered inside the public /q/[token]
@@ -87,6 +93,21 @@ export function PublicQuoteView({
   const [respondedAction, setRespondedAction] = useState<
     "accept" | "decline" | null
   >(null);
+  // Typed-name signature. Only quotes can require one; invoices are paid.
+  const requireSignature = !isInvoice && quote.requireSignature === true;
+  const [signerName, setSignerName] = useState("");
+  const [agreed, setAgreed] = useState(false);
+  const [signingOpen, setSigningOpen] = useState(false);
+  // Shown in the banner right after signing, before any refresh.
+  const [justSignedBy, setJustSignedBy] = useState<string | null>(null);
+  const signerDisplay = justSignedBy ?? quote.signature?.signerName ?? null;
+  const signedAtDisplay = quote.signature?.signedAt
+    ? new Date(quote.signature.signedAt).toLocaleDateString("en-GB", {
+        day: "numeric",
+        month: "short",
+        year: "numeric",
+      })
+    : null;
 
   // Invoices have no Accept/Decline path — the only "terminal" state
   // from the recipient's POV is paid. Expired and Pay redirects to
@@ -108,11 +129,21 @@ export function PublicQuoteView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
+      const body = (await res.json().catch(() => ({}))) as { error?: string; signed?: boolean };
       if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
+        // The quote started requiring a signature after this page loaded:
+        // there is no name field to fill in until the page is reloaded.
+        if (res.status === 400 && payload.action === "accept" && !requireSignature) {
+          throw new Error("This quote now needs your signature — refresh the page to sign it.");
+        }
         throw new Error(body.error ?? `Failed (HTTP ${res.status})`);
       }
       setRespondedAction(payload.action);
+      // Only when the server says it recorded a signature: a quote whose
+      // requirement was switched off after load accepts without one.
+      if (body.signed === true && payload.signerName) {
+        setJustSignedBy(payload.signerName);
+      }
       setDeclineOpen(false);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Action failed");
@@ -121,7 +152,35 @@ export function PublicQuoteView({
     }
   };
 
-  const handleAccept = () => handleRespond({ action: "accept" });
+  const handleAccept = async () => {
+    if (!requireSignature) {
+      void handleRespond({ action: "accept" });
+      return;
+    }
+    if (!signingOpen) {
+      setSigningOpen(true);
+      return;
+    }
+    const name = signerName.replace(/\s+/g, " ").trim();
+    if (name.length < SIGNER_NAME_MIN || name.length > SIGNER_NAME_MAX) {
+      setError("Type your full name to sign.");
+      return;
+    }
+    if (!agreed) {
+      setError("Tick the box to confirm you agree to the terms.");
+      return;
+    }
+    let documentHash: string;
+    try {
+      // Of the content this page rendered: the server refuses the signature
+      // if the quote has changed since.
+      documentHash = await computeQuoteDocumentHash(quote);
+    } catch {
+      setError("This browser can't sign here — try another browser, or ask the sender.");
+      return;
+    }
+    void handleRespond({ action: "accept", signerName: name, agreedToTerms: true, documentHash });
+  };
 
   /**
    * Payments v1 (Phase B) — hand off to Stripe's hosted Checkout. The amount
@@ -177,6 +236,8 @@ export function PublicQuoteView({
           expired={expired}
           respondedAction={respondedAction}
           kind={quote.kind}
+          signedBy={signerDisplay}
+          signedAt={signedAtDisplay}
         />
       )}
 
@@ -393,37 +454,87 @@ export function PublicQuoteView({
               </div>
             </div>
           ) : (
-            <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <p className="text-sm text-muted-foreground">
-                Ready to proceed? Accept the quote and the team will be in
-                touch with next steps.
-              </p>
-              <div className="flex flex-col-reverse items-stretch gap-2 sm:flex-row sm:items-center">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setDeclineOpen(true)}
-                  disabled={busy !== null}
-                >
-                  Decline
-                </Button>
-                <Button
-                  type="button"
-                  onClick={handleAccept}
-                  disabled={busy !== null}
-                >
-                  {busy === "accept" ? (
-                    <>
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Accepting…
-                    </>
-                  ) : (
-                    <>
-                      <CheckCircle2 className="h-4 w-4" />
-                      Accept this quote
-                    </>
-                  )}
-                </Button>
+            <div className="space-y-4">
+              {requireSignature && signingOpen && (
+                <div className="space-y-3 rounded-lg border bg-muted/30 p-4">
+                  <p className="flex items-center gap-1.5 text-sm font-medium">
+                    <FileSignature className="h-4 w-4" />
+                    Sign to accept
+                  </p>
+                  <div>
+                    <Label
+                      htmlFor="signer-name"
+                      className="text-xs uppercase tracking-wider text-muted-foreground"
+                    >
+                      Your full name
+                    </Label>
+                    <Input
+                      id="signer-name"
+                      value={signerName}
+                      onChange={(e) => setSignerName(e.target.value)}
+                      maxLength={SIGNER_NAME_MAX}
+                      autoComplete="name"
+                      placeholder="Type your full name"
+                      className="mt-1 max-w-md"
+                    />
+                  </div>
+                  <div className="flex items-start gap-3">
+                    <Checkbox
+                      id="agree-terms"
+                      checked={agreed}
+                      onCheckedChange={(c) => setAgreed(c === true)}
+                    />
+                    <Label htmlFor="agree-terms" className="text-sm font-normal leading-snug">
+                      I have read and agree to{" "}
+                      {quote.termsAndNotes.trim()
+                        ? "the terms & notes above"
+                        : "this quote"}
+                      , and I understand that typing my name is my electronic
+                      signature.
+                    </Label>
+                  </div>
+                </div>
+              )}
+              <div className="flex flex-col items-stretch gap-3 sm:flex-row sm:items-center sm:justify-between">
+                <p className="text-sm text-muted-foreground">
+                  {requireSignature
+                    ? signingOpen
+                      ? "Your name, the time and the document's fingerprint are recorded with your acceptance."
+                      : "Ready to proceed? Sign to accept and the team will be in touch with next steps."
+                    : "Ready to proceed? Accept the quote and the team will be in touch with next steps."}
+                </p>
+                <div className="flex flex-col-reverse items-stretch gap-2 sm:flex-row sm:items-center">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => setDeclineOpen(true)}
+                    disabled={busy !== null}
+                  >
+                    Decline
+                  </Button>
+                  <Button
+                    type="button"
+                    onClick={() => void handleAccept()}
+                    disabled={busy !== null}
+                  >
+                    {busy === "accept" ? (
+                      <>
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        {requireSignature ? "Signing…" : "Accepting…"}
+                      </>
+                    ) : requireSignature ? (
+                      <>
+                        <FileSignature className="h-4 w-4" />
+                        {signingOpen ? "Accept & sign" : "Sign & accept"}
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="h-4 w-4" />
+                        Accept this quote
+                      </>
+                    )}
+                  </Button>
+                </div>
               </div>
             </div>
           )}
@@ -526,11 +637,15 @@ function StatusBanner({
   expired,
   respondedAction,
   kind,
+  signedBy,
+  signedAt,
 }: {
   quoteStatus: SerializableQuote["status"];
   expired: boolean;
   respondedAction: "accept" | "decline" | null;
   kind: SerializableQuote["kind"];
+  signedBy: string | null;
+  signedAt: string | null;
 }) {
   const isInvoice = kind === "invoice";
   if (isInvoice && quoteStatus === "paid") {
@@ -559,6 +674,12 @@ function StatusBanner({
             <p className="text-sm font-semibold text-emerald-700 dark:text-emerald-400">
               Quote accepted — thank you!
             </p>
+            {signedBy && (
+              <p className="mt-1 text-xs text-foreground">
+                Signed by <span className="font-medium">{signedBy}</span>
+                {signedAt ? ` on ${signedAt}` : ""}.
+              </p>
+            )}
             <p className="mt-1 text-xs text-muted-foreground">
               The team will be in touch with next steps. You can close
               this page.
