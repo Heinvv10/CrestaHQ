@@ -30,6 +30,12 @@ const { AI_SUITE_CAPABILITIES } = await import("./capabilities");
 // set_usage_limits are chat-only confirm-gated owner writes.
 // resend_checkout_link hands a payable link out and kills the old ones, so it
 // is agent-only behind the outbound approval and refused in chat.
+//
+// 1.0.54 port T2 (Slack): slack_status is a read on both surfaces;
+// configure_slack_events is a chat-only confirm-gated admin write (the event
+// list only, never the message-text switch); connect_slack is listed in chat
+// only so the assistant can point at the card: it stores a secret and posts,
+// so chatRefusal answers before a card and execute refuses too.
 const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["list_sub_accounts",                         "agency",      "agencyOwner",      true, null],
   ["sub_account_stats",                         "agency",      "agencyOwner",      true, null],
@@ -169,6 +175,9 @@ const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
   ["start_voice_call",                           "sub-account", "subAccountMember",false, ["agent"]],
   ["watchdog_status",                            "sub-account", "subAccountAdmin", true, ["chat", "agent"]],
   ["configure_watchdog",                         "sub-account", "subAccountAdmin", false, ["chat"]],
+  ["slack_status",                               "sub-account", "subAccountAdmin", true, ["chat", "agent"]],
+  ["configure_slack_events",                     "sub-account", "subAccountAdmin", false, ["chat"]],
+  ["connect_slack",                              "sub-account", "subAccountAdmin", false, ["chat"]],
   ["find_contacts_in_sub_account",              "agency",      "agencyOwner",      true, ["chat"]],
   ["find_deals_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],
   ["find_tasks_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],

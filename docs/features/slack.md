@@ -11,8 +11,7 @@
 Ported from upstream LeadStack 1.0.54 (`bceae0fc`), unit E1 of
 `UPSTREAM_PORT_PLAN_1_0_54.md`. One Slack Incoming Webhook URL per sub-account,
 posted to from the webhook event stream. No Slack app, no OAuth, no inbound
-actions. The assistant tools (`slack_status`, `configure_slack_events`,
-`connect_slack`) are a separate unit (T2) and are not here.
+actions. The assistant tools are below ([Assistant tools](#assistant-tools)).
 
 ## Settings card
 
@@ -52,7 +51,31 @@ channel is all it spends.
 - POST and PATCH answer 400 for a body that is not a JSON object, and for an
   `events` that is present but not an array.
 
-All five are `human-only` in `scripts/agent-coverage.json` until T2.
+GET maps to `slack_status` in `scripts/agent-coverage.json`; the other four are
+`human-only`.
+
+## Assistant tools
+
+Unit T2, [capabilities/slack.ts](../../src/lib/ai-suite/capabilities/slack.ts). All
+three need a sub-account admin, as the route does, and none has an agency gate.
+
+- `slack_status` (read; chat and API agents): connected or not, the channel label,
+  the ticked events, whether inbound-message posts carry the text, the last post
+  and last error. Never the URL, not even its last 4 characters. Stored text prints
+  through `oneLine`.
+- `configure_slack_events` (chat only, confirm card): replaces the event list through
+  `updateSlackSettings`, the PATCH route's own function, with the route's
+  `sanitizeSlackEvents`. It cannot touch `includeMessagePreview`: that argument is
+  refused, and `execute` writes `events` only. The message text is the contact's own
+  words going to a third party, so only the card switches it.
+- `connect_slack` (listed in chat only): refused before a card by `chatRefusal`, and
+  `execute` refuses too. It stores a secret and posts a test message, so it is the
+  card's job. The refusal tells the user how to get a URL and where to paste it; a
+  URL passed as an argument adds a note to revoke it, since it has entered the chat.
+  It is allowlisted in `scripts/check-capability-tenancy.mjs` (touches no tenant
+  data, no `getAdminDb`).
+
+NOT runtime-verified, like the rest of the feature.
 
 ## The URL is a secret
 

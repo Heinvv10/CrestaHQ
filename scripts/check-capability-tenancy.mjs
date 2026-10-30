@@ -69,6 +69,10 @@ const EXTERNAL_ONLY = new Map([
     "research_website_reference",
     "Fetches a public external URL via Firecrawl; reads no Firestore data.",
   ],
+  [
+    "connect_slack",
+    "Refuses unconditionally (the webhook URL is a secret that stays on the Slack card); reads and writes nothing.",
+  ],
 ]);
 
 /**

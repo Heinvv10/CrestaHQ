@@ -1022,33 +1022,32 @@
       }
     },
     "api/sub-accounts/[id]/slack:GET": {
-      "exclude": {
-        "category": "human-only",
-        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
-      }
+      "tools": [
+        "slack_status"
+      ]
     },
     "api/sub-accounts/[id]/slack:POST": {
       "exclude": {
         "category": "human-only",
-        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. The assistant can read the status (slack_status) and, in chat only, change the event list; it never connects or disconnects."
       }
     },
     "api/sub-accounts/[id]/slack:PATCH": {
       "exclude": {
         "category": "human-only",
-        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. The assistant can read the status (slack_status) and, in chat only, change the event list; it never connects or disconnects."
       }
     },
     "api/sub-accounts/[id]/slack:DELETE": {
       "exclude": {
         "category": "human-only",
-        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. The assistant can read the status (slack_status) and, in chat only, change the event list; it never connects or disconnects."
       }
     },
     "api/sub-accounts/[id]/slack/test:POST": {
       "exclude": {
         "category": "human-only",
-        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. The assistant can read the status (slack_status) and, in chat only, change the event list; it never connects or disconnects."
       }
     }
   }
