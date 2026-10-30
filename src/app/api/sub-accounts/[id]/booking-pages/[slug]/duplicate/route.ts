@@ -156,6 +156,7 @@ export async function POST(
     redirectUrl: source.redirectUrl ?? null,
     redirectAppendParams: source.redirectAppendParams ?? true,
     remindersEnabled: source.remindersEnabled,
+    smsRemindersEnabled: source.smsRemindersEnabled ?? false,
     reminderOffsetsMinutes: source.reminderOffsetsMinutes,
     payment,
     defaultTerritoryId: source.defaultTerritoryId ?? null,

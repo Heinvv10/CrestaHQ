@@ -201,7 +201,7 @@ export async function runRescheduleSideEffects(args: {
 
   // Re-publish reminder callbacks with a fresh schedule nonce so the
   // QStash dedup key doesn't collapse onto the previous ones.
-  if (page?.remindersEnabled) {
+  if (page?.remindersEnabled || page?.smsRemindersEnabled) {
     await scheduleEventReminders({
       eventId: event.id,
       startAt,
@@ -209,6 +209,7 @@ export async function runRescheduleSideEffects(args: {
       rawToken: newRawToken,
       pendingPayment: eventStatus(event) === "awaiting_payment",
       scheduleNonce: Date.now().toString(36),
+      page,
     });
   }
 

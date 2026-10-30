@@ -17,6 +17,9 @@ import {
   scheduleEventReminders,
 } from "@/lib/booking/lifecycle";
 import { renderBookingConfirmationEmail } from "@/lib/booking/email";
+import { bookingConfirmationSmsBody, sendBookingSms } from "@/lib/booking/sms";
+import { formatHoldUntil } from "@/lib/comms/quiet-hours";
+import { writeHoldActivity } from "@/lib/comms/quiet-hours-hold";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventStatus, isImportedEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
@@ -273,7 +276,7 @@ async function runMarkPaidSideEffects(args: {
 
   // Reminder pipeline + automation activity/trigger run regardless of
   // email send success.
-  if (page?.remindersEnabled && !withheld) {
+  if ((page?.remindersEnabled || page?.smsRemindersEnabled) && !withheld) {
     await scheduleEventReminders({
       eventId: event.id,
       startAt,
@@ -281,6 +284,7 @@ async function runMarkPaidSideEffects(args: {
       rawToken,
       pendingPayment: false,
       scheduleNonce: "paid",
+      page,
     });
   }
 
@@ -312,6 +316,38 @@ async function runMarkPaidSideEffects(args: {
   );
 
   if (withheld) return done(true);
+
+  // The text goes to the contact's phone, which an approver of an agent
+  // mark-paid never reviewed (only the email address is pinned): no
+  // confirmation text then. An operator's own click is not held back.
+  if (page?.smsRemindersEnabled && contact && sub && !expect) {
+    const sms = await sendBookingSms({
+      subAccountId: event.subAccountId,
+      sub,
+      contactId: contact.id,
+      label: "booking confirmation",
+      body: bookingConfirmationSmsBody({
+        recipientName: contact.name ?? "",
+        businessName: sub.name ?? "us",
+        pageName: bookedEventLabel(page, event, startAt, endAt).name,
+        startAt,
+        timezone: page.timezone,
+        meetingUrl,
+        location: where || null,
+        publicEventUrl: buildEventPublicUrl(rawToken),
+      }),
+    });
+    // Not a customer-caused booking, so quiet hours hold it, and a
+    // confirmation that late is dropped rather than parked.
+    if (!sms.sent && sms.reason === "quiet_hours" && sms.hold) {
+      await writeHoldActivity(
+        contact.id,
+        `Booking confirmation text was not sent: it fell in quiet hours (until ${formatHoldUntil(sms.hold)}).`,
+        `bsms_${event.id}_confirm`,
+      );
+    }
+  }
+
   if (!contact || !sub || !emailIsConfigured(sub)) return done(false);
   if (!contact.email || contact.emailOptedOut) return done(false);
 

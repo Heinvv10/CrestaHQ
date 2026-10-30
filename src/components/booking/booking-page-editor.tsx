@@ -166,6 +166,7 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
         redirectUrl: initial.redirectUrl ?? null,
         redirectAppendParams: initial.redirectAppendParams ?? true,
         remindersEnabled: initial.remindersEnabled,
+        smsRemindersEnabled: initial.smsRemindersEnabled ?? false,
         reminderOffsetsMinutes: initial.reminderOffsetsMinutes,
         payment: initial.payment,
         defaultTerritoryId: initial.defaultTerritoryId,
@@ -954,6 +955,30 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
               Two emails per booking: 24 hours before, and 1 hour before.
               Skipped when a booking is cancelled or still awaiting
               payment. Custom offsets are a v1.1 add-on.
+            </p>
+          </div>
+        </label>
+        <label className="flex cursor-pointer items-start gap-3 rounded-lg border bg-background p-3">
+          <input
+            type="checkbox"
+            checked={form.smsRemindersEnabled === true}
+            onChange={(e) => set("smsRemindersEnabled", e.target.checked)}
+            className="mt-0.5 h-4 w-4 cursor-pointer"
+          />
+          <div>
+            <p className="text-sm font-medium">
+              Text confirmation and reminders
+            </p>
+            <p className="text-xs text-muted-foreground">
+              A text when the booking is confirmed, plus one at each
+              reminder time (the same times as the emails). Sent from this
+              workspace&apos;s SMS number (Settings → SMS), or
+              the shared sender if your agency allows it; each text is
+              billed by Twilio. Contacts with no phone number or who
+              replied STOP are skipped. A reminder that falls in your
+              quiet hours waits until they end, and is dropped if that is
+              after the appointment starts. Bookings made by phone with
+              the AI voice agent don&apos;t get texts.
             </p>
           </div>
         </label>

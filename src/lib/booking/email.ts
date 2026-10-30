@@ -61,7 +61,7 @@ export interface RenderedEmail {
 }
 
 /** Format a UTC instant in the page's timezone, e.g. "Tue, 30 May 2026 · 14:00 AEST". */
-function formatStartLocal(startAt: Date, tz: string): string {
+export function formatStartLocal(startAt: Date, tz: string): string {
   const fmt = new Intl.DateTimeFormat(undefined, {
     timeZone: tz,
     weekday: "short",

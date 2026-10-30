@@ -49,6 +49,7 @@ import {
 } from "@/lib/booking/event-token";
 import { generateIcs } from "@/lib/booking/ics";
 import { reconcileBookingContact } from "@/lib/booking/contact-reconcile";
+import { bookingConfirmationSmsBody, sendBookingSms } from "@/lib/booking/sms";
 import {
   emitBookingWebhook,
   fireBookingTrigger,
@@ -536,6 +537,7 @@ export async function POST(
   }
 
   // ── Post-write side effects (best-effort) ──────────────────────
+  const bookedAt = new Date();
   const publicEventUrl = buildEventPublicUrl(created.rawToken);
   const appHost =
     process.env.NEXT_PUBLIC_APP_URL?.replace(/^https?:\/\//, "")
@@ -732,15 +734,39 @@ export async function POST(
     confirmationWritten();
   }
 
+  // The customer's own booking: its confirmation text is exempt from quiet
+  // hours for a few minutes. Holds get their text at mark-paid instead,
+  // alongside the confirmation email.
+  if (page.smsRemindersEnabled && !paymentRequired) {
+    await sendBookingSms({
+      subAccountId: saId,
+      sub,
+      contactId: created.contactId,
+      label: "booking confirmation",
+      selfTriggeredBookingAt: bookedAt,
+      body: bookingConfirmationSmsBody({
+        recipientName: name,
+        businessName: sub.name ?? "us",
+        pageName: bookedName,
+        startAt: slotStart,
+        timezone: page.timezone,
+        meetingUrl,
+        location: bookerLocation || null,
+        publicEventUrl,
+      }),
+    });
+  }
+
   // Reminder schedule (no-op when payment is pending — gets scheduled
   // on mark-paid in Slice 8).
-  if (page.remindersEnabled) {
+  if (page.remindersEnabled || page.smsRemindersEnabled) {
     await scheduleEventReminders({
       eventId: created.eventDocRef.id,
       startAt: slotStart,
       reminderOffsetsMinutes: page.reminderOffsetsMinutes,
       rawToken: created.rawToken,
       pendingPayment: paymentRequired,
+      page,
     });
   }
 

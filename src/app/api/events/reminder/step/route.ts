@@ -17,6 +17,7 @@ import {
   hashEventToken,
 } from "@/lib/booking/event-token";
 import { renderBookingReminderEmail } from "@/lib/booking/email";
+import { deliverReminderSms, type ReminderChannels } from "@/lib/booking/sms-reminder";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
 import { eventStatus, eventOccupiesSlot, isImportedEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
@@ -25,7 +26,8 @@ import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
 
 /**
- * QStash callback for a single reminder dispatch. Scheduled at booking
+ * QStash callback for a single reminder dispatch (email and/or text, per
+ * the page's live toggles). Scheduled at booking
  * time by `scheduleEventReminders()` (or at mark-paid for previously
  * payment-pending events). Security: QStash signature verification.
  *
@@ -44,12 +46,21 @@ import type { SubAccountDoc } from "@/types/tenancy";
  * A send failure that a retry could fix releases the claim and answers
  * 503 so QStash retries; a suppressed address or a refused recipient
  * keeps the claim and answers 200 — retrying cannot help.
+ *
+ * The text has its own claim and never answers 503 (a text twice is worse
+ * than none). A text held by quiet hours is published again for the end of
+ * the window with `smsOnly` (the email already went), or dropped when the
+ * window ends after the start — see lib/booking/sms-reminder.ts.
  */
 
 interface ReminderBody {
   eventId?: string;
   offsetMinutes?: number;
   token?: string;
+  /** Channel snapshot from scheduling time; absent on older callbacks. */
+  channels?: ReminderChannels;
+  /** Set by a quiet-hours republish: the email was already handled. */
+  smsOnly?: boolean;
 }
 
 export async function POST(request: Request) {
@@ -139,13 +150,7 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, skipped: "tenancy_missing" });
   }
   const contact = contactSnap.data() as Contact;
-  if (!contact.email || contact.emailOptedOut) {
-    return NextResponse.json({ ok: true, skipped: "opt_out_or_no_email" });
-  }
   const sub = subSnap.data() as SubAccountDoc;
-  if (!emailIsConfigured(sub)) {
-    return NextResponse.json({ ok: true, skipped: "email_not_configured" });
-  }
 
   // Booking-page may have been deleted since the schedule landed. Fall
   // back to event-level defaults so the reminder still sends sensibly.
@@ -153,6 +158,41 @@ export async function POST(request: Request) {
   const endAt = (
     event.endAt as { toDate?: () => Date } | null
   )?.toDate?.() ?? new Date(startAt.getTime() + 30 * 60_000);
+
+  // Live page toggles win, so switching a channel off stops reminders already
+  // scheduled. A deleted page falls back to the snapshot taken at scheduling,
+  // then (older callbacks with no snapshot) to email only.
+  const snap = body.channels;
+  const emailOn =
+    body.smsOnly !== true &&
+    (page ? page.remindersEnabled !== false : (snap?.email ?? true));
+  const smsOn = page ? page.smsRemindersEnabled === true : snap?.sms === true;
+
+  let smsResult: string | undefined;
+  if (smsOn) {
+    smsResult = await deliverReminderSms({
+      event,
+      eventId,
+      offsetMinutes,
+      token,
+      sub,
+      page,
+      channels: snap,
+      startAt,
+      endAt,
+    });
+  }
+  const withSms = smsResult === undefined ? {} : { sms: smsResult };
+
+  if (!emailOn) {
+    return NextResponse.json({ ok: true, ...withSms, email: "disabled" });
+  }
+  if (!contact.email || contact.emailOptedOut) {
+    return NextResponse.json({ ok: true, ...withSms, skipped: "opt_out_or_no_email" });
+  }
+  if (!emailIsConfigured(sub)) {
+    return NextResponse.json({ ok: true, ...withSms, skipped: "email_not_configured" });
+  }
 
   const rendered = renderBookingReminderEmail(
     {
@@ -231,5 +271,5 @@ export async function POST(request: Request) {
     }
   }
 
-  return NextResponse.json({ ok: true });
+  return NextResponse.json({ ok: true, ...withSms });
 }

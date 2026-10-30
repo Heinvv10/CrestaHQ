@@ -11,6 +11,7 @@ import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
 import type { ActivityType } from "@/types/contacts";
 import type { WebhookEventType } from "@/types/webhooks";
 import type { AutomationTriggerType } from "@/types";
+import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import { runAfterResponse } from "@/lib/server/after-response";
 
@@ -280,6 +281,14 @@ export async function scheduleEventReminders(input: {
    * already-published ones for the previous slot.
    */
   scheduleNonce?: string;
+  /**
+   * The page's channel toggles at scheduling time. The step reads the live
+   * page first; this snapshot only decides what to send if the page is gone.
+   */
+  page?: Pick<
+    BookingPage,
+    "remindersEnabled" | "smsRemindersEnabled" | "name" | "timezone"
+  > | null;
 }): Promise<void> {
   if (input.pendingPayment) return;
   if (input.reminderOffsetsMinutes.length === 0) return;
@@ -304,6 +313,16 @@ export async function scheduleEventReminders(input: {
         eventId: input.eventId,
         offsetMinutes: offsetMin,
         token: input.rawToken,
+        ...(input.page
+          ? {
+              channels: {
+                email: input.page.remindersEnabled !== false,
+                sms: input.page.smsRemindersEnabled === true,
+                pageName: input.page.name,
+                timezone: input.page.timezone,
+              },
+            }
+          : {}),
       },
       delaySeconds,
       deduplicationId: `evt_reminder_${input.eventId}_${offsetMin}${nonceSuffix}`,

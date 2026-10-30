@@ -69,7 +69,8 @@ async function paidPlan(event: CalendarEvent) {
   else if (!contact.email) why = "the contact has no email address.";
   else if (contact.emailOptedOut) why = "the contact has opted out of email.";
   const emailTo = why ? null : contact!.email!;
-  const reminders = runs && page?.remindersEnabled ? [...(page.reminderOffsetsMinutes ?? [])] : null;
+  const reminders = runs && (page?.remindersEnabled || page?.smsRemindersEnabled) ? [...(page.reminderOffsetsMinutes ?? [])] : null;
+  const textsOn = !!reminders && page?.smsRemindersEnabled === true;
   const started = runs ? workflows : [];
   const tz = typeof sub?.timezone === "string" && sub.timezone ? sub.timezone : "UTC";
   const rows: PreviewRow[] = [
@@ -80,7 +81,13 @@ async function paidPlan(event: CalendarEvent) {
       label: "Confirmation email",
       value: emailTo ? `Sent to ${oneLine(contact!.name) || "(unnamed)"} (${masked("email", emailTo)}) with a calendar invite and a new manage link` : `None: ${why}`,
     },
-    { label: "Reminders", value: reminders?.length ? `Scheduled ${reminders.map((m) => `${m} min`).join(", ")} before the start, as the booking page sets` : "None" },
+    {
+      label: "Reminders",
+      value: reminders?.length
+        ? `Scheduled ${reminders.map((m) => `${m} min`).join(", ")} before the start, as the booking page sets${textsOn ? " (the page also texts them to the contact's phone, unlike the confirmation)" : ""}`
+        : "None",
+    },
+    ...(page?.smsRemindersEnabled ? [{ label: "Confirmation text", value: "None: a text goes to the contact's phone, which an approval does not review" }] : []),
     { label: "Workflows that start", value: started.map((w) => `${w.name} (${w.id})`).join(", ") || "none" },
     { label: "Then", value: "The booking is confirmed: its payment hold stops expiring, the payment is recorded on the contact's timeline, and the old link in the payment email stops working." },
   ];

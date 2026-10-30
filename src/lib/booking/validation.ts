@@ -677,6 +677,12 @@ export function validateRemindersEnabled(input: unknown): Validated<boolean> {
   return { ok: false, error: "Reminders toggle must be true or false." };
 }
 
+export function validateSmsRemindersEnabled(input: unknown): Validated<boolean> {
+  if (input === undefined || input === null) return { ok: true, value: false };
+  if (typeof input === "boolean") return { ok: true, value: input };
+  return { ok: false, error: "Text reminders toggle must be true or false." };
+}
+
 export function validateReminderOffsets(
   input: unknown,
 ): Validated<number[]> {
@@ -992,6 +998,8 @@ export function validateBookingPageFormData(
   if (!redirectAppendParams.ok) return redirectAppendParams;
   const remindersEnabled = validateRemindersEnabled(b.remindersEnabled);
   if (!remindersEnabled.ok) return remindersEnabled;
+  const smsRemindersEnabled = validateSmsRemindersEnabled(b.smsRemindersEnabled);
+  if (!smsRemindersEnabled.ok) return smsRemindersEnabled;
   const reminderOffsetsMinutes = validateReminderOffsets(
     b.reminderOffsetsMinutes,
   );
@@ -1035,6 +1043,7 @@ export function validateBookingPageFormData(
       redirectUrl: redirectUrl.value,
       redirectAppendParams: redirectAppendParams.value,
       remindersEnabled: remindersEnabled.value,
+      smsRemindersEnabled: smsRemindersEnabled.value,
       reminderOffsetsMinutes: reminderOffsetsMinutes.value,
       payment: payment.value,
       defaultTerritoryId: defaultTerritoryId.value,
