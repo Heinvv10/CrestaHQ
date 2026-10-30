@@ -389,6 +389,8 @@ describe("a pile of buys on a replaced key cannot push another workspace out", (
   };
   const AT = new Date(NOW.getTime() + 30 * HOUR);
 
+  beforeEach(() => mem.seed(`subAccounts/${SA}/subAccountMembers/a1`, { role: "admin", status: "active", email: "admin@example.com" }));
+
   it("1200 buys, the key changed and flagged, the sweep at +30 h: the other workspace's abandoned buy still expires on that run", async () => {
     seedSub(OTHER_SA, OTHER_KEY);
     pile(1200, SA);
@@ -416,6 +418,15 @@ describe("a pile of buys on a replaced key cannot push another workspace out", (
     // The whole pile left the open read in one go.
     expect(attempt(1)).toMatchObject({ state: "flagged" });
     expect(attempt(1200)).toMatchObject({ state: "flagged" });
+    // Silently: the orders carry the flag for the operator, but no mail per order.
+    expect(order(1)).toMatchObject({ status: "pending", attentionOpen: true });
+    expect(order(1200)).toMatchObject({ attentionOpen: true });
+    expect(sendEmail).not.toHaveBeenCalled();
+    // One error-level line for the workspace, however many attempts.
+    const logged = (console.error as unknown as { mock: { calls: unknown[][] } }).mock.calls.filter(([m]) =>
+      String(m).includes(`sa=${SA}: open buy attempts on a key that is no longer connected`),
+    );
+    expect(logged).toHaveLength(1);
   }, 120_000);
 
   it("the read restarted after flagging asks nothing twice in one run", async () => {

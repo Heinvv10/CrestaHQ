@@ -32,10 +32,13 @@ export function loadPaymentAttempt(reference: string): Promise<PaymentAttempt | 
  * so it goes on the order's `attention`, where the operator and the buyer's
  * thanks page see it. That runs on every call, not only the first: if it
  * failed once, the retry (the attempt is already flagged by then) finishes it.
+ * `notify: false` writes the flags without emailing the admins (a bulk caller
+ * that reports once itself).
  */
 export async function flagPaymentAttempt(
   reference: string,
   reason: (attempt: PaymentAttempt) => string,
+  opts: { notify?: boolean } = {},
 ): Promise<void> {
   const db = getAdminDb();
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
@@ -64,7 +67,7 @@ export async function flagPaymentAttempt(
   const order = orderSnap.exists ? ({ id: orderSnap.id, ...orderSnap.data() } as Order) : null;
   // Money that settled the order is not "lost": a paid order is left alone.
   if (order && order.status !== "paid" && order.status !== "partially_refunded") {
-    await flagOrderAttention(order, flagged.why);
+    await flagOrderAttention(order, flagged.why, opts);
   }
 }
 
@@ -85,6 +88,7 @@ function lostPaymentReason(what: Lost) {
 export async function flagStaleAttempts(
   subAccountId: string,
   currentFingerprint: string | null,
+  opts: { notify?: boolean } = {},
 ): Promise<void> {
   const open = await getAdminDb()
     .collection("paymentAttempts")
@@ -99,7 +103,7 @@ export async function flagStaleAttempts(
   for (const doc of open.docs) {
     if ((doc.data() as PaymentAttempt).keyFingerprint === currentFingerprint) continue;
     try {
-      await flagPaymentAttempt(doc.id, reason);
+      await flagPaymentAttempt(doc.id, reason, opts);
     } catch (err) {
       console.error(`[payment-attempts] sa=${subAccountId} ref=${doc.id} could not be flagged`, err);
       failed.push(doc.id);

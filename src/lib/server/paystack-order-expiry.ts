@@ -148,14 +148,16 @@ export async function expireStalePaystackOrders(
           if (state === "open" && !isPastOrderLifetime(attempt.createdAt, now.getTime(), OLD_KEY_RETIRE_MS)) {
             // An open attempt on a gone key should have been flagged by the
             // connection change (it is, normally). If one was missed, flag all
-            // of this workspace's now, once per run: they leave the open read,
+            // of this workspace's now, once per run, silently (a mail per order
+            // for a pile would be a storm; one error log per workspace says it): they leave the open read,
             // where they would sit until they can be retired and push the other
             // workspaces out of the window.
             if (!healed.has(sa)) {
               healed.add(sa);
               healedThisPage = true;
+              console.error(`[paystack/order-expiry] sa=${sa}: open buy attempts on a key that is no longer connected were never flagged; flagging them now, without emailing per order`);
               try {
-                await flagStaleAttempts(sa, conn ? paystackKeyFingerprint(conn.secretKey) : null);
+                await flagStaleAttempts(sa, conn ? paystackKeyFingerprint(conn.secretKey) : null, { notify: false });
               } catch (err) {
                 summary.writeErrors += 1;
                 console.error(`[paystack/order-expiry] sa=${sa} old-key attempts not flagged: ${err instanceof Error ? err.message : String(err)}`);
