@@ -27,7 +27,8 @@ export type WithheldWhy =
   | "rebilling_switched_off_before_invoice"
   | "invoice could not be sent"
   | "over ceiling"
-  | "no billing email";
+  | "no billing email"
+  | "charge could not be created";
 
 /**
  * The ledger fields for a withheld month. The amount carried INTO the month

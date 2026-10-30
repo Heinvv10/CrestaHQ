@@ -97,7 +97,10 @@ export async function sendDueReminders(
     try {
       await commitChargeLink(doc.id, link.hash);
     } catch (err) {
-      return refusal(err);
+      // Paid or cancelled while the reminder was going out: it was sent and
+      // the stage is used. Done, and quiet (not a refusal).
+      if (!(err instanceof BillingError)) return refusal(err);
+      console.warn(`[usage-close] ${doc.id} is no longer payable after its reminder went out: ${err.message}`);
     }
     sent++;
   });

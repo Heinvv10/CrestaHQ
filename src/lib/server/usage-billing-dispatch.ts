@@ -117,7 +117,19 @@ export async function processPendingCharges(
       lineItems: frozen.lineItems,
       dueAt,
       payerEmail: to,
-    }).catch(held);
+    }).catch(async (err) => {
+      // A refusal that outlives the retry window is withheld, so no month is
+      // ever held for more than a week or so (and a carry restored by a late
+      // withhold cannot miss the next month's close).
+      if (err instanceof BillingError && queuedPastWindow(p, now)) {
+        await withholdMonth("charge could not be created");
+        return refuse(
+          `charge could not be created for ${INVOICE_EMAIL_RETRY_DAYS} days (${err.message}); the month was withheld`,
+          true,
+        );
+      }
+      return held(err);
+    });
     if (created.created) charged++;
 
     const chargeRef = db.doc(`billingCharges/${chargeId}`);
@@ -200,8 +212,13 @@ export async function processPendingCharges(
     try {
       await commitChargeLink(chargeId, link.hash);
     } catch (err) {
-      await release();
-      return held(err);
+      // Paid or cancelled while the email was going out: the email was sent and
+      // the link has nothing left to do. Done, and quiet (not a refusal).
+      if (!(err instanceof BillingError)) {
+        await release();
+        throw err;
+      }
+      console.warn(`[usage-close] ${chargeId} is no longer payable after its invoice went out: ${err.message}`);
     }
     // At-least-once: if this write (or the delete after it) fails, the entry
     // stays queued and the invoice is sent again once the claim times out.
