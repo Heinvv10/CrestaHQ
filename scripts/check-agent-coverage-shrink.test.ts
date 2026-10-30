@@ -165,6 +165,13 @@ describe("check-agent-coverage-shrink CLI", () => {
     const hosted = ci.slice(ci.indexOf("\n  ci:\n"), ci.indexOf("\n  e2e:\n"));
     expect(e2e).toContain(e2eLabel);
     expect(hosted.match(/runs-on: ubuntu-latest/g)).toHaveLength(2);
+    // The draft helpers run before `ci:`; all three are hosted, and the one that
+    // shares E2E's concurrency group must carry the same-repo fork guard.
+    const helpers = ci.slice(ci.indexOf("\njobs:\n"), ci.indexOf("\n  ci:\n"));
+    expect(helpers.match(/runs-on: ubuntu-latest/g)).toHaveLength(3);
+    expect(helpers).not.toContain("runs-on: [self-hosted");
+    const e2eHelper = helpers.slice(helpers.indexOf("\n  replace_pending_e2e_on_draft:"));
+    expect(e2eHelper).toContain("github.event.pull_request.head.repo.full_name == github.repository");
     expect(hosted).not.toContain("runs-on: [self-hosted");
     // The self-hosted runner has no sudo, so --with-deps (an apt step) must stay off these jobs.
     expect(e2e).not.toMatch(/install --with-deps/);

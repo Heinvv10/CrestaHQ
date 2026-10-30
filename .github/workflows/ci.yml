@@ -32,9 +32,12 @@ jobs:
     steps:
       - run: echo "cancelled superseded secret scan for draft PR"
 
+  # Hosted on purpose: a concurrency group cancels pending work whatever runner
+  # it was queued for, so this still displaces a pending E2E job, and a fork
+  # PR's draft event never reaches the self-hosted box (same-repo guard).
   replace_pending_e2e_on_draft:
-    if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
-    runs-on: [self-hosted, linux, velo, crestahq]
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
     concurrency:
       group: ci-e2e-${{ github.ref }}
       cancel-in-progress: false
