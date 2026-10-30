@@ -98,6 +98,8 @@ export async function openPaystackAttempt(
       agencyId: order.agencyId as string,
       subAccountId: order.subAccountId as string,
       createdByUid,
+      // "" and not null: `recheckStaleAutoCharges` (auto-charge-stale-sweep.ts)
+      // queries `paymentLinkId == null`, and abandoned buys would fill its page.
       paymentLinkId: "",
       orderId,
       amountCents: order.totalCents as number,
