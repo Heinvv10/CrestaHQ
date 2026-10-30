@@ -72,18 +72,52 @@ export function reason(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export async function inPool<T>(items: T[], fn: (item: T) => Promise<void>): Promise<number> {
+/**
+ * A PERMANENT refusal: retrying changes nothing until someone fixes the cause
+ * (Paystack with no email to open a payment page for, an amount over the
+ * ceiling, the provider or app URL not configured). Held and retried each day,
+ * but reported in the result rather than as a failure, so the housekeeping job
+ * does not answer 500 and have QStash re-run everything forever.
+ */
+export class UsageChargeRefused extends Error {
+  readonly subAccountId: string;
+  readonly month: string;
+  constructor(subAccountId: string, month: string, message: string) {
+    super(message);
+    this.name = "UsageChargeRefused";
+    this.subAccountId = subAccountId;
+    this.month = month;
+  }
+}
+
+export interface UsageRefusal {
+  subAccountId: string;
+  month: string;
+  reason: string;
+}
+
+/** Runs `fn` over `items`; `failed` counts unexpected errors, `refusals` the permanent ones. */
+export async function inPool<T>(
+  items: T[],
+  fn: (item: T) => Promise<void>,
+): Promise<{ failed: number; refusals: UsageRefusal[] }> {
   let i = 0;
   let failed = 0;
+  const refusals: UsageRefusal[] = [];
   const workers = Array.from({ length: Math.min(CONCURRENCY, items.length) }, async () => {
     while (i < items.length) {
       const item = items[i++];
       await fn(item).catch((err) => {
+        if (err instanceof UsageChargeRefused) {
+          refusals.push({ subAccountId: err.subAccountId, month: err.month, reason: err.message });
+          console.error(`[usage-close] held, needs a fix sa=${err.subAccountId} month=${err.month}: ${err.message}`);
+          return;
+        }
         failed++;
         console.error(`[usage-close] item failed: ${reason(err)}`);
       });
     }
   });
   await Promise.all(workers);
-  return failed;
+  return { failed, refusals };
 }

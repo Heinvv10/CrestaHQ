@@ -14,7 +14,7 @@ const jobs = vi.hoisted(() => ({
   apiCleanup: vi.fn(async (): Promise<Record<string, unknown>> => ({ ok: true, results: [] })),
   retention: vi.fn(async () => ({ subAccounts: 2 })),
   staging: vi.fn(async () => ({ deleted: 1 })),
-  usageClose: vi.fn(async () => ({ closed: 0, charged: 0, reminded: 0, failed: 0 })),
+  usageClose: vi.fn(async (): Promise<Record<string, unknown>> => ({ closed: 0, charged: 0, reminded: 0, failed: 0, refusals: [] })),
 }));
 vi.mock("@/lib/automations/qstash", () => ({ verifyQStashSignature: jobs.verify }));
 vi.mock("@/lib/gitpage/heartbeat", () => ({
@@ -92,12 +92,23 @@ it("a failure in the LAST job still answers 500", async () => {
 });
 
 it("a usage close that held items answers 500 naming the job, and a clean one answers 200", async () => {
-  jobs.usageClose.mockResolvedValueOnce({ closed: 1, charged: 0, reminded: 0, failed: 2 });
+  jobs.usageClose.mockResolvedValueOnce({ closed: 1, charged: 0, reminded: 0, failed: 2, refusals: [] });
   const res = await run();
   expect(calls).toEqual(ALL);
   expect(res.status).toBe(500);
   expect((await res.json()).failed).toEqual([{ job: "usage-close", message: "usage_close_failed: 2 item(s)" }]);
   expect((await run()).status).toBe(200);
+});
+
+it("a permanent refusal is reported in the body but never answers 500 (a retry could not fix it)", async () => {
+  const refusals = [{ subAccountId: "sa1", month: "2026-09", reason: "Paystack needs an email to open a payment page" }];
+  jobs.usageClose.mockResolvedValueOnce({ closed: 1, charged: 0, reminded: 0, failed: 0, refusals });
+  const res = await run();
+  expect(res.status).toBe(200);
+  const body = await res.json();
+  expect(body.ok).toBe(true);
+  expect(body.failed).toBeUndefined();
+  expect(body.results["usage-close"].refusals).toEqual(refusals);
 });
 
 it("verifies the signature against its own URL and runs nothing without one", async () => {

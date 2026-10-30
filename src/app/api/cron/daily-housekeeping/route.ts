@@ -63,8 +63,10 @@ const JOBS: Array<[string, () => Promise<unknown>]> = [
     "usage-close",
     async () => {
       const result = await runUsageClose();
-      // An item that could not be closed, charged or reminded is held and
-      // retried tomorrow; answering 500 names the job, like api-cleanup.
+      // Only unexpected or transient errors answer 500 (QStash retries the whole
+      // job, which is right for those). A permanent refusal (Paystack with no
+      // email, an amount over the ceiling) is logged and returned in
+      // `refusals`: a retry cannot fix it, so a 500 would only repeat daily.
       if (result.failed > 0) throw new Error(`usage_close_failed: ${result.failed} item(s)`);
       return result;
     },

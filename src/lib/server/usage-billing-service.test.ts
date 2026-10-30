@@ -441,6 +441,14 @@ describe("reminders only for an invoice that went out", () => {
     expect(verifyChargeToken(url.split("/pay/charge/")[1])?.hash).toBe(after);
   });
 
+  it("a reminder that can't build a link (app URL unset) is a refusal, not a failure, and keeps its stage", async () => {
+    await setup({});
+    vi.stubEnv("NEXT_PUBLIC_APP_URL", "");
+    const out = await runUsageClose(new Date(2026, 9, 12, 5, 0));
+    expect(out).toMatchObject({ failed: 0, reminded: 0, refusals: [{ subAccountId: "sa1", month: "2026-09" }] });
+    expect(mem.read(`billingCharges/${CHARGE}`)?.remindedAt).toEqual({});
+  });
+
   it("a failed reminder send gives the stage back so tomorrow retries", async () => {
     await setup({});
     mail.send.mockRejectedValueOnce(new Error("smtp down"));
@@ -534,10 +542,11 @@ describe("the payment provider", () => {
     spyBillingProvider("paystack");
     mem.seed("subAccounts/sa1", { ...SUB, accountContact: null });
     const out = await runUsageClose(NOW);
-    expect(out.failed).toBe(1);
+    // A permanent refusal: reported, not a failure (the job must not answer 500).
+    expect(out).toMatchObject({ failed: 0, refusals: [{ subAccountId: "sa1", month: "2026-09", reason: expect.stringMatching(/Paystack needs an email/) }] });
     expect(charges()).toHaveLength(0);
     expect(queue()).toHaveLength(1);
-    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/Paystack needs an email/));
+    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/held, needs a fix sa=sa1 month=2026-09: Paystack needs an email/));
 
     // Fixed by setting the contact: the SAME queued entry mints the charge.
     mem.seed("subAccounts/sa1", SUB);
@@ -561,7 +570,7 @@ describe("the payment provider", () => {
   it("with no provider configured nothing is minted and the month stays queued", async () => {
     spyBillingProvider("none");
     const out = await runUsageClose(NOW);
-    expect(out.failed).toBe(1);
+    expect(out).toMatchObject({ failed: 0, refusals: [expect.objectContaining({ subAccountId: "sa1" })] });
     expect(charges()).toHaveLength(0);
     expect(queue()).toHaveLength(1);
   });
@@ -619,7 +628,7 @@ describe("the payment provider", () => {
     mem.seed("subAccounts/sa1", { ...SUB, accountContact: null });
     member("a"); member("b", { addedAt: undefined });
     const out = await runUsageClose(NOW);
-    expect(out.failed).toBe(1);
+    expect(out).toMatchObject({ failed: 0, refusals: [expect.objectContaining({ subAccountId: "sa1" })] });
     expect(charges()).toHaveLength(0);
   });
 
@@ -664,11 +673,28 @@ describe("a charge that cannot be created", () => {
     });
     mem.seed(`usagePendingCharges/${CHARGE}`, { subAccountId: "sa1", month: "2026-09" });
     const out = await runUsageClose(NOW);
-    expect(out.failed).toBe(1);
+    expect(out).toMatchObject({ failed: 0, refusals: [{ subAccountId: "sa1", month: "2026-09", reason: expect.stringMatching(/^amountCents must be/) }] });
     expect(charges()).toHaveLength(0);
     expect(queue()).toHaveLength(1);
-    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/charge held sa=sa1 month=2026-09: amountCents must be/));
-    expect((await runUsageClose(NOW)).failed).toBe(1);
+    expect(console.error).toHaveBeenCalledWith(expect.stringMatching(/held, needs a fix sa=sa1 month=2026-09: amountCents must be/));
+    expect((await runUsageClose(NOW)).refusals).toHaveLength(1);
+  });
+
+  it("an UNEXPECTED error (Firestore unavailable) is a failure, not a refusal, and the entry is kept", async () => {
+    spyBillingProvider("stripe");
+    mem.seed("subAccounts/sa1/usage/2026-09", {
+      closed: { totalCents: 5000, currency: "zar", lineItems: [], chargeId: CHARGE, carryOutCents: 0 },
+    });
+    mem.seed(`usagePendingCharges/${CHARGE}`, { subAccountId: "sa1", month: "2026-09" });
+    const tx = vi.spyOn(mem.db, "runTransaction").mockRejectedValueOnce(Object.assign(new Error("14 UNAVAILABLE"), { code: 14 }));
+    const out = await runUsageClose(NOW);
+    tx.mockRestore();
+    expect(out).toMatchObject({ failed: 1, refusals: [] });
+    expect(queue()).toHaveLength(1);
+    // The next run recovers and mints it.
+    // (The charge doc itself was already created before the failure, so this run mints nothing new.)
+    expect((await runUsageClose(NOW)).charged).toBe(0);
+    expect(charges()).toHaveLength(1);
   });
 
   it("the ceiling itself is accepted", async () => {

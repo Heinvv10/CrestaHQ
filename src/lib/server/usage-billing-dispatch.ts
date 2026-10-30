@@ -2,7 +2,7 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { createUsageCharge, mintChargeCheckoutLink } from "@/lib/server/billing-service";
+import { BillingError, createUsageCharge, mintChargeCheckoutLink } from "@/lib/server/billing-service";
 import { recordBillingEvent } from "@/lib/server/billing-lifecycle";
 import { billingRecipient } from "@/lib/server/usage-billing-recipient";
 import { sendUsageEmail } from "@/lib/server/usage-billing-email";
@@ -10,10 +10,11 @@ import {
   DAY_MS,
   inPool,
   PENDING_COLLECTION,
-  reason,
   toMillis,
   unbillableReason,
+  UsageChargeRefused,
   type PendingChargeDoc,
+  type UsageRefusal,
   type UsageClosedSnapshot,
 } from "@/lib/server/usage-billing-shared";
 import {
@@ -81,12 +82,14 @@ async function withholdUnsent(input: {
 }
 
 /** Mint queued charges and email each once; entries stay queued until both are done. */
-export async function processPendingCharges(now: Date): Promise<{ charged: number; failed: number }> {
+export async function processPendingCharges(
+  now: Date,
+): Promise<{ charged: number; failed: number; refusals: UsageRefusal[] }> {
   const db = getAdminDb();
   // Normally a handful of entries; read them all so none waits behind others.
   const queue = await db.collection(PENDING_COLLECTION).get();
   let charged = 0;
-  const failed = await inPool(queue.docs, async (q) => {
+  const { failed, refusals } = await inPool(queue.docs, async (q) => {
     const p = q.data() as PendingChargeDoc;
     const ledgerRef = db.doc(`subAccounts/${p.subAccountId}/usage/${p.month}`);
     const [subSnap, ledger] = await Promise.all([db.doc(`subAccounts/${p.subAccountId}`).get(), ledgerRef.get()]);
@@ -97,9 +100,10 @@ export async function processPendingCharges(now: Date): Promise<{ charged: numbe
     }
     const sub = { ...(subSnap.data() as SubAccountDoc), id: subSnap.id };
     const chargeId = frozen.chargeId;
+    // A BillingError is the service refusing (nothing a retry fixes); anything
+    // else is unexpected and stays a failure.
     const held = (err: unknown): never => {
-      console.error(`[usage-close] charge held sa=${sub.id} month=${p.month}: ${reason(err)}`);
-      throw err;
+      throw err instanceof BillingError ? new UsageChargeRefused(sub.id, p.month, err.message) : err;
     };
 
     // Fail closed: the full eligibility rule (both switches AND `since` at or
@@ -167,7 +171,7 @@ export async function processPendingCharges(now: Date): Promise<{ charged: numbe
     let payUrl: string;
     try {
       payUrl = await mintChargeCheckoutLink({ agencyId: sub.agencyId, chargeId });
-      if (!payUrl) throw new Error("NEXT_PUBLIC_APP_URL isn't configured, so no pay link can be built.");
+      if (!payUrl) throw new BillingError("NEXT_PUBLIC_APP_URL isn't configured, so no pay link can be built.", 503);
     } catch (err) {
       await release();
       return held(err);
@@ -194,14 +198,16 @@ export async function processPendingCharges(now: Date): Promise<{ charged: numbe
     await chargeRef.update({ emailedTo: to, updatedAt: FieldValue.serverTimestamp() });
     await q.ref.delete();
   });
-  return { charged, failed };
+  return { charged, failed, refusals };
 }
 
 /**
  * Reminders by local calendar day, for charges whose invoice was emailed and
  * that are still pending (a cancelled or never-emailed charge is skipped).
  */
-export async function sendDueReminders(now: Date): Promise<{ sent: number; failed: number }> {
+export async function sendDueReminders(
+  now: Date,
+): Promise<{ sent: number; failed: number; refusals: UsageRefusal[] }> {
   const db = getAdminDb();
   const pending = await db
     .collection("billingCharges")
@@ -210,7 +216,7 @@ export async function sendDueReminders(now: Date): Promise<{ sent: number; faile
     .get();
   const today = localDay(now.getTime());
   let sent = 0;
-  const failed = await inPool(pending.docs, async (doc) => {
+  const { failed, refusals } = await inPool(pending.docs, async (doc) => {
     const data = doc.data();
     const dueMs = toMillis(data.dueAt);
     if (dueMs === null || !data.emailedTo) return;
@@ -241,9 +247,10 @@ export async function sendDueReminders(now: Date): Promise<{ sent: number; faile
     let payUrl: string;
     try {
       payUrl = await mintChargeCheckoutLink({ agencyId: String(data.agencyId), chargeId: doc.id });
-      if (!payUrl) throw new Error("NEXT_PUBLIC_APP_URL isn't configured, so no pay link can be built.");
+      if (!payUrl) throw new BillingError("NEXT_PUBLIC_APP_URL isn't configured, so no pay link can be built.", 503);
     } catch (err) {
       await release();
+      if (err instanceof BillingError) throw new UsageChargeRefused(sub.id, String(data.usageMonth ?? ""), err.message);
       throw err;
     }
     const ok = await sendUsageEmail({
@@ -262,5 +269,5 @@ export async function sendDueReminders(now: Date): Promise<{ sent: number; faile
     // rather than leaving the client with a dead link and no reminder.
     else await release();
   });
-  return { sent, failed };
+  return { sent, failed, refusals };
 }

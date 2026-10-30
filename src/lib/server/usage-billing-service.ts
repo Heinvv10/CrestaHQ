@@ -16,6 +16,7 @@ import {
   PENDING_COLLECTION,
   unbillableReason,
   type PendingChargeDoc,
+  type UsageRefusal,
   type UsageClosedSnapshot,
 } from "@/lib/server/usage-billing-shared";
 import {
@@ -97,7 +98,10 @@ export async function runUsageClose(now: Date = new Date()): Promise<{
   closed: number;
   charged: number;
   reminded: number;
+  /** Unexpected or transient errors: the job answers 500 for these. */
   failed: number;
+  /** Permanent refusals (see `UsageChargeRefused`): held and reported, not a failure. */
+  refusals: UsageRefusal[];
 }> {
   const subs = await getAdminDb()
     .collection("subAccounts")
@@ -105,7 +109,7 @@ export async function runUsageClose(now: Date = new Date()): Promise<{
     .get();
   const month = previousMonthKey(now);
   let closed = 0;
-  const failedFreezes = await inPool(subs.docs, async (snap) => {
+  const freezes = await inPool(subs.docs, async (snap) => {
     const sub = { ...(snap.data() as SubAccountDoc), id: snap.id };
     if (await freezeMonthForSubAccount({ sub, month })) closed++;
   });
@@ -115,7 +119,8 @@ export async function runUsageClose(now: Date = new Date()): Promise<{
     closed,
     charged: pending.charged,
     reminded: reminders.sent,
-    failed: failedFreezes + pending.failed + reminders.failed,
+    failed: freezes.failed + pending.failed + reminders.failed,
+    refusals: [...freezes.refusals, ...pending.refusals, ...reminders.refusals],
   };
 }
 
