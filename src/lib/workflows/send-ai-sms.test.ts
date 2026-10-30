@@ -218,6 +218,14 @@ describe("Send AI text", () => {
     expect(sentBodies()[0]).toBe(`${AI_LINE} Book at https://velocityfibre.co.za/Book or call 082 123 4567. Reply STOP to opt out.`);
   });
 
+  it("a template that isn't text is refused before anything is spent", async () => {
+    seedWorkflow(undefined, { template: ["{{ai}}"] });
+    const runId = await runFirst();
+    expect(history(runId)).toMatchObject([{ result: "error:template_invalid" }]);
+    expect(ai.fetchMock).not.toHaveBeenCalled();
+    expect(smsSent).not.toHaveBeenCalled();
+  });
+
   it("a template without {{ai}} is refused before anything is spent", async () => {
     seedWorkflow(undefined, { template: "Hi {{firstName}}, want a quote?" });
     const runId = await runFirst();

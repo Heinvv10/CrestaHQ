@@ -27,7 +27,10 @@ export function exactSmsSegments(text: string): number {
 
 /** Why the operator's template can't be used, or null. The length check is
  *  the certain part only (the fixed text alone); the send re-checks exactly. */
-export function templateProblem(template: string): string | null {
+export function templateProblem(template: unknown): string | null {
+  // Step configs are client JSON: anything but a string is refused here, for
+  // every caller, before a String() coercion could turn ["{{ai}}"] into one.
+  if (typeof template !== "string") return "The template must be text.";
   const t = template.trim();
   if (!t) return "Write the message template.";
   const slots = t.split(AI_SLOT).length - 1;
@@ -71,7 +74,8 @@ const OPT_OUT_WORDS = new Set(["stop", "quit", "cancel", "unsubscribe", "unsub",
 /** Channels and destinations. Verbs (call, text, visit…) are not here: with
  *  digits and number words refused, no destination can follow them. */
 const ROUTE_WORDS = new Set([
-  "whatsapp", "facebook", "instagram", "insta", "telegram", "tiktok", "twitter", "email", "e-mail", "dm", "inbox",
+  "whatsapp", "facebook", "instagram", "insta", "telegram", "tiktok", "twitter", "linkedin", "messenger",
+  "snapchat", "viber", "wechat", "skype", "discord", "signal", "email", "e-mail", "dm", "inbox",
   "www", "http", "https", "com", "co", "za", "net", "org", "dot", "slash", "url", "link", "website",
 ]);
 

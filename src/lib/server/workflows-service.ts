@@ -451,7 +451,7 @@ export async function aiSmsActivationBlock(
   const aiNodes = Object.values(nodes ?? {}).filter((n) => n?.type === "send_ai_sms");
   if (aiNodes.length === 0) return null;
   for (const n of aiNodes) {
-    const problem = templateProblem(String(n.config?.template ?? ""));
+    const problem = templateProblem(n.config?.template ?? "");
     if (problem) return `Send AI text: ${problem}`;
   }
   const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();

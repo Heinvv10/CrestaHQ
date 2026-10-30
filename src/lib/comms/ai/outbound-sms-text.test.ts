@@ -19,6 +19,10 @@ describe("templateProblem", () => {
     expect(templateProblem(TEMPLATE)).toBeNull();
   });
 
+  it.each([["{{ai}}"], 42, { text: "{{ai}}" }, null])("refuses a template that isn't text: %j", (template) => {
+    expect(templateProblem(template)).toBe("The template must be text.");
+  });
+
   it.each([
     ["", /Write the message/],
     ["Hi {{firstName}}, want a quote?", /needs one \{\{ai\}\}/],
@@ -33,7 +37,8 @@ describe("templateProblem", () => {
 describe("slotProblem (after normaliseSlot)", () => {
   const problem = (raw: string) => slotProblem(normaliseSlot(raw));
 
-  // The breaker's 32 typical personalised lines: none may be refused.
+  // The breaker's typical personalised lines: none may be refused. (Its "Is
+  // your signal giving you trouble?" now is: "signal" is a channel word.)
   it.each([
     "Hope your new home is settling in well!",
     "Hope you're having a great week.",
@@ -45,7 +50,6 @@ describe("slotProblem (after normaliseSlot)", () => {
     "Fast, reliable fibre is now available in Centurion.",
     "Happy Heritage Day to you and your family!",
     "Congrats on the new baby, Thandi!",
-    "Is your signal giving you trouble?",
     "We would love to get you connected",
     "Our technician can come on site this week",
     "Follow up on your enquiry about fibre",
@@ -94,6 +98,9 @@ describe("slotProblem (after normaliseSlot)", () => {
     ["optout", "optout anytime", /opt-out word/],
     ["opt out as a phrase", "you can opt out anytime", /"opt out"/],
     ["a route word", "find us on whatsapp", /channel or a destination/],
+    ...["linkedin", "messenger", "snapchat", "viber", "wechat", "skype", "discord", "signal"].map(
+      (w): [string, string, RegExp] => [`channel ${w}`, `find us on ${w} today`, /channel or a destination/],
+    ),
     ["a route word inside a hyphenated word", "join our insta-friends", /channel or a destination/],
     ["a hyphenated route word", "drop us an e-mail", /channel or a destination/],
     ["co", "velocitydeals co", /channel or a destination/],

@@ -563,8 +563,8 @@ async function aiSmsCheck(
   const cfg = ctx.node.config as unknown as SendAiSmsConfig;
   const instruction = (cfg.instruction ?? "").trim().slice(0, 1000);
   if (!instruction) return aiSmsStop("error:no_instruction");
-  const template = cfg.template ?? "";
-  if (templateProblem(template)) return aiSmsStop("error:template_invalid");
+  if (templateProblem(cfg.template ?? "")) return aiSmsStop("error:template_invalid");
+  const template = cfg.template;
   if (!sub || !aiOutboundSmsGateOn(sub)) return aiSmsStop("skipped:ai_sms_gate_off");
   if (sub.automationsPaused === true) return aiSmsStop("skipped:automations_paused");
   if (channelOptedOut(ctx.node.type, contact)) return aiSmsStop("skipped:opt_out");

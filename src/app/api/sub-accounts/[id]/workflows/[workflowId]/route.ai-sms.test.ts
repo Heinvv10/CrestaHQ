@@ -88,6 +88,21 @@ describe("activating a workflow with a Send AI text step", () => {
     expect(mem.read("workflows/wf1")?.nodes).toEqual(aiStep);
   });
 
+  it("refuses saving a template that isn't text, even on a draft", async () => {
+    const res = await save({ nodes: { n1: { ...aiStep.n1, config: { instruction: "x", template: ["{{ai}}"] } } }, status: "draft" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Send AI text: The template must be text.");
+    expect(mem.read("workflows/wf1")?.nodes).toEqual(aiStep);
+  });
+
+  it("refuses activating a stored step whose template isn't text", async () => {
+    mem.seed("workflows/wf1", { ...mem.read("workflows/wf1"), nodes: { n1: { ...aiStep.n1, config: { instruction: "x", template: ["{{ai}}"] } } } });
+    const res = await save({ status: "active" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe("Send AI text: The template must be text.");
+    expect(mem.read("workflows/wf1")?.status).toBe("draft");
+  });
+
   it("still saves the step on a draft, ready or not", async () => {
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), aiOutboundSmsEnabledByAgency: false });
     expect((await save({ nodes: aiStep, status: "draft" })).status).toBe(200);

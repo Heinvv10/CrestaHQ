@@ -70,8 +70,9 @@ export async function PATCH(
     // A Send AI text template that can never work is refused as it is saved;
     // an empty one may sit in a draft (activation and the send refuse it).
     for (const n of Object.values(nodes)) {
-      const template = n.type === "send_ai_sms" ? String(n.config.template ?? "") : "";
-      const problem = template.trim() ? templateProblem(template) : null;
+      const template = n.type === "send_ai_sms" ? n.config.template : undefined;
+      const empty = template === undefined || template === null || (typeof template === "string" && !template.trim());
+      const problem = empty ? null : templateProblem(template);
       if (problem) return NextResponse.json({ error: `Send AI text: ${problem}` }, { status: 400 });
     }
   }
