@@ -12,9 +12,8 @@ jobs:
   # A draft transition must still enter each PR concurrency group:
   # the ordinary jobs skip drafts, so without these no new job would arrive to
   # cancel work for a PR that is no longer reviewable. These tiny helper jobs
-  # run only for that transition. There is no E2E helper: E2E now queues in
-  # the repo-wide `crestahq-e2e-fixtures` group, and a helper joining it would
-  # displace ANOTHER PR's pending E2E run.
+  # run only for that transition. The E2E helper replaces pending work but,
+  # unlike the fast helpers, never interrupts an active browser teardown.
   cancel_ci_on_draft:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
     runs-on: ubuntu-latest
@@ -32,6 +31,15 @@ jobs:
       cancel-in-progress: true
     steps:
       - run: echo "cancelled superseded secret scan for draft PR"
+
+  replace_pending_e2e_on_draft:
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
+    runs-on: [self-hosted, linux, velo, crestahq]
+    concurrency:
+      group: ci-e2e-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - run: echo "replaced pending E2E for draft PR after active teardown"
 
   # ONE job, deliberately.
   #
@@ -240,36 +248,32 @@ jobs:
   # Blocking, like every other step in this file. NOT continue-on-error. If it
   # ever becomes too flaky to block, delete it rather than soften it.
   #
-  # Serialised across ALL runs by the `crestahq-e2e-fixtures` concurrency
-  # group (also used by e2e-smoke.yml). Every run seeds and purges the same
-  # fixture sub-accounts in the one production Firestore (e2e/global-setup.ts
-  # purges them wholesale at start), so two concurrent runs corrupt each
-  # other. This used to be enforced by a single labelled self-hosted runner;
-  # GitHub-hosted runners scale out, so the group is what enforces it now.
-  # cancel-in-progress stays false: cancelling an active browser run before
-  # `finally` strands shared Firestore fixtures and makes later, unrelated
-  # runs fail.
+  # Pinned to the one runner labelled crestahq-e2e. Every run binds
+  # 127.0.0.1:3100 and seeds + purges the same fixture sub-accounts, so two
+  # E2E jobs on two runners would collide on both. The other jobs share no
+  # port or tenant; they do share the runner user's pnpm store and Go caches,
+  # which both tools lock for concurrent use.
   #
-  # FOLLOW-UP: scope global-setup's purgeFixtureData per run id (as
-  # e2e/lib/run-id.ts already does for specs' fixture prefixes); with that,
-  # this group can be dropped and E2E runs can go parallel.
-  #
-  # GitHub keeps ONE pending run per group: when a third run queues behind a
-  # running one, the older pending run is cancelled (a cancelled required
-  # check blocks merge until re-run). The `needs` below keeps that window
-  # short by not entering the group until the fast gates pass.
+  # e2e-smoke.yml's "smoke" job runs on the SAME runner label for the same
+  # reason (same fixture tenants, same port 3100). The single labelled runner
+  # is what serialises different PRs. This job's concurrency group is per ref:
+  # it coalesces superseded pending heads of ONE PR, but never cancels an
+  # active browser run — cancellation before `finally` strands shared
+  # Firestore fixtures and makes later, unrelated runs fail.
   e2e:
     name: E2E (Playwright)
     # Do not spend ~11 minutes exercising a revision that already failed a
-    # faster blocking gate; this only changes when it enters the queue.
+    # faster blocking gate. The fixture runner remains serialised exactly as
+    # before; this only changes when it enters that queue.
     needs: [ci, secrets]
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
     concurrency:
-      group: crestahq-e2e-fixtures
+      group: ci-e2e-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
       cancel-in-progress: false
-    # ~11 min on a quiet runner. The ceiling is generous because on the old
-    # shared self-hosted box the 93 specs ran past 30 min three times under
-    # load with nothing failing — a timeout is noise, not a verdict.
+    # ~11 min on a quiet box, but the runner shares velo-server with every
+    # other CI and dev session: at load avg 45+ the 93 specs ran past 30 min
+    # three times on 2026-09-24/25 with nothing failing (58–76 specs done,
+    # all green) — a timeout there is noise, not a verdict.
     timeout-minutes: 45
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     env:
@@ -359,7 +363,7 @@ jobs:
       # callback key" step below draws it at random for each run. It is not a
       # gitpage credential. Nothing in the suite calls gitpage, and
       # GITPAGE_API_URL points at a closed loopback port so a stray call fails
-      # on the runner instead of presenting that string to gitpage.site — a 401
+      # on this box instead of presenting that string to gitpage.site — a 401
       # from there would flip system/gitpageStatus in the production Firestore
       # this job shares. (The boot heartbeat is already skipped on a loopback
       # app URL: instrumentation.ts.)
@@ -367,26 +371,26 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
-
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
-          cache: pnpm
+
+      - name: Enable pnpm
+        run: corepack enable
 
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      # --with-deps: a fresh GitHub-hosted runner lacks Chromium's shared
-      # libraries; it has passwordless sudo for the apt step.
+      # No --with-deps: the runner user has no sudo, and the apt step it runs
+      # would fail. The shared OS libraries are a host prerequisite.
       - name: Install Chromium
-        run: pnpm exec playwright install --with-deps chromium
+        run: pnpm exec playwright install chromium
 
       - name: Build
         run: pnpm build
 
       # Random per run, never derived from the run id: the app this job boots
-      # listens on a runner reachable by other processes and writes to the production
+      # listens on a shared multi-user box and writes to the production
       # Firestore, so a key another local process could guess would let it
       # forge a build-settled callback while the run is up. Masked in the log
       # and exported for the steps below, so the server Playwright starts and

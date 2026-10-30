@@ -93,18 +93,24 @@ the PR's individual commits stay readable in history.
 
 ### CI runner
 
-CI (every workflow) runs on **GitHub-hosted `ubuntu-latest`**. If jobs never start or fail instantly with a
-billing/spending-limit annotation, check the account's Actions billing first.
+CI runs on **GitHub-hosted `ubuntu-latest`** (lint/typecheck/test/build, secret
+scan, FROZEN-shrink, the Go workflows), with two exceptions: the **E2E job in
+`ci.yml` and `e2e-smoke.yml` stay on the self-hosted runner** `velo-crestahq-u`
+(labels `self-hosted, linux, velo, crestahq, crestahq-e2e`; service
+`actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`, running as unix user
+`gha-crestahq`).
 
-E2E touches one shared set of fixture sub-accounts in the production Firestore
-(global setup purges them wholesale), so every E2E run — PR, push, and the
-production smoke — queues in the repo-wide `crestahq-e2e-fixtures` concurrency
-group with `cancel-in-progress: false`. GitHub holds only one *pending* run per
-group, so a third run queuing behind a running one cancels the older pending
-one; a cancelled E2E check needs a re-run, not a fix.
+Why: every E2E run seeds and purges the same fixture sub-accounts in the
+production Firestore (`e2e/global-setup.ts` `purgeFixtureData` is global), so
+runs must be serialised. One labelled runner does that without losing runs; a
+GitHub concurrency group does not, because it keeps only one *pending* run and
+cancels the older one when a third queues. If PRs sit queued forever, check the
+runner service first — a stopped runner looks exactly like a slow CI. The hosted
+jobs and E2E share no artifacts; E2E only `needs` the hosted gates.
 
-The Go workflows (`wa-manager.yml`, `wa-agent-bridge.yml`) are on
-`ubuntu-latest` too; no workflow uses the old self-hosted runner any more.
+Follow-up: scope `purgeFixtureData` per run id (as `e2e/lib/run-id.ts` already
+does for specs' fixture prefixes), then move E2E and the smoke to hosted
+runners.
 
 ### Deploy
 

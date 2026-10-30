@@ -132,29 +132,44 @@ describe("check-agent-coverage-shrink CLI", () => {
     expect(ci).not.toMatch(/types:.*edited/);
   });
 
-  it("cancels fast work when a ready PR returns to draft, without touching the shared E2E queue", () => {
+  it("cancels fast work and replaces pending E2E when a ready PR returns to draft", () => {
     const ci = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
     expect(ci).toContain("types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]");
     expect(ci).not.toMatch(/^concurrency:/m);
-    expect(ci).not.toContain("runs-on: [self-hosted");
     expect(ci).toContain("cancel_ci_on_draft:");
     expect(ci).toContain("cancel_secrets_on_draft:");
+    expect(ci).toContain("replace_pending_e2e_on_draft:");
     expect(ci).toContain("group: ci-fast-${{ github.ref }}");
     expect(ci).toContain("group: ci-secrets-${{ github.ref }}");
+    expect(ci).toContain("group: ci-e2e-${{ github.ref }}");
     expect(ci).toContain("cancel-in-progress: ${{ github.event_name == 'pull_request' }}");
-    // A draft helper in the repo-wide E2E group would displace another PR's pending run.
-    expect(ci).not.toContain("replace_pending_e2e_on_draft:");
   });
 
-  it("queues every E2E run in one repo-wide group that never cancels an active run", () => {
+  it("protects active E2E teardown and gives every main push unique groups", () => {
     const ci = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "ci.yml"), "utf8");
     const unique = "${{ github.event_name == 'pull_request' && github.ref || github.run_id }}";
     expect(ci).toContain(`group: ci-fast-${unique}`);
     expect(ci).toContain(`group: ci-secrets-${unique}`);
+    expect(ci).toContain(`group: ci-e2e-${unique}`);
+    const draftHelper = ci.slice(ci.indexOf("  replace_pending_e2e_on_draft:"), ci.indexOf("\n  ci:"));
+    expect(draftHelper).toMatch(/group: ci-e2e-.*\n\s+cancel-in-progress: false/);
     const e2e = ci.slice(ci.indexOf("  e2e:"));
-    expect(e2e).toMatch(/group: crestahq-e2e-fixtures\n\s+cancel-in-progress: false/);
-    const smoke = fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", "e2e-smoke.yml"), "utf8");
-    expect(smoke).toMatch(/group: crestahq-e2e-fixtures\n\s+cancel-in-progress: false/);
+    expect(e2e).toMatch(/group: ci-e2e-.*\n\s+cancel-in-progress: false/);
+  });
+
+  it("keeps E2E and the production smoke on the one self-hosted fixture runner, everything else hosted", () => {
+    const wf = (f: string) => fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", f), "utf8");
+    const e2eLabel = "runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]";
+    const ci = wf("ci.yml");
+    const e2e = ci.slice(ci.indexOf("  e2e:"));
+    expect(e2e).toContain(e2eLabel);
+    expect(ci.slice(ci.indexOf("\n  ci:"), ci.indexOf("  e2e:")).match(/runs-on: ubuntu-latest/g)).toHaveLength(2);
+    expect(ci.slice(ci.indexOf("\n  ci:"), ci.indexOf("  e2e:"))).not.toContain("runs-on: [self-hosted");
+    expect(wf("e2e-smoke.yml")).toContain(e2eLabel);
+    for (const f of ["wa-manager.yml", "wa-agent-bridge.yml", "agent-coverage-shrink.yml"]) {
+      expect(wf(f)).toContain("runs-on: ubuntu-latest");
+      expect(wf(f)).not.toContain("self-hosted,");
+    }
   });
 });
 

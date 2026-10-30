@@ -76,9 +76,9 @@ Verified in this repo at `ea19ac0` unless stated otherwise.
   feature under test. Global setup therefore signs in through the real form once
   and saves `storageState({ indexedDB: true })`. Found the hard way; the first
   three specs failed on it.
-- **CI runs on GitHub-hosted `ubuntu-latest`**, two jobs, nothing
-  `continue-on-error`. Playwright browsers are installed per run
-  (`playwright install --with-deps chromium`).
+- **CI runs on GitHub-hosted `ubuntu-latest` except E2E**, which stays on the
+  self-hosted fixture runner (see docs/agent-workflow.md "CI runner"). Nothing
+  is `continue-on-error`. Playwright browsers must be installed on that runner.
 - **No test-data seeder exists.** The only seeder,
   `src/lib/seed/demo-data.ts`, is hard-gated to `LANDING_VARIANT === "leadstack"`
   and targets `accountNumber === 1004`. SP0 writes its own.
@@ -133,8 +133,8 @@ merges first and unblocks wave 1 while the integration PRs continue.
   - The `e2e-smoke` job's enrol spec will fail against production until QStash is
     configured there. Expected, not a harness defect — the smoke job is
     non-blocking for exactly this kind of environmental gap.
-- **Playwright browser binaries** are downloaded on every run (the runner is
-  ephemeral).
+- **Playwright browser binaries on the self-hosted runner** are a new dependency
+  on a shared box also serving four sibling runners.
 
 ### Execution guardrails
 
