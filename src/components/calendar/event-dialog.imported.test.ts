@@ -112,6 +112,22 @@ it("a single all-day event shows one date, not a range", async () => {
   expect(text()).toMatch(/ - .*All day/);
 });
 
+it("shows the end date when a timed event crosses midnight, and only the time when it does not", async () => {
+  const dateOf = (d: Date) => d.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" });
+  const start = new Date(2030, 0, 1, 23, 0);
+  const end = new Date(2030, 0, 2, 1, 0);
+  await show(imported({ startAt: Timestamp.fromDate(start), endAt: Timestamp.fromDate(end) }));
+  expect(text()).toContain(dateOf(start));
+  expect(text()).toContain(dateOf(end));
+  await show(
+    imported({
+      startAt: Timestamp.fromDate(new Date(2030, 0, 1, 9, 0)),
+      endAt: Timestamp.fromDate(new Date(2030, 0, 1, 10, 0)),
+    }),
+  );
+  expect(text().split(dateOf(start)).length - 1).toBe(1);
+});
+
 it("a manual event still opens the editable form", async () => {
   await show(imported({ source: "manual", title: "Standup", importOwnerUid: null }));
   expect(document.getElementById("ev-title")).not.toBeNull();

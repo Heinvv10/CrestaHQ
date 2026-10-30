@@ -9,7 +9,7 @@ import { EventDialog } from "@/components/calendar/event-dialog";
 import { CalendarEventChip } from "@/components/calendar/calendar-event-chip";
 import { useSubAccount } from "@/context/sub-account-context";
 import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
-import { importedOwnerName } from "@/lib/calendar/imported-event";
+import { importedEventDays, importedOwnerName } from "@/lib/calendar/imported-event";
 import { shownEvent } from "@/lib/calendar/event-overrides-view";
 import { isImportedEvent, type CalendarEvent, type EventStatus } from "@/types/events";
 import type { Contact } from "@/types/contacts";
@@ -89,10 +89,14 @@ export function CalendarView({
     for (const ev of events) {
       const start = toDate(ev.startAt);
       if (!start) continue;
-      const key = dayKey(start);
-      const bucket = map.get(key);
-      if (bucket) bucket.push(ev);
-      else map.set(key, [ev]);
+      // An imported busy block marks every day it covers; other events sit on their first day.
+      const days = isImportedEvent(ev) ? importedEventDays(start, toDate(ev.endAt)) : [start];
+      for (const day of days) {
+        const key = dayKey(day);
+        const bucket = map.get(key);
+        if (bucket) bucket.push(ev);
+        else map.set(key, [ev]);
+      }
     }
     for (const bucket of map.values()) {
       // Real events first: imported busy blocks must never push one behind "+N more".

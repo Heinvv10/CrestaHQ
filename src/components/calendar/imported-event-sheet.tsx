@@ -20,14 +20,18 @@ function whenLabel(event: CalendarEvent): string {
     const last = new Date(start.getFullYear(), start.getMonth(), start.getDate() + days - 1);
     return `${days > 1 ? `${day(start)} - ${day(last)}` : day(start)} · All day`;
   }
-  const from = start.toLocaleString(undefined, {
+  const stamp: Intl.DateTimeFormatOptions = {
     weekday: "short",
     day: "numeric",
     month: "short",
     hour: "numeric",
     minute: "2-digit",
-  });
-  return end ? `${from} - ${end.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })}` : from;
+  };
+  const from = start.toLocaleString(undefined, stamp);
+  if (!end) return from;
+  // Past midnight, the end needs its own date or it reads as an end before the start.
+  const sameDay = start.toDateString() === end.toDateString();
+  return `${from} - ${sameDay ? end.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" }) : end.toLocaleString(undefined, stamp)}`;
 }
 
 /**

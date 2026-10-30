@@ -163,13 +163,39 @@ it("busy to details does not keep showing the last pass's failure", async () => 
   expect(onChanged.mock.calls.length).toBe(before + 1);
 });
 
-it("stops polling after POLL_MAX reads and then shows what the status says", async () => {
+it("stops polling after POLL_MAX reads, says it is still syncing, and Refresh waits again", async () => {
   vi.useFakeTimers();
   const noSync: Status = { ...connected, importMode: "busy" };
   await show(noSync);
+  expect(status()).toContain("First sync in progress");
   const before = onChanged.mock.calls.length;
   await tick(POLL_MS * (POLL_MAX + 4));
   expect(onChanged.mock.calls.length).toBe(before + POLL_MAX);
+  // Honest, not "in progress" forever (the first pass may have been skipped).
+  expect(status()).toBe("Still syncing. Refresh in a minute.");
+  await click("gcal-import-refresh");
+  expect(status()).toContain("First sync in progress");
+  const afterRefresh = onChanged.mock.calls.length;
+  expect(afterRefresh).toBe(before + POLL_MAX + 1);
+  await tick(POLL_MS * 2);
+  expect(onChanged.mock.calls.length).toBe(afterRefresh + 2);
+  // The new pass reports: no Refresh control, no more reads.
+  await rerender({ ...noSync, importLastSyncAt: new Date().toISOString(), importedCount: 1 });
+  expect(byId("gcal-import-refresh")).toBeNull();
+  const done = onChanged.mock.calls.length;
+  await tick(POLL_MS * 3);
+  expect(onChanged.mock.calls.length).toBe(done);
+});
+
+it("stops polling when the controls go away", async () => {
+  vi.useFakeTimers();
+  await show({ ...connected, importMode: "busy" });
+  await tick(POLL_MS);
+  const calls = onChanged.mock.calls.length;
+  await act(async () => root.unmount());
+  await tick(POLL_MS * 3);
+  expect(onChanged.mock.calls.length).toBe(calls);
+  root = createRoot(document.createElement("div"));
 });
 
 it("switching off, or a refused switch-on, does not start the first-sync wait", async () => {

@@ -114,3 +114,13 @@ it("names the owner in the sheet from the shared roster", async () => {
   await act(async () => chips()[0].click());
   expect(document.querySelector('[data-testid="imported-event-sheet"]')?.textContent).toContain("Bob Jones");
 });
+
+it("marks every day a multi-day imported block covers, but leaves a manual multi-day event on its first day", async () => {
+  const midnight = (day: number) => Timestamp.fromDate(new Date(new Date().getFullYear(), new Date().getMonth(), day));
+  await show([
+    imported({ id: "trip", allDay: true, startAt: midnight(15), endAt: midnight(18) }),
+    event({ id: "m", title: "Offsite", startAt: midnight(20), endAt: midnight(23) }),
+  ]);
+  expect(chips()).toHaveLength(3);
+  expect([...document.querySelectorAll("button")].filter((b) => b.textContent?.includes("Offsite"))).toHaveLength(1);
+});

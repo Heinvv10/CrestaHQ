@@ -57,11 +57,16 @@ export function GoogleImportControls({ status, onChanged }: { status: ImportStat
   // status shows something different, whatever it says is the PREVIOUS pass's (the server clears
   // it on a mode change, but a stale copy already on screen must not be read as the new pass's).
   const [staleSig, setStaleSig] = useState<string | null>(null);
+  // The polls ran out with nothing new reported (the first pass may have been skipped, e.g. by the
+  // cooldown). Say so, and offer a manual re-read, instead of claiming progress forever.
+  const [gaveUp, setGaveUp] = useState(false);
   const allowed = status.importAllowed === true;
   const mode: ImportMode = status.importMode ?? "off";
   const reported = !!status.importLastSyncAt || !!status.importStatus;
   const syncing = staleSig !== null;
-  const waiting = mode !== "off" && (syncing || !reported);
+  const pending = mode !== "off" && (syncing || !reported);
+  const waiting = pending && !gaveUp;
+  const stillSyncing = pending && gaveUp;
 
   useEffect(() => {
     if (staleSig !== null && reported && sigOf(status) !== staleSig) setStaleSig(null);
@@ -75,7 +80,7 @@ export function GoogleImportControls({ status, onChanged }: { status: ImportStat
       void onChanged();
       if (tries >= POLL_MAX) {
         clearInterval(timer);
-        setStaleSig(null);
+        setGaveUp(true);
       }
     }, POLL_MS);
     return () => clearInterval(timer);
@@ -83,6 +88,7 @@ export function GoogleImportControls({ status, onChanged }: { status: ImportStat
 
   async function patch(body: Record<string, unknown>, success: string) {
     setSaving(true);
+    setGaveUp(false);
     const sigBefore = sigOf(status);
     let ok = false;
     try {
@@ -185,15 +191,34 @@ export function GoogleImportControls({ status, onChanged }: { status: ImportStat
           {mode !== "off" && (
             <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
               <span data-testid="gcal-import-status">
-                {syncing
-                  ? "First sync in progress…"
-                  : status.importStatus === "error"
-                    ? `Last sync failed: ${status.importError ?? "unknown error"}`
-                    : lastSync
-                      ? `${countLabel(status.importedCount ?? 0)}, synced ${formatRelativeTime(lastSync)}. Refreshes about every 15 minutes.`
-                      : "First sync in progress…"}
-                {!syncing && status.importStatus !== "error" && status.importError ? ` ${status.importError}` : ""}
+                {stillSyncing
+                  ? "Still syncing. Refresh in a minute."
+                  : syncing
+                    ? "First sync in progress…"
+                    : status.importStatus === "error"
+                      ? `Last sync failed: ${status.importError ?? "unknown error"}`
+                      : lastSync
+                        ? `${countLabel(status.importedCount ?? 0)}, synced ${formatRelativeTime(lastSync)}. Refreshes about every 15 minutes.`
+                        : "First sync in progress…"}
+                {!stillSyncing && !syncing && status.importStatus !== "error" && status.importError
+                  ? ` ${status.importError}`
+                  : ""}
               </span>
+              {stillSyncing && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="h-7 text-xs"
+                  onClick={() => {
+                    setGaveUp(false);
+                    void onChanged();
+                  }}
+                  data-testid="gcal-import-refresh"
+                >
+                  Refresh
+                </Button>
+              )}
               <Button
                 type="button"
                 size="sm"
