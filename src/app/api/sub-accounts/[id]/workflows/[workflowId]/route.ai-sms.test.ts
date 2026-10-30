@@ -28,7 +28,7 @@ const save = async (body: Record<string, unknown>) => {
   );
   return { status: res.status, body: (await res.json()) as { error?: string } };
 };
-const aiStep = { n1: { id: "n1", type: "send_ai_sms", config: { instruction: "Offer a quote." }, next: null } };
+const aiStep = { n1: { id: "n1", type: "send_ai_sms", config: { instruction: "Offer a quote.", template: "Hi {{firstName}}. {{ai}}" }, next: null } };
 const status = () => mem.read("workflows/wf1")?.status;
 
 beforeEach(() => {
@@ -68,6 +68,24 @@ describe("activating a workflow with a Send AI text step", () => {
     mem.seed("subAccounts/sa1", { ...mem.read("subAccounts/sa1"), aiOutboundSmsEnabledByAgency: false });
     expect((await save({ nodes: aiStep })).status).toBe(400);
     expect(mem.read("workflows/wf1")?.nodes).toEqual({});
+  });
+
+  it("refuses activating a step whose template is empty", async () => {
+    mem.seed("workflows/wf1", { ...mem.read("workflows/wf1"), nodes: { n1: { ...aiStep.n1, config: { instruction: "Offer a quote." } } } });
+    const res = await save({ status: "active" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/^Send AI text: Write the message template/);
+  });
+
+  it.each([
+    ["no {{ai}}", "Hi {{firstName}}, want a quote?", /needs one \{\{ai\}\}/],
+    ["an unknown placeholder", "Hi {{contact.email}} {{ai}}", /isn't available here/],
+    ["too long", `${"x".repeat(290)} {{ai}}`, /too long/],
+  ])("refuses saving a template with %s, even on a draft", async (_label, template, message) => {
+    const res = await save({ nodes: { n1: { ...aiStep.n1, config: { instruction: "x", template } } }, status: "draft" });
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(message);
+    expect(mem.read("workflows/wf1")?.nodes).toEqual(aiStep);
   });
 
   it("still saves the step on a draft, ready or not", async () => {

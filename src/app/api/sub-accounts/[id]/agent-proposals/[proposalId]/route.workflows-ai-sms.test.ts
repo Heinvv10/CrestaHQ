@@ -22,7 +22,7 @@ vi.mock("@/lib/automations/qstash", async (importOriginal) => ({
 await setupAgentProposalTests();
 const { dispatchAgentTool } = await import("@/lib/api/agent-dispatch");
 
-const AI_STEP = { n1: { id: "n1", type: "send_ai_sms", config: { instruction: "Offer a quote." }, next: null } };
+const AI_STEP = { n1: { id: "n1", type: "send_ai_sms", config: { instruction: "Offer a quote.", template: "Hi {{firstName}}. {{ai}}" }, next: null } };
 const SMS_STEP = { n1: { id: "n1", type: "send_sms", config: { body: "Hi" }, next: null } };
 const seedWf = (patch: Record<string, unknown> = {}) =>
   mem.seed("workflows/wf1", {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
-import { seedAiSmsReady, stubOpenRouter } from "@/test/ai-outbound-sms-fixture";
+import { AI_LINE, AI_TEMPLATE, seedAiSmsReady, stubOpenRouter } from "@/test/ai-outbound-sms-fixture";
 
 /**
  * Send AI text, second round: the prospecting stamp is taken only once the
@@ -61,7 +61,10 @@ const { AI_SMS_COOLDOWN_MS } = await import("./ai-sms-cooldown");
 const { guardProspectSend } = await import("@/lib/prospecting/approach-guard");
 
 const DAY = new Date("2026-09-25T10:00:00Z");
-const OPENER = "Hi Thandi, this is Velocity Fibre. Would you like a quick fibre quote for your street?";
+const OPENER = AI_LINE;
+/** A line the slot rules refuse; with sending without the line off, a step
+ *  that gets it twice produces nothing. */
+const BAD_LINE = "Get a quote at evil.com today?";
 let aiReply = () => OPENER;
 let ai: ReturnType<typeof stubOpenRouter>;
 const COUNTERS = "subAccounts/sa1/prospectingFirstTouch";
@@ -103,7 +106,7 @@ beforeEach(() => {
   mem.seed("workflows/wf1", {
     name: "AI opener", subAccountId: "sa1", agencyId: "ag1", status: "active", startNodeId: "n1", createdByUid: "u_owner",
     trigger: { type: "prospecting.report.ready", filters: { all: [] } },
-    nodes: { n1: { id: "n1", type: "send_ai_sms", config: { instruction: "Offer a fibre quote." }, next: null } },
+    nodes: { n1: { id: "n1", type: "send_ai_sms", config: { instruction: "Offer a fibre quote.", template: AI_TEMPLATE, sendWithoutAiLine: false }, next: null } },
   });
 });
 afterEach(() => {
@@ -140,9 +143,9 @@ describe("the prospecting stamp", () => {
   });
 
   it("is handed back, with its cap slot, when the AI's text is refused", async () => {
-    aiReply = () => "Hi Thandi, Velocity Fibre here. Get a quote at evil.com today?";
+    aiReply = () => BAD_LINE;
     const runId = await runFirst();
-    expect(result(runId)).toBe("error:ai_link_not_allowed");
+    expect(result(runId)).toMatch(/^error:ai_failed:slot_invalid:/);
     expect(smsSent).not.toHaveBeenCalled();
     expect(prospecting()?.approachedAt ?? null).toBeNull();
     expect(prospecting()?.approachedWorkflowId).toBeUndefined();
@@ -190,6 +193,27 @@ describe("the prospecting stamp", () => {
     expect(counter()).toBe(1);
   });
 
+  it("is kept when the template went out without the AI line", async () => {
+    const wf = mem.read("workflows/wf1")!;
+    const n1 = (wf.nodes as Record<string, { config: Record<string, unknown> }>).n1;
+    mem.seed("workflows/wf1", { ...wf, nodes: { n1: { ...n1, config: { ...n1.config, sendWithoutAiLine: true } } } });
+    aiReply = () => BAD_LINE;
+    const runId = await runFirst();
+    expect(result(runId)).toBe("ok:without_ai_line");
+    expect(prospecting()).toMatchObject({ approachedWorkflowId: "wf1", approachedRunId: runId });
+    expect(counter()).toBe(1);
+  });
+
+  it("is handed back when the filled-in message is too long to send", async () => {
+    const wf = mem.read("workflows/wf1")!;
+    const n1 = (wf.nodes as Record<string, { config: Record<string, unknown> }>).n1;
+    mem.seed("workflows/wf1", { ...wf, nodes: { n1: { ...n1, config: { ...n1.config, template: `${"{{business}} ".repeat(25)}{{ai}}` } } } });
+    const runId = await runFirst();
+    expect(result(runId)).toBe("error:ai_too_long");
+    expect(prospecting()?.approachedAt ?? null).toBeNull();
+    expect(counter()).toBe(0);
+  });
+
   it("is not taken back once another run of the same workflow holds it", async () => {
     aiReply = () => {
       // Another run of wf1 passes the guard (and sends) while this one writes.
@@ -197,10 +221,10 @@ describe("the prospecting stamp", () => {
         ...mem.read("contacts/c1"),
         prospecting: { ...prospecting(), approachedRunId: "run_other", approachedNodeId: "n1" },
       });
-      return "Hi Thandi, Velocity Fibre here. Get a quote at evil.com today?";
+      return BAD_LINE;
     };
     const runId = await runFirst();
-    expect(result(runId)).toBe("error:ai_link_not_allowed");
+    expect(result(runId)).toMatch(/^error:ai_failed:slot_invalid:/);
     expect(prospecting()).toMatchObject({ approachedWorkflowId: "wf1", approachedRunId: "run_other" });
     expect(prospecting()?.approachedAt).toBeTruthy();
     expect(counter()).toBe(1);

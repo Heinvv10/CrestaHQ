@@ -11,6 +11,7 @@ import {
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isFolderId } from "@/lib/workflows/folders";
 import { sanitizeNodes } from "@/lib/workflows/sanitize-nodes";
+import { templateProblem } from "@/lib/comms/ai/outbound-sms-text";
 
 export const dynamic = "force-dynamic";
 
@@ -66,6 +67,13 @@ export async function PATCH(
       return NextResponse.json({ error: "Invalid nodes" }, { status: 400 });
     }
     patch.nodes = nodes;
+    // A Send AI text template that can never work is refused as it is saved;
+    // an empty one may sit in a draft (activation and the send refuse it).
+    for (const n of Object.values(nodes)) {
+      const template = n.type === "send_ai_sms" ? String(n.config.template ?? "") : "";
+      const problem = template.trim() ? templateProblem(template) : null;
+      if (problem) return NextResponse.json({ error: `Send AI text: ${problem}` }, { status: 400 });
+    }
   }
   // Move between folders. The folder is looked up under THIS sub-account's
   // path, so another sub-account's folder id is simply not found — 404, with

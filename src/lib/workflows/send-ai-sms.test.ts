@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createMemoryFirestore } from "@/test/memory-firestore";
-import { seedAiSmsReady, stubOpenRouter } from "@/test/ai-outbound-sms-fixture";
+import { AI_LINE, AI_TEMPLATE, aiSmsText, seedAiSmsReady, stubOpenRouter } from "@/test/ai-outbound-sms-fixture";
 
 /**
  * The "Send AI text" step through the REAL runStep: real readiness, real
@@ -34,21 +34,20 @@ vi.mock("@/lib/comms/sms/select", () => ({
 const { enrollForTest, runStep } = await import("./engine");
 const { flushAfterResponse } = await import("@/lib/server/after-response");
 const { usageMonthKey } = await import("@/lib/server/usage-meter");
-const { OPT_OUT_SUFFIX } = await import("@/lib/comms/ai/outbound-sms");
 const { APPROACH_REFUSED_LOG } = await import("@/lib/prospecting/approach-guard");
 
 const DAY = new Date("2026-09-25T10:00:00Z");
 const NIGHT = new Date("2026-09-25T19:30:00Z"); // 21:30 SAST
-const OPENER = "Hi Thandi, this is Velocity Fibre. Would you like a quick fibre quote for your street?";
+const OPENER = AI_LINE;
 let aiReply = () => OPENER;
 let ai: ReturnType<typeof stubOpenRouter>;
 
-function seedWorkflow(instruction = "Ask if they'd like a fibre quote.") {
+function seedWorkflow(instruction = "A friendly line about fibre in their area.", extra: Record<string, unknown> = {}) {
   mem.seed("workflows/wf1", {
     name: "AI opener", subAccountId: "sa1", agencyId: "ag1", status: "active",
     startNodeId: "n1", createdByUid: "u_owner",
     trigger: { type: "contact.created", filters: { all: [] } },
-    nodes: { n1: { id: "n1", type: "send_ai_sms", config: { instruction }, next: null } },
+    nodes: { n1: { id: "n1", type: "send_ai_sms", config: { instruction, template: AI_TEMPLATE, ...extra }, next: null } },
   });
 }
 
@@ -92,7 +91,7 @@ afterEach(() => {
 describe("Send AI text", () => {
   it("writes the opener and sends it from the workspace's own number, with the opt-out line", async () => {
     const runId = await runFirst();
-    expect(sentBodies()).toEqual([`${OPENER}${OPT_OUT_SUFFIX}`]);
+    expect(sentBodies()).toEqual([aiSmsText()]);
     expect(smsSent.mock.calls[0][0]).toBe("sa1");
     expect(history(runId)).toMatchObject([{ result: "ok" }]);
     const activity = mem.list("contacts/c1/activities").find((a) => a.type === "sms_sent");
@@ -188,22 +187,42 @@ describe("Send AI text", () => {
     expect(ai.fetchMock).toHaveBeenCalledOnce();
   });
 
-  it("refuses a link the instruction didn't contain, and sends nothing", async () => {
-    aiReply = () => "Hi from Velocity Fibre! Claim your deal at velo-deals.example.com/win today?";
+  it("a line that breaks the rules twice: the template goes without it, both tries metered", async () => {
+    let n = 0;
+    aiReply = () => (n++ === 0 ? "Claim your deal at velo-deals.example.com/win" : "Call oh eight two double one two three four");
     const runId = await runFirst();
-    expect(history(runId)).toMatchObject([{ result: "error:ai_link_not_allowed" }]);
-    expect(smsSent).not.toHaveBeenCalled();
+    expect(history(runId)).toMatchObject([{ result: "ok:without_ai_line" }]);
+    expect(sentBodies()).toEqual([aiSmsText(null)]);
+    expect(ai.fetchMock).toHaveBeenCalledTimes(2);
     await flushAfterResponse();
-    // The tokens were spent all the same.
-    expect(mem.read(`subAccounts/sa1/usage/${usageMonthKey()}`)?.aiTokens).toBe(120);
+    expect(mem.read(`subAccounts/sa1/usage/${usageMonthKey()}`)?.aiTokens).toBe(240);
   });
 
-  it("sends a link the business put in the instruction", async () => {
-    seedWorkflow("Invite them to book at https://velocityfibre.co.za/book");
-    aiReply = () => "Hi Thandi, Velocity Fibre here. You can book at https://velocityfibre.co.za/book - shall I hold a slot?";
+  it("with sending without the line switched off, nothing goes out", async () => {
+    seedWorkflow(undefined, { sendWithoutAiLine: false });
+    aiReply = () => "Search VelocityDealsZA on WhatsApp";
+    const runId = await runFirst();
+    expect(history(runId)[0].result).toMatch(/^error:ai_failed:slot_invalid:/);
+    expect(smsSent).not.toHaveBeenCalled();
+  });
+
+  it("the operator's own link and number in the template go out verbatim", async () => {
+    mem.seed("workflows/wf1", {
+      ...mem.read("workflows/wf1"),
+      nodes: { n1: { id: "n1", type: "send_ai_sms", next: null, config: {
+        instruction: "A friendly line.", template: "{{ai}} Book at https://velocityfibre.co.za/Book or call 082 123 4567.",
+      } } },
+    });
     const runId = await runFirst();
     expect(history(runId)).toMatchObject([{ result: "ok" }]);
-    expect(sentBodies()[0]).toContain("https://velocityfibre.co.za/book");
+    expect(sentBodies()[0]).toBe(`${AI_LINE} Book at https://velocityfibre.co.za/Book or call 082 123 4567. Reply STOP to opt out.`);
+  });
+
+  it("a template without {{ai}} is refused before anything is spent", async () => {
+    seedWorkflow(undefined, { template: "Hi {{firstName}}, want a quote?" });
+    const runId = await runFirst();
+    expect(history(runId)).toMatchObject([{ result: "error:template_invalid" }]);
+    expect(ai.fetchMock).not.toHaveBeenCalled();
   });
 
   it("saves a draft instead of sending when the conversation is on Suggest", async () => {
@@ -212,7 +231,7 @@ describe("Send AI text", () => {
     expect(history(runId)).toMatchObject([{ result: "drafted:suggest_mode" }]);
     expect(smsSent).not.toHaveBeenCalled();
     expect(setConversationDraft).toHaveBeenCalledWith(
-      expect.objectContaining({ contactId: "c1", channel: "sms", body: `${OPENER}${OPT_OUT_SUFFIX}` }),
+      expect.objectContaining({ contactId: "c1", channel: "sms", body: aiSmsText() }),
     );
   });
 

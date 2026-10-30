@@ -70,8 +70,9 @@ import {
   aiOutboundSmsGateOn,
   aiOutboundSmsReadiness,
   firstUnmet,
-  generateAiOpener,
+  writeAiSms,
 } from "@/lib/comms/ai/outbound-sms";
+import { templateProblem } from "@/lib/comms/ai/outbound-sms-text";
 import { incrementChannelTokens } from "@/lib/comms/ai/agent";
 import { runAfterResponse } from "@/lib/server/after-response";
 import {
@@ -523,25 +524,34 @@ async function deliverWorkflowSms(
 /** Send AI text outcomes that produced and queued nothing: the only ones that
  *  hand a prospecting stamp back. A draft, a hold or a send never does. */
 const AI_SMS_NOTHING_PRODUCED =
-  /^(?:skipped:(?:ai_sms_gate_off|not_ready:[a-z_]+|bot_paused|quota)(?::after_generation)?|error:ai_failed:[\s\S]*|error:ai_link_not_allowed|error:ai_empty)$/;
+  /^(?:skipped:(?:ai_sms_gate_off|not_ready:[a-z_]+|bot_paused|quota)(?::after_generation)?|error:ai_failed:[\s\S]*|error:ai_too_long)$/;
 
 /** What a Send AI text needs once nothing stops it. */
 interface AiSmsPrep {
   instruction: string;
+  template: string;
+  sendWithoutAiLine: boolean;
   to: string;
   agent: ResolvedAiAgent;
   botMode: string;
 }
 type AiSmsCheck = { stop: { result: StepResult; log: string } } | { prep: AiSmsPrep };
 const aiSmsStop = (log: string, result: StepResult = { kind: "next" }): AiSmsCheck => ({ stop: { result, log } });
+/** The parts of a Send AI text's config the text is made from; an edit to any
+ *  of them while the AI writes stops the step. */
+const aiSmsConfigKey = (config: Record<string, unknown> | undefined) => {
+  const c = (config ?? {}) as Partial<SendAiSmsConfig>;
+  return JSON.stringify([c.instruction ?? "", c.template ?? "", c.sendWithoutAiLine !== false]);
+};
 
 /**
  * Everything that stops a Send AI text, or what it needs to go ahead. runStep
  * runs it BEFORE the prospecting stamp, so a step that can't send never
  * stamps; the step runs it again after the model call on freshly read docs
  * ("after"), because the contact may opt out, the agency switch AI texts off,
- * a person take over or the workflow be paused while the AI writes. The gate
- * and readiness are re-checked on every send, never trusted from enable time.
+ * a person take over, the workflow, its step or the run change, or the
+ * workspace pause automations while the AI writes. The gate and readiness are
+ * re-checked on every send, never trusted from enable time.
  */
 async function aiSmsCheck(
   ctx: NodeContext,
@@ -553,15 +563,29 @@ async function aiSmsCheck(
   const cfg = ctx.node.config as unknown as SendAiSmsConfig;
   const instruction = (cfg.instruction ?? "").trim().slice(0, 1000);
   if (!instruction) return aiSmsStop("error:no_instruction");
+  const template = cfg.template ?? "";
+  if (templateProblem(template)) return aiSmsStop("error:template_invalid");
   if (!sub || !aiOutboundSmsGateOn(sub)) return aiSmsStop("skipped:ai_sms_gate_off");
+  if (sub.automationsPaused === true) return aiSmsStop("skipped:automations_paused");
   if (channelOptedOut(ctx.node.type, contact)) return aiSmsStop("skipped:opt_out");
   const to = contact.phone;
   if (!to) return aiSmsStop("skipped:no_phone");
   if (expectedTo !== undefined && to !== expectedTo) return aiSmsStop("skipped:phone_changed");
-  const wfSnap = await getAdminDb().doc(`workflows/${ctx.workflowId}`).get();
-  if (!wfSnap.exists || (wfSnap.data() as WorkflowDoc).status !== ctx.workflowStatus) {
+  const db = getAdminDb();
+  const [wfSnap, runSnap] = await Promise.all([
+    db.doc(`workflows/${ctx.workflowId}`).get(),
+    db.doc(`workflowRuns/${ctx.runId}`).get(),
+  ]);
+  const wf = wfSnap.exists ? (wfSnap.data() as WorkflowDoc) : null;
+  if (
+    !wf ||
+    wf.status !== ctx.workflowStatus ||
+    aiSmsConfigKey(wf.nodes?.[ctx.node.id]?.config) !== aiSmsConfigKey(ctx.node.config)
+  ) {
     return aiSmsStop("skipped:workflow_changed");
   }
+  const runStatus = runSnap.exists ? (runSnap.data() as WorkflowRunDoc).status : null;
+  if (runStatus !== "running" && runStatus !== "waiting") return aiSmsStop("skipped:run_ended");
   const readiness = await aiOutboundSmsReadiness(ctx.subAccountId, sub);
   const unmet = firstUnmet(readiness);
   if (unmet || !readiness.agent) return aiSmsStop(`skipped:not_ready:${unmet?.key ?? "agent"}`);
@@ -591,26 +615,38 @@ async function aiSmsCheck(
       if (!quota.allowed) return aiSmsStop("skipped:quota");
     }
   }
-  return { prep: { instruction, to, agent: readiness.agent, botMode: controls.botMode } };
+  return {
+    prep: {
+      instruction,
+      template,
+      sendWithoutAiLine: cfg.sendWithoutAiLine !== false,
+      to,
+      agent: readiness.agent,
+      botMode: controls.botMode,
+    },
+  };
 }
 
 /**
- * The AI writes the first text (lib/comms/ai/outbound-sms.ts) and it goes out
- * as an automated SMS (quiet hours hold it again at the send). Once tokens are
- * spent a throw is recorded and the run stops — a retry would pay again.
+ * The AI writes the `{{ai}}` line of the operator's template
+ * (lib/comms/ai/outbound-sms.ts) and the text goes out as an automated SMS
+ * (quiet hours hold it again at the send). Once tokens are spent a throw is
+ * recorded and the run stops — a retry would pay again.
  */
 const execSendAiSms: NodeExecutor = async (ctx) => {
   const before = ctx.aiSms ?? (await aiSmsCheck(ctx, ctx.contact, ctx.subAccount, "before"));
   if ("stop" in before) return before.stop;
   const { prep } = before;
-  let opener: Awaited<ReturnType<typeof generateAiOpener>>;
+  let written: Awaited<ReturnType<typeof writeAiSms>>;
   try {
-    opener = await generateAiOpener({
+    written = await writeAiSms({
       subAccountId: ctx.subAccountId,
       agent: prep.agent,
       sub: ctx.subAccount!,
       contact: ctx.contact,
       instruction: prep.instruction,
+      template: prep.template,
+      sendWithoutAiLine: prep.sendWithoutAiLine,
     });
   } catch (err) {
     return {
@@ -619,10 +655,13 @@ const execSendAiSms: NodeExecutor = async (ctx) => {
     };
   }
   // Spent whether or not the text is usable; also meters aiTokens.
-  const tokens = opener.tokens;
+  const tokens = written.tokens;
   runAfterResponse(() => incrementChannelTokens(ctx.subAccountId, "sms", tokens));
-  if (!opener.ok) {
-    return { result: { kind: "next" }, log: `error:ai_${opener.reason}` };
+  if (!written.ok) {
+    return {
+      result: { kind: "next" },
+      log: written.reason === "too_long" ? "error:ai_too_long" : `error:ai_failed:slot_invalid:${written.detail.slice(0, 120)}`,
+    };
   }
   try {
     const db = getAdminDb();
@@ -650,15 +689,16 @@ const execSendAiSms: NodeExecutor = async (ctx) => {
         contactName: ctx.contact.name ?? "",
         contactPhone: prep.to,
         channel: "sms",
-        body: opener.text,
-        model: opener.model,
-        tokens: opener.tokens,
+        body: written.text,
+        model: written.model,
+        tokens: written.tokens,
       });
       return { result: { kind: "next" }, log: "drafted:suggest_mode" };
     }
-    const delivered = await deliverWorkflowSms(ctx, prep.to, opener.text, "AI text (workflow)");
+    const label = written.withoutAiLine ? "AI text (workflow, without the AI line)" : "AI text (workflow)";
+    const delivered = await deliverWorkflowSms(ctx, prep.to, written.text, label);
     if (delivered.log !== "ok" && ctx.sent?.attempted !== true) await releaseAiSmsCooldown(cooldown);
-    return delivered;
+    return written.withoutAiLine && delivered.log === "ok" ? { ...delivered, log: "ok:without_ai_line" } : delivered;
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[workflows] AI text step failed after the model call (run ${ctx.runId}): ${msg}`);

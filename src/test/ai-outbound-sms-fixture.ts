@@ -1,4 +1,13 @@
 import { vi } from "vitest";
+import { OPT_OUT_SUFFIX } from "@/lib/comms/ai/outbound-sms-text";
+
+/** A Send AI text step's message, and a line the AI may write in it. */
+export const AI_TEMPLATE = "Hi {{firstName}}, it's {{business}}. {{ai}} Shall we send a quote?";
+export const AI_LINE = "Fibre has just gone live on your street.";
+/** What goes out for the fixture's business ("Velocity Fibre"), with `line`
+ *  in the slot or, for null, without it. */
+export const aiSmsText = (line: string | null = AI_LINE, name = "Thandi") =>
+  `Hi ${name}, it's Velocity Fibre.${line ? ` ${line}` : ""} Shall we send a quote?${OPT_OUT_SUFFIX}`;
 
 /**
  * A sub-account that passes every AI outbound SMS readiness check

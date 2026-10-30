@@ -8,6 +8,7 @@ import {
   aiOutboundSmsReadiness,
   firstUnmet,
 } from "@/lib/comms/ai/outbound-sms";
+import { templateProblem } from "@/lib/comms/ai/outbound-sms-text";
 import type { AgentActor } from "@/lib/workflows/agent-hold";
 import type {
   WorkflowDoc,
@@ -447,10 +448,12 @@ export async function aiSmsActivationBlock(
   subAccountId: string,
   nodes: Record<string, WorkflowNode> | null | undefined,
 ): Promise<string | null> {
-  const hasAiSms = Object.values(nodes ?? {}).some(
-    (n) => n?.type === "send_ai_sms",
-  );
-  if (!hasAiSms) return null;
+  const aiNodes = Object.values(nodes ?? {}).filter((n) => n?.type === "send_ai_sms");
+  if (aiNodes.length === 0) return null;
+  for (const n of aiNodes) {
+    const problem = templateProblem(String(n.config?.template ?? ""));
+    if (problem) return `Send AI text: ${problem}`;
+  }
   const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
   const sub = snap.data() as SubAccountDoc | undefined;
   if (!sub) return "Workspace not found.";

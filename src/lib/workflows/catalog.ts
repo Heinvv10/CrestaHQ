@@ -120,7 +120,11 @@ export function defaultConfig(type: WorkflowNodeType): Record<string, unknown> {
     case "send_sms":
       return { body: "" };
     case "send_ai_sms":
-      return { instruction: "" };
+      return {
+        template: "Hi {{firstName}}, it's {{business}}. {{ai}}",
+        instruction: "",
+        sendWithoutAiLine: true,
+      };
     case "whatsapp_template":
       // Empty senderId = the sub-account's default sender.
       return { templateId: "", manualValues: {}, senderId: "" };
@@ -159,7 +163,7 @@ export function nodeSummary(step: BuilderStep): string {
     case "send_sms":
       return (c.body as string)?.slice(0, 60) || "No message yet";
     case "send_ai_sms":
-      return (c.instruction as string)?.slice(0, 60) || "No instruction yet";
+      return (c.template as string)?.slice(0, 60) || "No message yet";
     case "whatsapp_template":
       return (c.templateId as string) ? "WhatsApp template" : "Choose a template";
     case "send_whatsapp":
