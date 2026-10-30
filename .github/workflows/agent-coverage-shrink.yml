@@ -19,7 +19,7 @@ on:
 jobs:
   shrink:
     name: Agent coverage FROZEN only shrinks
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: ubuntu-latest
     timeout-minutes: 5
     # Skips a fork's PR, as in ci.yml (see the reasoning there).
     if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}

@@ -25,6 +25,7 @@ import { runProspectReport } from "@/lib/prospecting/report-runner";
 import { getScan, probeKey, startScan } from "@/lib/prospecting/apexgeo-client";
 import { POST as subscribePush } from "@/app/api/push/subscriptions/route";
 import { resolveLiveUrl } from "@/lib/server/website-handoff-service";
+import { postSlackMessage } from "@/lib/slack/client";
 import type { Quote } from "@/types/quotes";
 
 // 1x1 PNG
@@ -40,6 +41,11 @@ let base = "";
 beforeAll(async () => {
   server = http.createServer((req, res) => {
     hits.push(req.url ?? "");
+    if (req.url?.startsWith("/redirect")) {
+      res.writeHead(302, { Location: `${base}/internal` });
+      res.end();
+      return;
+    }
     res.writeHead(200, { "Content-Type": req.url === "/logo.png" ? "image/png" : "application/json" });
     res.end(req.url === "/logo.png" ? PNG : "{}");
   });
@@ -122,6 +128,29 @@ describe("tenant-URL fetchers refuse internal addresses", () => {
     vi.stubEnv("NODE_ENV", "development");
     await probeKey({ apiKey: "apx_k", baseUrl: base });
     expect(hits).toEqual(["/api/v1/scans?limit=1"]);
+  });
+
+  describe("Slack post", () => {
+    const message = { text: "hi" };
+
+    it("never reaches an internal address", async () => {
+      const out = await postSlackMessage(`${base}/services/T/B/X`, message);
+      expect(out).toMatchObject({ ok: false, revoked: false });
+      expect(hits).toEqual([]);
+    });
+
+    it("control: outside production it DOES reach the loopback server", async () => {
+      vi.stubEnv("NODE_ENV", "development");
+      expect(await postSlackMessage(`${base}/services/T/B/X`, message)).toMatchObject({ ok: true });
+      expect(hits).toEqual(["/services/T/B/X"]);
+    });
+
+    it("a 302 to an internal address is not followed (even with the address guard off)", async () => {
+      vi.stubEnv("NODE_ENV", "development");
+      const out = await postSlackMessage(`${base}/redirect`, message);
+      expect(out).toMatchObject({ ok: false, revoked: false, error: "Slack returned 302." });
+      expect(hits).toEqual(["/redirect"]);
+    });
   });
 
   it("push subscription endpoint is refused at save time", async () => {

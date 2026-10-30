@@ -2,7 +2,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * Removing a member deletes their Google Calendar connection (S2): a removed
- * member's tokens must not linger for busy loading or pushes to use.
+ * member's tokens must not linger for busy loading or pushes to use — nor
+ * their imported Google events on the workspace calendar.
  */
 
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/google-oauth-harness")).adminMock());
@@ -46,5 +47,18 @@ describe("member removal", () => {
     expect(state.docs.has(CAL("uid_admin2"))).toBe(true);
     // Their Google copies were taken down FIRST, while the tokens still existed.
     expect(copies.calls).toEqual([{ uid: "uid_member", tokensStillThere: true }]);
+  });
+
+  it("deletes the removed member's imported Google events, and only theirs", async () => {
+    state.docs.set("events/gcal_mine", { subAccountId: SUB, source: "google", importOwnerUid: "uid_member" });
+    state.docs.set("events/gcal_colleague", { subAccountId: SUB, source: "google", importOwnerUid: "uid_admin2" });
+    state.docs.set("events/booking", { subAccountId: SUB, assignedToUid: "uid_member" });
+    const res = await DELETE(new Request("http://x/api", { method: "DELETE" }), {
+      params: Promise.resolve({ id: SUB, uid: "uid_member" }),
+    });
+    expect(res.status).toBe(200);
+    expect(state.docs.has("events/gcal_mine")).toBe(false);
+    expect(state.docs.has("events/gcal_colleague")).toBe(true);
+    expect(state.docs.has("events/booking")).toBe(true);
   });
 });

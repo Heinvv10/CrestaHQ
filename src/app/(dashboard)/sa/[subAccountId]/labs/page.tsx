@@ -2,7 +2,6 @@
 
 import { FlaskConical, Loader2, Lock } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
-import { WatchdogSection } from "@/components/labs/watchdog-section";
 import { FunnelsSection } from "@/components/labs/funnels-section";
 
 /**
@@ -12,8 +11,8 @@ import { FunnelsSection } from "@/components/labs/funnels-section";
  * follows the standard gate + hidden-when-disabled treatment). Each
  * experiment listed here is explicitly pre-release: it may change, move, or
  * be withdrawn, and it keeps its own runtime safeguards on top of the Labs
- * gate (e.g. the Inbox Watchdog also requires the AI Suite gate to spend
- * agency AI credits — see CUSTOM_AGENTS_V1_PLAN.md).
+ * gate. The Inbox Watchdog moved to AI Agents → Monitors; it still needs
+ * the Labs gate (plus the AI Suite gate) there.
  *
  * Experiments graduate OUT of Labs into the main nav when proven; this page
  * is deliberately a thin shell so adding/removing an experiment is one card.
@@ -78,9 +77,6 @@ export default function LabsPage() {
       </header>
 
       <section className="space-y-4">
-        {/* ── Experiment: Inbox Follow-up Watchdog (LIVE) ────────────────── */}
-        <WatchdogSection />
-
         {/* ── Experiment: Quick Funnels (LIVE) ───────────────────────────── */}
         <FunnelsSection />
 

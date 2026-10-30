@@ -37,17 +37,51 @@ export interface GoogleCalendarConnection {
    */
   lastPushError?: string | null;
   lastPushErrorAt?: Date | null;
+  /**
+   * Calendar import (lib/google-calendar/import.ts). Set only by the member
+   * themself: "busy" stores times only, "details" also titles and places.
+   * Absent = off. A reconnect replaces the doc, so it resets to off (and
+   * carries `importGeneration` forward, bumped).
+   */
+  importMode?: ImportMode;
+  /** Bumped by every opt-in change; a running import that sees it move backs off. */
+  importGeneration?: number;
+  /** Google's incremental sync token; null forces a full walk. */
+  importSyncToken?: string | null;
+  importLastSyncAt?: Date | null;
+  importLastFullSyncAt?: Date | null;
+  /** Last pass started — orders the sweep so a pass that keeps dying can't hog it. */
+  importLastAttemptAt?: Date | null;
+  /** Last FULL pass started — the settings route's cooldown. */
+  importLastFullAttemptAt?: Date | null;
+  /** One pass at a time per member: who holds it, and until when. */
+  importLeaseId?: string | null;
+  importLeaseUntil?: Date | null;
+  /** The import fingerprint the holder started under; a pass under newer keys may take over. */
+  importLeasePrint?: string | null;
+  importStatus?: "ok" | "error" | null;
+  /** Fixed text per failure kind, like `lastError`. */
+  importError?: string | null;
+  importedCount?: number;
 }
+
+/** What a member shares from their Google Calendar. */
+export type ImportMode = "off" | "busy" | "details";
 
 /** Refresh when less than this is left on the cached access token. */
 export const REFRESH_MARGIN_MS = 60_000;
 
 const UID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
+/** True when `uid` can name a connection doc (the shape gcalConnectionPath accepts). */
+export function isConnectionUid(uid: string): boolean {
+  return UID_RE.test(uid);
+}
+
 export function gcalConnectionPath(subAccountId: string, uid: string): string {
   // The uid becomes part of a document id; one with a "/" would name a
   // different document entirely.
-  if (!UID_RE.test(uid)) throw new Error("google-calendar: unsupported uid shape");
+  if (!isConnectionUid(uid)) throw new Error("google-calendar: unsupported uid shape");
   return `subAccounts/${subAccountId}/private/googleCalendar_${uid}`;
 }
 

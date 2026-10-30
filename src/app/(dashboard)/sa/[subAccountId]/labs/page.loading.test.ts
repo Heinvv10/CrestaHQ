@@ -18,7 +18,6 @@ const ctx = vi.hoisted(() => ({
   },
 }));
 vi.mock("@/context/sub-account-context", () => ({ useSubAccount: () => ctx.value }));
-vi.mock("@/components/labs/watchdog-section", () => ({ WatchdogSection: () => null }));
 vi.mock("@/components/labs/funnels-section", () => ({ FunnelsSection: () => null }));
 
 const { default: LabsPage } = await import("./page");
