@@ -140,9 +140,9 @@ export const AI_SUITE_KNOWLEDGE: AiSuiteKnowledgeCard[] = [
     levels: ["sub-account"],
     title: "Products catalog",
     location: "Sidebar → Products",
-    keywords: ["product", "catalog", "price", "item", "invoice", "line item"],
+    keywords: ["product", "catalog", "price", "item", "invoice", "line item", "sell online", "buy link", "slug"],
     body:
-      "Products is a reusable per-sub-account catalog (name, description, unit price, currency, active flag). When building a quote or invoice, use 'Add from catalog' to snapshot a product into a line item — editing a product later never changes historical quotes/invoices.",
+      "Products is a reusable per-sub-account catalog (name, description, unit price, currency, active flag). When building a quote or invoice, use 'Add from catalog' to snapshot a product into a line item — editing a product later never changes historical quotes/invoices. Sell online: when the agency owner has switched on Sell online for the workspace, the product dialog gains a 'Sell online' block that gives the product its own buy link (a web address under …/buy/), a sales description, and what the buyer gets (a service you follow up yourself, access to a community group or course, or a download link). A product can only be put on sale with a price above zero in a supported currency (USD, AUD, EUR, GBP, CAD, NZD, JPY, CHF, SGD, HKD or ZAR) and a payment connection under Settings → Payments that can take that currency: Stripe for any of them, or Paystack for ZAR only (with both connected, Stripe is used). The web address must be unique in the workspace, including against checkout page addresses. The public buy pages themselves are not live yet, so a buy link does not work today.",
   },
   {
     id: "quotes-invoices",

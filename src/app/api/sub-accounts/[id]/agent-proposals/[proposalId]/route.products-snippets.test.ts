@@ -114,10 +114,49 @@ describe("products", () => {
     expect(mem.read("products/pr2")!.unitPriceCents).toBe(1);
   });
 
+  const ONLINE = { ...PRODUCT, name: "Online", sellOnline: true, slug: "online" };
+
+  it.each([
+    ["price", { unitPriceCents: 59900 }, { label: "Price", value: "ZAR 499 → ZAR 599" }],
+    ["currency", { currency: "USD" }, { label: "Price", value: "ZAR 499 → USD 499" }],
+  ])("a %s edit to a product on sale online → a spend proposal naming its buy link; approve applies", async (_label, fields, priceRow) => {
+    mem.seed("products/pr2", ONLINE);
+    const id = await proposeId("update_product", { productId: "pr2", ...fields });
+    expect(row(id).approval).toBe("spend");
+    expect(row(id).preview).toEqual(expect.arrayContaining([priceRow, { label: "Sold by", value: "buy link online (pr2)" }]));
+    expect(mem.read("products/pr2")).toEqual(ONLINE);
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", agentApiEnabledByAgency: true, apiAccessEnabledByAgency: true, sellOnlineEnabledByAgency: true, paymentsEnabledByAgency: true, stripeConnectionMeta: { ready: true } });
+    expect((await decide(id, "approve")).status).toBe(200);
+    expect(mem.read("products/pr2")).toMatchObject(fields);
+  });
+
+  it("an approved price of 0 on a product on sale → failed at approve, nothing written", async () => {
+    mem.seed("products/pr2", ONLINE);
+    const id = await proposeId("update_product", { productId: "pr2", unitPriceCents: 0 });
+    expect((await decide(id, "approve")).status).toBe(422);
+    expect(row(id).error).toBe("Set a price above zero before selling online.");
+    expect(mem.read("products/pr2")).toEqual(ONLINE);
+  });
+
+  it("put on sale between the check and the direct write → refused, nothing written", async () => {
+    mem.seed("products/pr2", { ...PRODUCT, name: "Unsold" });
+    beforeNextTransaction(async () => mem.seed("products/pr2", { ...PRODUCT, name: "Unsold", sellOnline: true, slug: "unsold" }));
+    expect(await call("update_product", { productId: "pr2", unitPriceCents: 1 })).toMatchObject({
+      ok: false, message: "A checkout page, funnel or buy link now sells this product, so this change needs approval: send it again.",
+    });
+    expect(mem.read("products/pr2")!.unitPriceCents).toBe(49900);
+  });
+
+  it("delete_product of a product on sale online → refused at propose", async () => {
+    mem.seed("products/pr2", ONLINE);
+    expect(await call("delete_product", { productId: "pr2" })).toMatchObject({ ok: false, message: expect.stringContaining("on sale online") });
+    expect(mem.list("agentProposals")).toEqual([]);
+  });
+
   it("a checkout page starting to sell it between the check and the direct write → refused, nothing written", async () => {
     beforeNextTransaction(async () => page({ productId: "pr1" }));
     expect(await call("update_product", { productId: "pr1", unitPriceCents: 1 })).toMatchObject({
-      ok: false, message: "A checkout page or funnel now sells this product, so this change needs approval: send it again.",
+      ok: false, message: "A checkout page, funnel or buy link now sells this product, so this change needs approval: send it again.",
     });
     expect(mem.read("products/pr1")).toEqual(PRODUCT);
   });
@@ -168,7 +207,7 @@ describe("products", () => {
     expect(row(id).preview).toContainEqual({ label: "Open quotes / invoices using it", value: "1 (they keep their own copy of name and price)" });
     beforeNextTransaction(async () => page({ productId: "pr1" }));
     expect((await decide(id, "approve")).status).toBe(422);
-    expect(row(id).error).toBe("A checkout page or funnel now sells this product; it was not deleted.");
+    expect(row(id).error).toBe("A checkout page, funnel or buy link now sells this product; it was not deleted.");
     expect(mem.read("products/pr1")).toBeDefined();
     mem.seed("subAccounts/sa1/checkoutPages/cp1", { subAccountId: "sa1", productId: "other", bumpProductIds: [] });
     const id2 = await proposeId("delete_product", { productId: "pr1" });
