@@ -103,3 +103,44 @@ describe("a name in CN=", () => {
     expect(line(ics, "ATTENDEE")).toContain('CN="O\'Brien, Ann";');
   });
 });
+
+describe("an email address in mailto:", () => {
+  it.each([
+    ["CRLF", "v@example.com\r\nATTENDEE:mailto:evil@example.com"],
+    ["a line separator", "v@example.com\u2028ATTENDEE:mailto:evil@example.com"],
+    ["NEL", "v@example.com\u0085ATTENDEE:mailto:evil@example.com"],
+    ["a space and a tab", "v@example.com ;ROLE=CHAIR\tx"],
+  ])("with %s stays one value on its own line", (_l, email) => {
+    const ics = generateIcs({ ...BASE, attendeeEmail: email, organizerEmail: email });
+    expect(properties(ics).filter((p) => p === "ATTENDEE")).toHaveLength(1);
+    expect(ics.replace(/\r\n/g, "")).not.toMatch(BREAKING);
+    const attendee = ics.replace(/\r\n /g, "").split("\r\n").find((l) => l.startsWith("ATTENDEE"))!;
+    expect(attendee).not.toMatch(/mailto:\S*\s/);
+  });
+});
+
+describe("folding long lines", () => {
+  const octets = (l: string) => new TextEncoder().encode(l).length;
+  const unfold = (ics: string) => ics.replace(/\r\n /g, "");
+
+  it.each([
+    ["CJK", "予約の確認：東京本社で打ち合わせ。".repeat(12)],
+    ["emoji (surrogate pairs)", "Meeting 📅🤝 ".repeat(20)],
+    ["mixed", `Ünïcödé café — ${"数".repeat(40)} ${"🙂".repeat(30)}`],
+  ])("%s: every line is at most 75 octets and no character is split", (_l, summary) => {
+    for (const ics of [
+      generateIcs({ ...BASE, summary }),
+      generateIcsFeed({ domain: "app.test", calendarName: "Cal", events: [{ uid: "e1", startAt: BASE.startAt, endAt: BASE.endAt, summary, status: "CONFIRMED" }] }),
+    ]) {
+      const lines = ics.split("\r\n").filter(Boolean);
+      expect(lines.filter((l) => octets(l) > 75)).toEqual([]);
+      // A split surrogate pair or code point would not survive the round trip.
+      expect(ics).not.toMatch(/\uFFFD|[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+      expect(unfold(ics)).toContain(`SUMMARY:${summary}`);
+    }
+  });
+
+  it("a short ASCII line is not folded", () => {
+    expect(generateIcs({ ...BASE, summary: "Intro" })).toContain("\r\nSUMMARY:Intro\r\n");
+  });
+});

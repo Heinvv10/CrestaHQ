@@ -48,6 +48,15 @@ export function meetLinkToFollow(locationText: string): string {
   return `${locationText} (the joining link will follow)`;
 }
 
+/**
+ * Text that must stay on one line (a booker's name in titles, invites,
+ * Google and emails): control characters and line / paragraph separators
+ * become spaces.
+ */
+export function oneLineText(v: string): string {
+  return v.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]+/g, " ").trim();
+}
+
 /** Types where the business types a value (address / phone number). */
 export function locationNeedsValue(type: BookingLocationType): "address" | "phone" | null {
   if (type === "in_person") return "address";

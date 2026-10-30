@@ -176,6 +176,12 @@ export async function POST(
   }
   const body = (read.value ?? {}) as BookBody;
 
+  // A non-string field is a bad request, not a crash.
+  for (const [field, value] of [["name", body.name], ["email", body.email], ["phone", body.phone], ["address", body.address]] as const) {
+    if (value !== undefined && value !== null && typeof value !== "string") {
+      return NextResponse.json({ error: `${field} must be text.` }, { status: 400 });
+    }
+  }
   const name = (body.name ?? "").trim();
   const email = (body.email ?? "").trim().toLowerCase();
   const phone = (body.phone ?? "").trim();
@@ -185,7 +191,15 @@ export async function POST(
       { status: 400 },
     );
   }
-  if (!EMAIL_RE.test(email) || email.length > 200) {
+  // The name reaches the title, the invite, Google and every email.
+  if (!isPlainLocationText(name)) {
+    return NextResponse.json(
+      { error: "Enter your name on one line, without < or >." },
+      { status: 400 },
+    );
+  }
+  // \s misses NEL, C0 controls other than whitespace, and the C1 range.
+  if (!EMAIL_RE.test(email) || email.length > 200 || /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(email)) {
     return NextResponse.json(
       { error: "A valid email is required." },
       { status: 400 },

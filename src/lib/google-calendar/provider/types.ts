@@ -98,11 +98,12 @@ export interface GcalProvider {
 
 /** A Meet link as Google returns it in `hangoutLink`; anything else is dropped. */
 export function meetUrlOf(value: unknown): string | null {
-  if (typeof value !== "string" || value.length > 200) return null;
+  // The raw value too: `new URL` would quietly drop a tab or line break.
+  if (typeof value !== "string" || value.length > 200 || /[\u0000-\u0020<>"]/.test(value)) return null;
   try {
     const url = new URL(value);
     return url.protocol === "https:" && url.hostname === "meet.google.com" && !url.username && !url.password
-      ? value
+      ? url.href
       : null;
   } catch {
     return null;

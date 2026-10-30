@@ -17,7 +17,7 @@ import {
   loadHostNotifyContact,
   loadHostUpcomingCounts,
 } from "@/lib/booking/hosts";
-import { effectiveBookingLocation, eventLocationText } from "@/lib/booking/location";
+import { effectiveBookingLocation, eventLocationText, oneLineText } from "@/lib/booking/location";
 import { issueEventToken } from "@/lib/booking/event-token";
 import {
   emitBookingWebhook,
@@ -180,8 +180,9 @@ export async function bookVoiceSlot(input: {
   const slotEnd = new Date(
     slotStart.getTime() + page.durationMinutes * 60_000,
   );
-  const callerName = input.callerName.trim().slice(0, 120);
-  const callerPhone = input.callerPhone.trim().slice(0, 40);
+  // One line before it reaches the contact, the title, invites and emails.
+  const callerName = oneLineText(input.callerName).slice(0, 120);
+  const callerPhone = oneLineText(input.callerPhone).slice(0, 40);
 
   const territoryId =
     page.defaultTerritoryId && page.defaultTerritoryId.length > 0

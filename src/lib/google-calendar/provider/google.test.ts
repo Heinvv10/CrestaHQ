@@ -117,9 +117,19 @@ describe("putEvent", () => {
     "https://meet.google.com.evil.example/abc",
     "https://evil.example/abc",
     "javascript:alert(1)",
+    "https://meet.google.com/abc\tdef",
+    "https://meet.google.com/abc\ndef",
+    "https://meet.google.com/abc def",
+    'https://meet.google.com/abc"onmouseover=x',
+    "https://meet.google.com/<abc>",
   ])("drops a hangoutLink that is not a Meet link: %s", async (hangoutLink) => {
     stub({ body: { id: "lsabc123", hangoutLink } });
     expect((await g.putEvent("tok", "lsabc123", MEET)).meetUrl).toBeNull();
+  });
+
+  it("returns the parsed link (url.href), not the raw string", async () => {
+    stub({ body: { id: "lsabc123", hangoutLink: "https://MEET.google.com/abc-defg-hij" } });
+    expect((await g.putEvent("tok", "lsabc123", MEET)).meetUrl).toBe("https://meet.google.com/abc-defg-hij");
   });
 
   it("refuses an id that could smuggle a path", async () => {

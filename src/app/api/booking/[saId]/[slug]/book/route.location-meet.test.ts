@@ -176,6 +176,30 @@ describe("other locations", () => {
     expect(m.sent).toHaveLength(0);
   });
 
+  it("a name or email with a line break, separator or markup is refused before anything is written", async () => {
+    seedPage("p", { location: { type: "we_call", value: null } });
+    for (const name of ["Eve\r\nATTENDEE:mailto:evil@example.com", "Eve\u2028x", "Eve\u0085x", "<b>Eve</b>"]) {
+      expect((await book({ name })).status).toBe(400);
+    }
+    for (const email of ["v@example.com\u0085x", "v@exa\u0000mple.com", "v@example.co\u009fm"]) {
+      expect((await book({ email })).status).toBe(400);
+    }
+    expect(mem.list("events")).toHaveLength(0);
+    expect(m.sent).toHaveLength(0);
+  });
+
+  it.each([
+    ["name", 42],
+    ["email", { a: 1 }],
+    ["phone", ["+27"]],
+    ["address", 7],
+  ])("a non-string %s is a 400, not a crash", async (field, value) => {
+    seedPage("p", { location: { type: "their_address", value: null } });
+    const res = await book({ address: "7 Oak Ave", [field]: value });
+    expect(res.status).toBe(400);
+    expect(mem.list("events")).toHaveLength(0);
+  });
+
   it("an address sent to a page that doesn't ask for one is ignored", async () => {
     seedPage("p", { location: { type: "we_call", value: null } });
     expect((await book({ address: "<script>x</script>" })).status).toBe(200);

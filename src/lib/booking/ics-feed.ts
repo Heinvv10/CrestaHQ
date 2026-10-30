@@ -72,11 +72,23 @@ function escapeIcsText(s: string): string {
 }
 
 function foldLine(line: string): string {
-  if (line.length <= 75) return line;
+  // 75 OCTETS of UTF-8 per line, the continuation's leading space included;
+  // `for…of` walks code points, so no character (or surrogate pair) splits.
   const out: string[] = [];
-  for (let i = 0; i < line.length; i += 73) {
-    out.push((i === 0 ? "" : " ") + line.slice(i, i + 73));
+  let current = "";
+  let octets = 0;
+  for (const ch of line) {
+    const cp = ch.codePointAt(0) ?? 0;
+    const n = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+    if (octets + n > 75) {
+      out.push(current);
+      current = " ";
+      octets = 1;
+    }
+    current += ch;
+    octets += n;
   }
+  out.push(current);
   return out.join("\r\n");
 }
 
