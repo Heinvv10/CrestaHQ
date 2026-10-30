@@ -141,7 +141,7 @@ describe("products", () => {
   it("put on sale between the check and the direct write → refused, nothing written", async () => {
     mem.seed("products/pr2", { ...PRODUCT, name: "Unsold" });
     beforeNextTransaction(async () => mem.seed("products/pr2", { ...PRODUCT, name: "Unsold", sellOnline: true, slug: "unsold" }));
-    expect(await call("update_product", { productId: "pr2", unitPriceCents: 1 })).toMatchObject({
+    expect(await call("update_product", { productId: "pr2", unitPriceCents: 5000 })).toMatchObject({
       ok: false, message: "A checkout page, funnel or buy link now sells this product, so this change needs approval: send it again.",
     });
     expect(mem.read("products/pr2")!.unitPriceCents).toBe(49900);
