@@ -79,7 +79,14 @@ export async function announceWithheld(input: {
 }
 
 /**
- * The month is no longer eligible by the time the charge comes to be minted.
+ * The ONE way a month is withheld (every reason goes through it). It looks at
+ * the charge first, in a transaction: with no charge it stamps the ledger and
+ * writes the carry back; a pending charge never emailed or attempted is
+ * cancelled and the ledger stamped in the same commit; a charge that was
+ * emailed (or a send attempted) STANDS and nothing is written, so the carry
+ * folded into a live charge is never also written back (it would bill twice).
+ *
+ * The month is no longer billable by the time the charge comes to be minted.
  * Before the invoice email there is no debt, so nothing is billed; after it, the
  * debt stands. A send that was ATTEMPTED (`emailAttemptedAt`) may have gone out,
  * so it counts as sent. Returns "withheld" (queue entry can go), "stands" (carry
@@ -92,9 +99,10 @@ export async function withholdUnsent(input: {
   now: Date;
   ledgerRef: FirebaseFirestore.DocumentReference;
   carryBackCents: number;
+  why?: WithheldWhy;
 }): Promise<"withheld" | "stands" | "busy"> {
   const { sub, month, chargeId, now, ledgerRef, carryBackCents } = input;
-  const why: WithheldWhy = "rebilling_switched_off_before_invoice";
+  const why: WithheldWhy = input.why ?? "rebilling_switched_off_before_invoice";
   const chargeRef = getAdminDb().doc(`billingCharges/${chargeId}`);
   const verdict = await getAdminDb().runTransaction(async (tx) => {
     const c = (await tx.get(chargeRef)).data();

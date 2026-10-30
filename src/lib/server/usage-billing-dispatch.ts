@@ -64,12 +64,17 @@ export async function processPendingCharges(
       throw err instanceof BillingError ? new UsageChargeRefused(sub.agencyId, sub.id, p.month, err.message) : err;
     };
     const carryBackCents = frozen.carriedInCents ?? 0;
-    // A withhold that needs no charge change: ledger stamp, then audit + flag.
-    const withholdMonth = async (why: WithheldWhy): Promise<void> => {
-      await ledgerRef.update(withheldPatch(why, carryBackCents));
-      await announceWithheld({ sub, month: p.month, chargeId, charge: "none", why, carryBackCents });
+    // Every withhold goes through the same transactional charge check. Returns
+    // "stands" (a charge that was emailed or attempted: carry on, nothing written)
+    // or "busy" (an email is being sent now: leave it); a withheld month ends the
+    // run here as a one-time refusal that is already flagged.
+    const withholdOrStand = async (why: WithheldWhy, message: string): Promise<"stands" | "busy"> => {
+      const verdict = await withholdUnsent({ sub, month: p.month, chargeId, now, ledgerRef, carryBackCents, why });
+      if (verdict !== "withheld") return verdict;
       await q.ref.delete();
+      return refuse(message, true);
     };
+    const chargeRef = db.doc(`billingCharges/${chargeId}`);
     // Checked before any path is built from it.
     if (!sub.agencyId) return refuse("the sub-account has no agency");
 
@@ -79,9 +84,7 @@ export async function processPendingCharges(
     // Nothing is billed unless the invoice already went out.
     const agencyDoc = (await db.doc(`agencies/${sub.agencyId}`).get()).data();
     if (unbillableReason(agencyDoc, sub as unknown as Record<string, unknown>, p.month)) {
-      const verdict = await withholdUnsent({
-        sub, month: p.month, chargeId, now, ledgerRef, carryBackCents: frozen.carriedInCents ?? 0,
-      });
+      const verdict = await withholdUnsent({ sub, month: p.month, chargeId, now, ledgerRef, carryBackCents });
       if (verdict === "withheld") {
         await q.ref.delete();
         return;
@@ -92,47 +95,49 @@ export async function processPendingCharges(
     // An amount over the ceiling can never be created as a charge. It is held
     // (reported daily) for the retry window, then withheld rather than repeated forever.
     if (frozen.totalCents > MAX_PRICE_CENTS && queuedPastWindow(p, now)) {
-      await withholdMonth("over ceiling");
-      return refuse(`over ceiling: ${frozen.totalCents} exceeds ${MAX_PRICE_CENTS} minor units for ${INVOICE_EMAIL_RETRY_DAYS} days; the month was withheld`, true);
+      const msg = `over ceiling: ${frozen.totalCents} exceeds ${MAX_PRICE_CENTS} minor units for ${INVOICE_EMAIL_RETRY_DAYS} days; the month was withheld`;
+      if ((await withholdOrStand("over ceiling", msg)) === "busy") return;
     }
 
     const to = await billingRecipient(sub);
     // Paystack cannot open a payment page without an email. Held (reported daily)
     // for the retry window, then withheld, so an old month is never billed months later.
     if (!to && getBillingProvider().id === "paystack" && queuedPastWindow(p, now)) {
-      await withholdMonth("no billing email");
-      return refuse(`no billing email for ${INVOICE_EMAIL_RETRY_DAYS} days; the month was withheld`, true);
+      const msg = `no billing email for ${INVOICE_EMAIL_RETRY_DAYS} days; the month was withheld`;
+      if ((await withholdOrStand("no billing email", msg)) === "busy") return;
     }
     // The due date counts from when the charge is actually created.
     const dueAt = new Date(now.getTime() + USAGE_PAYMENT_TERMS_DAYS * DAY_MS);
-    // A refusal (Paystack with no email, an amount over the ceiling) throws and
-    // the entry stays queued, so it is reported every day until it is fixed.
-    const created = await createUsageCharge({
-      agencyId: sub.agencyId,
-      subAccountId: sub.id,
-      month: p.month,
-      description: `Usage — ${formatUsageMonth(p.month)}`,
-      amountCents: frozen.totalCents,
-      currency: frozen.currency,
-      lineItems: frozen.lineItems,
-      dueAt,
-      payerEmail: to,
-    }).catch(async (err) => {
-      // A refusal that outlives the retry window is withheld, so no month is
-      // ever held for more than a week or so (and a carry restored by a late
-      // withhold cannot miss the next month's close).
-      if (err instanceof BillingError && queuedPastWindow(p, now)) {
-        await withholdMonth("charge could not be created");
-        return refuse(
-          `charge could not be created for ${INVOICE_EMAIL_RETRY_DAYS} days (${err.message}); the month was withheld`,
-          true,
-        );
-      }
-      return held(err);
-    });
-    if (created.created) charged++;
+    // A charge that already exists is never created again (so none of the
+    // creation refusals below can apply to it). Otherwise a refusal (Paystack with
+    // no email, an amount over the ceiling) throws and the entry stays queued, so
+    // it is reported every day until it is fixed.
+    if (!(await chargeRef.get()).exists) {
+      const created = await createUsageCharge({
+        agencyId: sub.agencyId,
+        subAccountId: sub.id,
+        month: p.month,
+        description: `Usage — ${formatUsageMonth(p.month)}`,
+        amountCents: frozen.totalCents,
+        currency: frozen.currency,
+        lineItems: frozen.lineItems,
+        dueAt,
+        payerEmail: to,
+      }).catch(async (err) => {
+        // A refusal that outlives the retry window is withheld, so no month is
+        // ever held for more than a week or so (and a carry restored by a late
+        // withhold cannot miss the next month's close).
+        if (err instanceof BillingError && queuedPastWindow(p, now)) {
+          const msg = `charge could not be created for ${INVOICE_EMAIL_RETRY_DAYS} days (${err.message}); the month was withheld`;
+          if ((await withholdOrStand("charge could not be created", msg)) === "busy") return null;
+          return { created: false, chargeId };
+        }
+        return held(err);
+      });
+      if (created === null) return;
+      if (created.created) charged++;
+    }
 
-    const chargeRef = db.doc(`billingCharges/${chargeId}`);
     // Claim the invoice email so overlapping runs can't both send it. Past the
     // retry window with nothing sent, the charge is cancelled here, not dropped.
     const claim = await db.runTransaction(async (tx) => {
