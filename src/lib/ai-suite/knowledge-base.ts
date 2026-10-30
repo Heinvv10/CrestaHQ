@@ -553,7 +553,7 @@ export const AI_SUITE_KNOWLEDGE: AiSuiteKnowledgeCard[] = [
   },
   {
     id: "slack-notifications",
-    levels: ["sub-account", "agency"],
+    levels: ["sub-account"],
     title: "Slack notifications",
     location: "Sidebar → Settings Sub-Account → Admin tab → Slack notifications",
     keywords: ["slack", "slack channel", "slack alert", "notify slack", "post to slack", "incoming webhook", "webhook url", "hooks.slack.com", "team notifications", "chat alert", "new lead alert"],

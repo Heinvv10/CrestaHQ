@@ -1,6 +1,7 @@
 import "server-only";
 
 import { SlackError, getSlackConfig, sanitizeSlackEvents, updateSlackSettings } from "@/lib/server/slack-service";
+import { redactSlackUrls } from "@/lib/slack/client";
 import { invalidateSlackHookCache } from "@/lib/slack/events";
 import { DEFAULT_SLACK_EVENTS } from "@/types/slack";
 import type { WebhookEventType } from "@/types/webhooks";
@@ -28,6 +29,8 @@ const CONNECT_REFUSAL =
 const URL_PASTED_NOTE =
   " Do not paste the URL into the chat. If you already did, treat it as exposed: revoke it in Slack (Incoming Webhooks → remove it) and create a new one for the card.";
 
+const HOOK_HOST_RE = /hooks\.slack\.com/i;
+
 const EVENT_NOT_RECOGNISED = `none of those event names are recognised; use event types such as ${DEFAULT_SLACK_EVENTS.join(", ")}`;
 
 export const SLACK_CAPABILITIES: AiSuiteCapability[] = [
@@ -48,10 +51,10 @@ export const SLACK_CAPABILITIES: AiSuiteCapability[] = [
       if (!cfg.connected) {
         return { resultText: `Slack isn't connected for this workspace. An admin connects it on the card: ${CARD}.` };
       }
-      const label = oneLine(cfg.channelLabel);
+      const label = oneLine(redactSlackUrls(cfg.channelLabel ?? ""));
       const events = cfg.events.map((e) => oneLine(e)).filter(Boolean);
       const last = cfg.lastSentAt ? `${cfg.lastSentAt.slice(0, 16).replace("T", " ")} UTC` : "never";
-      const error = oneLine(cfg.lastError);
+      const error = oneLine(redactSlackUrls(cfg.lastError ?? ""));
       return {
         resultText: `Slack: connected${label ? ` to ${label}` : ""}${
           cfg.needsReconnect ? " — NEEDS RECONNECT (Slack rejected the webhook URL; an admin pastes a new one on the card)" : ""
@@ -125,9 +128,15 @@ export const SLACK_CAPABILITIES: AiSuiteCapability[] = [
     },
     validate: (raw) => {
       const r = (raw ?? {}) as Record<string, unknown>;
-      const urlPasted = Object.keys(r).some((k) => /url/i.test(k));
+      // Anything that is or names a hook URL is dropped here, before it can
+      // reach the audit row's args or summary, and only flags the refusal.
+      const holdsHook = (v: unknown) => {
+        const text = typeof v === "string" ? v : JSON.stringify(v) ?? "";
+        return HOOK_HOST_RE.test(text) || redactSlackUrls(text) !== text;
+      };
+      const urlPasted = Object.entries(r).some(([k, v]) => /url/i.test(k) || holdsHook(v));
       let channelLabel = "";
-      if (typeof r.channelLabel === "string") {
+      if (typeof r.channelLabel === "string" && !holdsHook(r.channelLabel)) {
         const body = messageBody(r.channelLabel);
         if (body === null) return { ok: false, error: "the channel name contains characters that can't be shown safely" };
         channelLabel = body.slice(0, 60);

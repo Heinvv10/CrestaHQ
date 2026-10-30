@@ -15,13 +15,15 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/chat-route-har
 vi.mock("@/lib/auth/require-tenancy", async () => (await import("@/test/chat-route-harness")).tenancyMock());
 vi.mock("@/lib/ai-suite/model", async () => (await import("@/test/chat-route-harness")).modelMock());
 vi.mock("@/lib/ai-suite/usage", () => ({ recordAiSuiteUsage: async () => undefined }));
-vi.mock("@/lib/ai-suite/audit", () => ({ recordAiSuiteAction: async () => undefined }));
+const recordAiSuiteAction = vi.hoisted(() => vi.fn(async (_entry: unknown) => undefined));
+vi.mock("@/lib/ai-suite/audit", () => ({ recordAiSuiteAction }));
 const invalidateSlackHookCache = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/slack/events", async (orig) => ({ ...((await orig()) as object), invalidateSlackHookCache }));
 const postSlackMessage = vi.hoisted(() => vi.fn(async () => ({ ok: true, error: null, revoked: false })));
 vi.mock("@/lib/slack/client", async (orig) => ({ ...((await orig()) as object), postSlackMessage }));
 
 const { availableOn, getCapability, toolsForLevel } = await import("@/lib/ai-suite/capabilities");
+const { AI_SUITE_KNOWLEDGE } = await import("@/lib/ai-suite/knowledge-base");
 
 const HOOK = "https://hooks.slack.com/services/T0AAAAAA/B0BBBBBB/SECRETSECRETSECRET";
 const PRIVATE = "subAccounts/sa1/private/slack";
@@ -46,6 +48,7 @@ beforeEach(() => {
   seedTenants();
   invalidateSlackHookCache.mockClear();
   postSlackMessage.mockClear();
+  recordAiSuiteAction.mockClear();
 });
 
 describe("slack_status", () => {
@@ -81,10 +84,30 @@ describe("slack_status", () => {
     );
   });
 
-  it("reads only this workspace", async () => {
-    mem.seed("subAccounts/sa2", { ...mem.read("subAccounts/sa2")!, slackMeta: meta({ channelLabel: "#other" }) });
+  it("reads only this workspace: sa1's connection, not sa2's", async () => {
+    seedConnected({ channelLabel: "#mine", events: ["call.missed"] });
+    mem.seed("subAccounts/sa2", { ...mem.read("subAccounts/sa2")!, slackMeta: meta({ channelLabel: "#other", events: ["deal.won"] }) });
     await ask("slack_status", {});
-    expect(lookupResult()).not.toContain("#other");
+    const text = lookupResult();
+    expect(text).toContain("connected to #mine.");
+    expect(text).toContain("Posting on: call.missed.");
+    expect(text).not.toContain("#other");
+    expect(text).not.toContain("deal.won");
+  });
+
+  it("a webhook URL pasted into the label or stored as the last error prints redacted", async () => {
+    seedConnected({ channelLabel: HOOK, lastError: `bad ${HOOK} here` });
+    await ask("slack_status", {});
+    const text = lookupResult();
+    expect(text).toContain("connected to [slack-url].");
+    expect(text).toContain("Last error: bad [slack-url]");
+    for (const secret of ["hooks.slack.com", "SECRETSECRETSECRET", "SECRETS", "T0AAAAAA"]) expect(text).not.toContain(secret);
+  });
+
+  it("a label that is a URL fragment (the secret's tail) is redacted too", async () => {
+    seedConnected({ channelLabel: "/services/T0AAAAAA/B0BBBBBB/SECRETSECRETSECRET" });
+    await ask("slack_status", {});
+    expect(lookupResult()).not.toContain("SECRETSECRET");
   });
 
   it("is on both surfaces; a collaborator has no Slack tool, and the confirm route refuses the write with 403", async () => {
@@ -194,6 +217,28 @@ describe("connect_slack", () => {
     expect(postSlackMessage).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["the channel name", { channelLabel: HOOK }],
+    ["an unrelated key", { note: `use ${HOOK}` }],
+    ["a nested value", { extra: { deep: [HOOK] } }],
+    ["a bare host mention", { channelLabel: "hooks.slack.com/services/x" }],
+  ])("a hook URL in %s adds the exposed note and never reaches the validated args", async (_what, args) => {
+    const body = await (await ask("connect_slack", args)).json();
+    expect(body.text).toContain("treat it as exposed");
+    expect(JSON.stringify(body)).not.toContain("SECRETSECRETSECRET");
+    const cap = getCapability("connect_slack")!;
+    const v = cap.validate(args);
+    expect(v.ok && JSON.stringify(v.args)).not.toMatch(/hooks\.slack\.com|SECRETSECRET/);
+    expect(cap.summarize((v as { args: Record<string, unknown> }).args)).not.toMatch(/hooks\.slack\.com|SECRETSECRET/);
+  });
+
+  it("the audit row for a refused confirm carries no URL", async () => {
+    await doConfirm("connect_slack", { webhookUrl: HOOK, channelLabel: HOOK, note: HOOK });
+    expect(recordAiSuiteAction).toHaveBeenCalledTimes(1);
+    const entry = recordAiSuiteAction.mock.calls[0]![0];
+    expect(JSON.stringify(entry)).not.toMatch(/hooks\.slack\.com|SECRETSECRET/);
+  });
+
   it("the confirm route cannot run it either: execute refuses, nothing stored", async () => {
     const res = await doConfirm("connect_slack", { webhookUrl: HOOK, channelLabel: "#sales" });
     expect(res.status).not.toBe(200);
@@ -216,5 +261,13 @@ describe("connect_slack", () => {
 
   it("is chat-listed only: no API agent has it", () => {
     expect(availableOn(getCapability("connect_slack")!, "agent")).toBe(false);
+  });
+});
+
+describe("knowledge base", () => {
+  it("the Slack card is for the sub-account assistant only, and names the assistant's real reach", () => {
+    const card = AI_SUITE_KNOWLEDGE.find((c) => c.id === "slack-notifications")!;
+    expect(card.levels).toEqual(["sub-account"]);
+    expect(card.body).toContain("change which events post behind a confirmation card");
   });
 });

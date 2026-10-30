@@ -119,5 +119,59 @@ describe("check-capability-tenancy.mjs", () => {
     expect(res.stderr).toContain("26 capabilities are registered");
     expect(res.stderr).toContain("but 25 were checked. Not checked: odd_cap");
   });
+
+  describe("EXTERNAL_ONLY exemptions", () => {
+    const names = (extra: string[]) => [...Array.from({ length: 25 }, (_, i) => `cap_${i}`), ...extra];
+    const exempt = (name: string, body: string) =>
+      `export const EXEMPT = {\n  name: "${name}",\n  level: "sub-account",\n  requiredRole: "member",\n  execute: async (${body.includes("ctx") ? "ctx" : ""}) => {\n    ${body}\n  },\n};\n`;
+
+    it("passes a refuse-only exemption that does no I/O", () => {
+      const res = run(tmpFile(buildSource() + exempt("connect_slack", "throw new Error('refused');"), names(["connect_slack"])));
+      expect(res.status).toBe(0);
+    });
+
+    it("fails a refuse-only exemption that awaits", () => {
+      const res = run(tmpFile(buildSource() + exempt("connect_slack", "await Promise.resolve(); throw new Error('x');"), names(["connect_slack"])));
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("connect_slack: is allowlisted as refuse-only");
+    });
+
+    it("fails a refuse-only exemption that reads the caller's context", () => {
+      const res = run(tmpFile(buildSource() + exempt("connect_slack", "throw new Error(ctx.uid);"), names(["connect_slack"])));
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("connect_slack: is allowlisted as refuse-only");
+    });
+
+    /** The script copied into a tree laid out like the repo, so it runs with no arguments. */
+    function defaultRun(registered: string[]) {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "cap-tenancy-root-"));
+      dirs.push(root);
+      const aiSuite = path.join(root, "src", "lib", "ai-suite");
+      fs.mkdirSync(path.join(aiSuite, "capabilities"), { recursive: true });
+      fs.mkdirSync(path.join(root, "scripts"));
+      fs.copyFileSync(path.join(__dirname, "check-capability-tenancy.mjs"), path.join(root, "scripts", "check-capability-tenancy.mjs"));
+      const exemptBlocks =
+        exempt("research_website_reference", "return 'external';") + exempt("connect_slack", "throw new Error('refused');");
+      fs.writeFileSync(path.join(aiSuite, "capabilities.ts"), buildSource() + exemptBlocks);
+      fs.writeFileSync(
+        path.join(aiSuite, "capability-names.test.ts"),
+        registered.map((n) => `  ["${n}", "agency", "agencyOwner", false, null],`).join("\n"),
+      );
+      return spawnSync(process.execPath, [path.join(root, "scripts", "check-capability-tenancy.mjs")], { encoding: "utf8" });
+    }
+
+    it("a default run passes when every exemption is a registered capability", () => {
+      const res = defaultRun(names(["research_website_reference", "connect_slack"]));
+      expect(res.status).toBe(0);
+      expect(res.stderr).not.toContain("EXTERNAL_ONLY");
+      expect(res.stdout + res.stderr).toContain("2 justified external-only exemption(s)");
+    });
+
+    it("a default run fails an exemption that names no registered capability", () => {
+      const res = defaultRun(names(["research_website_reference"]));
+      expect(res.status).toBe(1);
+      expect(res.stderr).toContain("connect_slack: is in EXTERNAL_ONLY but is not a registered capability");
+    });
+  });
 });
 

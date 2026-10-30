@@ -76,6 +76,13 @@ const EXTERNAL_ONLY = new Map([
 ]);
 
 /**
+ * Exemptions that must stay inert: the block does no I/O at all, so it may
+ * not `await` anything or read the caller's context. Without this, adding a
+ * call to an exempt capability would escape the anchor check unnoticed.
+ */
+const REFUSE_ONLY = new Set(["connect_slack"]);
+
+/**
  * If parsing ever finds fewer literal capabilities than this, the file's
  * shape has changed and the checker is probably no longer seeing them —
  * fail loudly instead of passing vacuously.
@@ -103,6 +110,18 @@ const registered = [...readFileSync(NAMES_FILE, "utf8").matchAll(/^\s*\["([a-z0-
 const failures = [];
 const checked = [];
 
+// A default run covers the real registry, so every exemption must still name a
+// registered capability: a renamed or deleted one would otherwise leave a dead
+// entry that silently exempts whatever is later registered under that name.
+// (Fixture runs name their own files and table.)
+if (args.length === 0 && namesAt === -1) {
+  for (const name of EXTERNAL_ONLY.keys()) {
+    if (!registered.includes(name)) {
+      failures.push(`${name}: is in EXTERNAL_ONLY but is not a registered capability (${NAMES_FILE}). Remove the stale exemption.`);
+    }
+  }
+}
+
 for (const src of sources) {
   const matches = [...src.matchAll(capRe)];
   for (let i = 0; i < matches.length; i++) {
@@ -114,6 +133,11 @@ for (const src of sources) {
     checked.push({ name, level });
 
     if (EXTERNAL_ONLY.has(name)) {
+      if (REFUSE_ONLY.has(name) && /\bawait\b|\bctx\./.test(block)) {
+        failures.push(
+          `${name}: is allowlisted as refuse-only (${EXTERNAL_ONLY.get(name)}) but now contains \`await\` or \`ctx.\`. Remove it from the allowlist and anchor its reads to the caller's tenant.`,
+        );
+      }
       if (block.includes("getAdminDb(")) {
         failures.push(
           `${name}: is allowlisted as external-only (${EXTERNAL_ONLY.get(name)}) but now touches Firestore (getAdminDb). Remove it from the allowlist and anchor its reads to the caller's tenant.`,
