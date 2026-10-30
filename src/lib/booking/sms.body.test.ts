@@ -42,14 +42,25 @@ describe("smsFirstName", () => {
     ["Win$$$", "symbols"],
     ["Thandi@x.co", "an email"],
     ["-Thandi", "a leading hyphen"],
-    ["A".repeat(31), "31 characters"],
+    ["A".repeat(16), "a 16-letter part"],
+    ["Hi-your-bank-account-is-locked", "a hyphenated slogan"],
+    ["Click-here-now", "three hyphenated parts"],
+    ["Mary-Anne-Louise", "two hyphens"],
+    ["Mary--Anne", "an empty part"],
+    ["Mary-", "a trailing hyphen"],
+    ["A".repeat(16) + "-B", "a long first part"],
+    ["Anne-" + "B".repeat(16), "a long second part"],
+    ["O''Neil", "two apostrophes in a row"],
+    ["O'N'Neil", "two apostrophes in a part"],
+    ["'Neil", "a leading apostrophe"],
     ["https://evil.example Thandi", "a URL before the name"],
   ])("drops %j (%s)", (n) => {
     expect(smsFirstName(n)).toBe("");
   });
 
-  it("keeps a name of exactly 30 characters", () => {
-    expect(smsFirstName("A".repeat(30))).toBe("A".repeat(30));
+  it("keeps the longest plain name: parts of exactly 15 letters, one hyphen", () => {
+    expect(smsFirstName("A".repeat(15))).toBe("A".repeat(15));
+    expect(smsFirstName(`${"A".repeat(15)}-${"B".repeat(15)}`)).toBe(`${"A".repeat(15)}-${"B".repeat(15)}`);
   });
 });
 
@@ -62,6 +73,12 @@ describe("the confirmation body", () => {
     const body = bookingConfirmationSmsBody({ ...base, recipientName: "https://evil.example/pay" });
     expect(body).toMatch(/^You're booked: Intro call with Fixture Co/);
     expect(body).not.toContain("evil");
+  });
+
+  it("drops a hyphenated lure used as a name: no greeting at all", () => {
+    const body = bookingConfirmationSmsBody({ ...base, recipientName: "Hi-your-bank-account-is-locked" });
+    expect(body).toMatch(/^You're booked: Intro call with Fixture Co/);
+    expect(body).not.toContain("bank");
   });
 
   it("has no place line even when a caller offers one", () => {
@@ -86,6 +103,13 @@ describe("the confirmation body", () => {
   it("leaves out a meeting link that is not a plain https URL", () => {
     for (const meetingUrl of ["javascript:alert(1)", "http://insecure.example", "not a url", `https://x.example/${"a".repeat(300)}`]) {
       expect(bookingConfirmationSmsBody({ ...base, recipientName: "T", meetingUrl })).not.toContain("Join:");
+    }
+  });
+
+  it("leaves out a link with credentials in it, which reads as another site", () => {
+    for (const meetingUrl of ["https://bank.example@evil.example/login", "https://user:pw@meet.example/x", "https://:pw@meet.example/x"]) {
+      expect(bookingConfirmationSmsBody({ ...base, recipientName: "T", meetingUrl }), meetingUrl).not.toContain("Join:");
+      expect(bookingReminderSmsBody({ ...base, meetingUrl }), meetingUrl).not.toContain("Join:");
     }
   });
 

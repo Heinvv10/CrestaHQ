@@ -225,3 +225,38 @@ describe("the claim", () => {
     expect(mem.list("events/e1/reminderSends")).toHaveLength(0);
   });
 });
+
+describe("the confirmation path (nobody redelivers it) retries the reservation before giving up", () => {
+  /** Makes the first `n` transactions fail, as contention would. */
+  function failTransactions(n: number) {
+    const real = mem.db.runTransaction.bind(mem.db);
+    let left = n;
+    return vi.spyOn(mem.db, "runTransaction").mockImplementation(((fn: never) =>
+      left-- > 0 ? Promise.reject(Object.assign(new Error("10 ABORTED"), { code: 10 })) : real(fn)) as never);
+  }
+
+  beforeEach(() => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("contention that clears within three retries still sends, with no note", async () => {
+    const tx = failTransactions(3);
+    expect(await send({ label: "booking confirmation" })).toEqual({ sent: true });
+    expect(tx).toHaveBeenCalledTimes(4);
+    expect(mem.list("contacts/c1/activities").filter((a) => a.type === "note_added")).toEqual([]);
+  });
+
+  it("contention that does not clear is noted once, after exactly 1 try and 3 retries", async () => {
+    const tx = failTransactions(1000);
+    expect(await send({ label: "booking confirmation", claimPath: "events/e1/reminderSends/sms_confirm" })).toEqual({
+      sent: false,
+      reason: "cap_unavailable",
+    });
+    expect(tx).toHaveBeenCalledTimes(4);
+    expect(sendSmsVia).not.toHaveBeenCalled();
+    expect(mem.list("contacts/c1/activities")).toEqual([
+      expect.objectContaining({ content: "Booking confirmation text not sent: the daily limit could not be checked." }),
+    ]);
+  });
+});

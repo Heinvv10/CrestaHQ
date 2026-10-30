@@ -48,12 +48,20 @@ export type BookingSmsResult =
 
 /**
  * The booker's first name, or "" when it is not a plain one: a single token of
- * letters (with marks), hyphens and apostrophes, at most 30 characters. Anything
- * else (a URL, a number, a sentence) is dropped rather than quoted in a text.
+ * letters (with marks), at most one hyphen, each part 1 to 15 letters with at
+ * most one apostrophe inside it ("Mary-Anne", "O'Neil"). Anything else (a URL, a
+ * number, a sentence, a hyphenated slogan such as "Hi-your-bank-account-is-locked")
+ * is dropped rather than quoted in a text.
  */
 export function smsFirstName(name: string): string {
   const first = name.trim().split(/\s+/)[0] ?? "";
-  return first.length <= 30 && /^[\p{L}][\p{L}\p{M}'\u2019-]*$/u.test(first) ? first : "";
+  const parts = first.split("-");
+  if (parts.length > 2) return "";
+  const plain = parts.every((part) => {
+    const letters = part.replace(/['\u2019]/g, "");
+    return letters.length >= 1 && letters.length <= 15 && /^\p{L}[\p{L}\p{M}]*(?:['\u2019][\p{L}\p{M}]+)?$/u.test(part);
+  });
+  return plain ? first : "";
 }
 
 /**
@@ -66,7 +74,8 @@ function joinUrl(url: string | null): string | null {
   if (!url || url.length > 300) return null;
   try {
     const u = new URL(url);
-    return u.protocol === "https:" ? u.href : null;
+    // No credentials in the link (https://bank.example@evil.example/ reads as the bank).
+    return u.protocol === "https:" && !u.username && !u.password ? u.href : null;
   } catch {
     return null;
   }

@@ -81,8 +81,8 @@ const seedContact = (over: Record<string, unknown> = {}) =>
     subAccountId: SA,
     ...over,
   });
-/** The text claims (not the hold markers that sit beside them). */
-const claims = () => mem.list("events/e1/reminderSends").map((d) => d.id).filter((id) => !id.startsWith("smshold_"));
+/** The text claims (not the window claims that sit beside them). */
+const claims = () => mem.list("events/e1/reminderSends").map((d) => d.id).filter((id) => !id.startsWith("smswin_"));
 const notes = () => mem.list("contacts/c1/activities").filter((a) => a.type === "quiet_hours_held");
 
 beforeEach(() => {
@@ -385,40 +385,81 @@ describe("quiet hours: republish ids, two held reminders, and an email retry", (
     expect(ids[0]).toBe(ids[1]);
   });
 
-  it("two reminders held to the same window end: only the later one (smaller offset) is sent, the earlier is dropped with a note", async () => {
-    await remind({ channels: { sms: true } }, 120);
+  /** Two reminders (720 and 60 minutes out) both fall in the quiet window and are held to the same end. */
+  async function holdBoth() {
+    await remind({ channels: { sms: true } }, 720);
     await remind({ channels: { sms: true } }, 60);
-    expect(published()).toHaveLength(2);
     vi.setSystemTime(MORNING);
-    const [earlier, later] = published().map((p) => p.body);
-    expect(await (await remind(earlier, 120)).json()).toMatchObject({ sms: "superseded" });
-    expect(await (await remind(later, 60)).json()).toMatchObject({ sms: "sent" });
+    return published().map((p) => p.body) as [Record<string, unknown>, Record<string, unknown>];
+  }
+  const windowNotes = () => mem.list("contacts/c1/activities").filter((a) => String(a.content).includes("went instead"));
+
+  it.each([
+    ["the earlier offset first", [0, 1]],
+    ["the later offset first", [1, 0]],
+  ] as const)("720 and 60 held to the same window end send ONE text (%s)", async (_label, order) => {
+    const bodies = await holdBoth();
+    const offsets = [720, 60] as const;
+    const results = [];
+    for (const i of order) results.push(await (await remind(bodies[i], offsets[i])).json());
     await flushAfterResponse();
+    expect(results.map((r) => r.sms)).toEqual(["sent", "already_sent"]);
     expect(sendSmsVia).toHaveBeenCalledOnce();
-    expect(mem.list("contacts/c1/activities").filter((a) => String(a.content).includes("a later reminder was held"))).toHaveLength(1);
   });
 
-  it("a later reminder whose republish could not be queued does not make the earlier one yield: the earlier still sends", async () => {
-    await remind({ channels: { sms: true } }, 120);
-    publishCallback.mockResolvedValueOnce(null); // the later offset's republish fails
+  it("the one that did not send leaves a timeline note, and a plain redelivery of the sender does not", async () => {
+    const [earlier, later] = await holdBoth();
+    await remind(later, 60);
+    await remind(later, 60); // QStash redelivers the step that already sent
+    expect(windowNotes()).toEqual([]);
+    await remind(earlier, 720);
+    expect(windowNotes()).toHaveLength(1);
+    expect(sendSmsVia).toHaveBeenCalledOnce();
+  });
+
+  it("the later one's republish could not be queued: the earlier one is the one text", async () => {
+    await remind({ channels: { sms: true } }, 720);
+    publishCallback.mockResolvedValueOnce(null);
     expect(await (await remind({ channels: { sms: true } }, 60)).json()).toMatchObject({ sms: "quiet_hours_hold_failed" });
-    // No marker entry for an offset that was never queued.
-    const marker = mem.list("events/e1/reminderSends").find((d) => d.id.startsWith("smshold_"))!;
-    expect(marker.offsets).toEqual([120]);
     vi.setSystemTime(MORNING);
     const [earlier] = published().map((p) => p.body);
-    expect(await (await remind(earlier, 120)).json()).toMatchObject({ sms: "sent" });
+    expect(await (await remind(earlier, 720)).json()).toMatchObject({ sms: "sent" });
     expect(sendSmsVia).toHaveBeenCalledOnce();
   });
 
-  it("whichever republished step runs first, the earlier reminder never sends", async () => {
-    await remind({ channels: { sms: true } }, 120);
-    await remind({ channels: { sms: true } }, 60);
+  it("the later one fails at the carrier: the earlier one still sends, so the customer is not left with none", async () => {
+    const [earlier, later] = await holdBoth();
+    sendSmsVia.mockRejectedValueOnce(new Error("carrier down"));
+    expect(await (await remind(later, 60)).json()).toMatchObject({ sms: "send_failed" });
+    expect(mem.list("events/e1/reminderSends").some((d) => d.id.startsWith("smswin_"))).toBe(false); // given back
+    expect(await (await remind(earlier, 720)).json()).toMatchObject({ sms: "sent" });
+    expect(sendSmsVia).toHaveBeenCalledTimes(2); // one failed attempt, one delivery
+  });
+
+  it("the earlier one fails at the carrier: the later one still sends", async () => {
+    const [earlier, later] = await holdBoth();
+    sendSmsVia.mockRejectedValueOnce(new Error("carrier down"));
+    expect(await (await remind(earlier, 720)).json()).toMatchObject({ sms: "send_failed" });
+    expect(await (await remind(later, 60)).json()).toMatchObject({ sms: "sent" });
+  });
+
+  it("a step that errors before it can send gives the window back for QStash's redelivery", async () => {
+    const [earlier, later] = await holdBoth();
+    // A page timezone the runtime rejects makes building the text throw.
+    const page = mem.read(`subAccounts/${SA}/bookingPages/p1`)!;
+    mem.seed(`subAccounts/${SA}/bookingPages/p1`, { ...page, timezone: "Not/AZone" });
+    await expect(remind(later, 60)).rejects.toThrow();
+    expect(mem.list("events/e1/reminderSends").some((d) => d.id.startsWith("smswin_"))).toBe(false);
+    mem.seed(`subAccounts/${SA}/bookingPages/p1`, page);
+    expect(await (await remind(earlier, 720)).json()).toMatchObject({ sms: "sent" });
+  });
+
+  it("a step that holds again gives its window back, so another reminder held to it can send", async () => {
+    const [earlier, later] = await holdBoth();
+    vi.setSystemTime(NIGHT); // the window was changed: still closed
+    expect(await (await remind(later, 60)).json()).toMatchObject({ sms: "quiet_hours_deferred" });
     vi.setSystemTime(MORNING);
-    const [earlier, later] = published().map((p) => p.body);
-    await remind(later, 60);
-    expect(await (await remind(earlier, 120)).json()).toMatchObject({ sms: "superseded" });
-    expect(sendSmsVia).toHaveBeenCalledOnce();
+    expect(await (await remind(earlier, 720)).json()).toMatchObject({ sms: "sent" });
   });
 
   it("a reminder held alone is sent, and so is one held to a different window end", async () => {
