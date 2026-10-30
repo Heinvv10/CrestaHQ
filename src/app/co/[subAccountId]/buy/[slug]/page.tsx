@@ -11,12 +11,12 @@ export const dynamic = "force-dynamic";
 
 /**
  * Express buy link for one product. Server-rendered and tiny on purpose: the
- * only client code is the button that creates the Stripe session.
+ * only client code is the button that creates the Stripe or Paystack session.
  *
  * 404s for anything not for sale (gate off, archived, re-priced, ambiguous
  * slug, no rail), like the checkout pages: a buyer isn't the audience for a
- * configuration message. A product on a rail or delivery this build can't
- * take yet gets a friendly "not available yet" page instead.
+ * configuration message. A product with a delivery this build can't take yet
+ * (community access) gets a friendly "not available yet" page instead.
  */
 
 type Params = Promise<{ subAccountId: string; slug: string }>;
@@ -106,8 +106,9 @@ export default async function ExpressBuyPage({
               slug={slug}
               accent={accent}
               label="Continue to payment"
+              askEmail={buy.rail === "paystack"}
             />
-            <LockLine />
+            <LockLine processor={buy.rail === "paystack" ? "Paystack" : "Stripe"} />
           </div>
         </div>
       </div>

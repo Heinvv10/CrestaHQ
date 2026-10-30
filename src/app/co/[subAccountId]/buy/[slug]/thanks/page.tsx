@@ -27,8 +27,8 @@ function one(v: string | string[] | undefined): string | undefined {
  * from the ORDER DOC, never from the URL. Without a matching token the page
  * shows a generic thank-you and nothing about any order.
  *
- * Stripe redirects here before the webhook has marked the order paid, so a
- * pending order shows "processing". What each order state shows is
+ * Stripe or Paystack redirects here before the webhook has marked the order
+ * paid, so a pending order shows "processing". What each order state shows is
  * `thanksView` (lib/products/thanks-view.ts): a download only once paid and
  * unflagged, an email claim only when one can be sent.
  */

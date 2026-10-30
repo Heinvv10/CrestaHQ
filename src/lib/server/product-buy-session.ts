@@ -184,9 +184,15 @@ export function isBuyRequestId(v: unknown): v is string {
   return typeof v === "string" && REQUEST_ID.test(v);
 }
 
-export function buyRequestKey(subAccountId: string, productId: string, requestId: string): string {
+export function buyRequestKey(
+  subAccountId: string,
+  productId: string,
+  requestId: string,
+  /** The Paystack buyer's email: a different address is a different order. */
+  email = "",
+): string {
   return createHmac("sha256", SALT)
-    .update(`${subAccountId}\n${productId}\n${requestId.toLowerCase()}`)
+    .update(`${subAccountId}\n${productId}\n${requestId.toLowerCase()}\n${email}`)
     .digest("hex");
 }
 

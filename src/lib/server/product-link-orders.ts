@@ -204,15 +204,15 @@ export async function markOrderExpired(orderId: string): Promise<boolean> {
   });
 }
 
-/** True while the order is pending, linked to its Stripe session and not
- *  flagged: its checkout can still be paid as opened. */
+/** True while the order is pending, linked to its Stripe session or Paystack
+ *  checkout and not flagged: its checkout can still be paid as opened. */
 export async function isOrderAwaitingPayment(orderId: string): Promise<boolean> {
   const snap = await getAdminDb().doc(`orders/${orderId}`).get();
   const order = snap.data() as Partial<Order> | undefined;
   return (
     !!order &&
     order.status === "pending" &&
-    !!order.stripeCheckoutSessionId &&
+    (!!order.stripeCheckoutSessionId || !!order.paystackReference) &&
     !order.heldAt &&
     !order.attention
   );

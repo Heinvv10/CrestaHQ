@@ -56,14 +56,14 @@ export function formatMoney(cents: number, currency: string): string {
   }
 }
 
-export function LockLine() {
+export function LockLine({ processor = "Stripe" }: { processor?: "Stripe" | "Paystack" }) {
   return (
     <p className="mt-3 flex items-center justify-center gap-1.5 text-xs text-zinc-500">
       <svg aria-hidden viewBox="0 0 24 24" className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeWidth="2">
         <rect x="4" y="11" width="16" height="10" rx="2" />
         <path d="M8 11V7a4 4 0 1 1 8 0v4" />
       </svg>
-      Payments processed securely by Stripe
+      Payments processed securely by {processor}
     </p>
   );
 }

@@ -112,7 +112,11 @@ export async function listOrderFlags(subAccountId: string): Promise<AttentionIte
         reason: String(o.attention ?? ""),
         amountCents: typeof o.totalCents === "number" ? o.totalCents : null,
         currency: typeof o.currency === "string" ? o.currency : null,
-        reference: (o.stripePaymentIntentId as string | null) ?? (o.stripeCheckoutSessionId as string | null) ?? null,
+        reference:
+          (o.stripePaymentIntentId as string | null) ||
+          (o.stripeCheckoutSessionId as string | null) ||
+          (o.paystackReference as string | null) ||
+          null,
         createdAtMs: toMillis(o.paidAt) ?? toMillis(o.createdAt),
       };
     })

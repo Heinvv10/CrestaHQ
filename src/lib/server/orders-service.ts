@@ -66,6 +66,9 @@ export interface OrderApiObject {
   buyer_name: string | null;
   stripe_checkout_session_id: string;
   stripe_payment_intent_id: string | null;
+  /** Only on an express buy-page order paid through Paystack (whose
+   *  `stripe_checkout_session_id` is ""): its checkout reference, `po-{id}`. */
+  paystack_reference?: string;
 }
 
 export function serializeOrderForApi(order: Order): OrderApiObject {
@@ -94,6 +97,7 @@ export function serializeOrderForApi(order: Order): OrderApiObject {
     buyer_name: order.buyerName,
     stripe_checkout_session_id: order.stripeCheckoutSessionId,
     stripe_payment_intent_id: order.stripePaymentIntentId,
+    ...(order.paystackReference ? { paystack_reference: order.paystackReference } : {}),
   };
 }
 
@@ -262,9 +266,10 @@ export async function markOrderPaid(input: {
  * could not be settled with it. Overwrites the note on a replay, so a
  * redelivered event never stacks duplicates — and never reopens a flag an
  * admin already resolved (the flag is the order + its source, not the note's
- * wording). The sub-account's admins are emailed once per flag.
+ * wording). The sub-account's admins are emailed once per flag, unless the
+ * caller flags in bulk and says `notify: false` (it reports once itself).
  */
-export async function flagOrderAttention(order: Order, note: string): Promise<void> {
+export async function flagOrderAttention(order: Order, note: string, opts: { notify?: boolean } = {}): Promise<void> {
   const ref = getAdminDb().doc(`orders/${order.id}`);
   // Not a transaction: the only concurrent writer is an admin's resolve, and
   // losing that race just leaves the flag open to be resolved again.
@@ -274,6 +279,7 @@ export async function flagOrderAttention(order: Order, note: string): Promise<vo
     ...(resolved ? {} : { attentionOpen: true }),
     updatedAt: FieldValue.serverTimestamp(),
   });
+  if (opts.notify === false) return;
   await notifyFlag({
     flagId: orderFlagId(order.id, order.source),
     audience: "subAccountAdmins",
@@ -282,7 +288,8 @@ export async function flagOrderAttention(order: Order, note: string): Promise<vo
     reason: note,
     amountCents: order.totalCents,
     currency: order.currency,
-    reference: order.stripePaymentIntentId ?? order.stripeCheckoutSessionId,
+    // `||`: a Paystack order's Stripe session id is "", not missing.
+    reference: order.stripePaymentIntentId || order.stripeCheckoutSessionId || order.paystackReference || null,
   });
 }
 

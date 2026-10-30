@@ -6,6 +6,7 @@ import { refreshModelCatalog } from "@/lib/comms/ai/model-catalog";
 import { sweepStaleStaged } from "@/lib/comms/whatsapp/staged-upload";
 import { runGbpRetentionSweep } from "@/lib/gbp/sync/sweep";
 import { collectHeartbeatStats, sendHeartbeat } from "@/lib/gitpage/heartbeat";
+import { expireStalePaystackOrders } from "@/lib/server/paystack-order-expiry";
 import { sweepOrphanedImports } from "@/lib/google-calendar/import-state";
 import { runApiCleanup } from "../api-cleanup/route";
 
@@ -61,6 +62,8 @@ const JOBS: Array<[string, () => Promise<unknown>]> = [
   // them (a cleanup that failed). Never had a schedule of its own.
   ["calendar-import-orphans", async () => ({ removed: await sweepOrphanedImports(Date.now() + 30_000) })],
   ["whatsapp-staging-cleanup", () => sweepStaleStaged()],
+  // Closes abandoned Paystack buy-page orders after 24 h; bounded per run.
+  ["paystack-order-expiry", () => expireStalePaystackOrders()],
 ];
 
 export async function POST(request: Request) {

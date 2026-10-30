@@ -143,12 +143,12 @@ export async function loadBuyContext(
 }
 
 /**
- * False while the sale needs a path this build doesn't have yet: the Paystack
- * rail (unit F3) or granting community access (unit F4). The page says "not
- * available yet" and the session route answers 503 — no order, no session.
+ * False while the sale needs a path this build doesn't have yet: granting
+ * community access (unit F4). The page says "not available yet" and the
+ * session route answers 503 — no order, no session.
  */
 export function canBuyExpressNow(buy: BuyContext): boolean {
-  return buy.rail === "stripe" && buy.product.delivery?.type !== "community";
+  return buy.product.delivery?.type !== "community";
 }
 
 /** Brand for pages that must render even when the product is unavailable. */
