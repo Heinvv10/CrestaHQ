@@ -2,7 +2,12 @@ import "server-only";
 
 import { FieldValue, Timestamp } from "firebase-admin/firestore";
 
-import { recordBroadcastEngagement } from "@/lib/broadcasts/engagement";
+import {
+  ProviderEventNotReadyError,
+  providerRowState,
+  recordBroadcastEngagement,
+} from "@/lib/broadcasts/engagement";
+import type { ClaimedRow } from "@/lib/broadcasts/settle-send";
 import { isUnsubscribeLink } from "@/lib/broadcasts/email-tracking";
 import { normalizeEmail, suppressionDocPath } from "@/lib/comms/email-suppression";
 import { getAdminDb } from "@/lib/firebase/admin";
@@ -14,20 +19,26 @@ import type { EmailSuppressionDoc, EmailSuppressionReason } from "@/types/email"
  * Resend delivery events for broadcast emails (upstream 1.0.54
  * lib/comms/email-events.ts, on our rails). The event carries the Resend
  * email id; `emailEvents/{id}`, written by the send step only for a Resend
- * send, says which send row it belongs to. The row must be `sent`, in the
- * lookup's sub-account, and must have recorded this exact Resend id —
- * anything else is ignored. SMTP sends never get a lookup.
+ * send, says which send row it belongs to and the address it went to. The
+ * row must be in the lookup's sub-account and carry this exact Resend id;
+ * anything else is ignored. A row still `queued` (the step has the lookup
+ * written but not the settle) throws `ProviderEventNotReadyError`, so the
+ * webhook answers 5xx and Resend retries. SMTP sends never get a lookup.
  *
  *   - delivered / bounced / complained: first-time stamp + parent total in
  *     one transaction (below); retries are harmless.
  *   - opened / clicked: through `recordBroadcastEngagement`, the same
  *     transactional write as our own pixel and click redirect, so the two
  *     sources merge (see engagement.ts) and the same switches govern both.
- *   - a permanent bounce puts the address on the sub-account's suppression
- *     list (`hard_bounce`) and stamps `contact.emailBouncedAt`; a complaint
- *     suppresses (`complaint`) and opts the contact out of email. The
- *     suppression is ensured last and on EVERY delivery of the event, not
- *     only the first, so a retry after a failed write still lands it.
+ *   - a permanent bounce (also one after a transient bounce) puts the SENT
+ *     address on the sub-account's suppression list (`hard_bounce`) and
+ *     stamps `contact.emailBouncedAt` if the contact still has it. A
+ *     complaint suppresses the sent address (`complaint`) and opts the
+ *     contact out of email whatever address they have now: the person asked
+ *     this workspace to stop. A complaint after a bounce still counts.
+ *   - the opt-out and the suppression run on EVERY delivery of the event, not
+ *     only the first, and throw on failure, so Resend's retry lands them.
+ *     The timeline row and the bounce flag are first-only and best-effort.
  *
  * Firestore errors propagate: the webhook answers 5xx and Resend retries.
  * No workflow trigger fires here (I3 adds email.opened / email.clicked).
@@ -50,10 +61,11 @@ export interface ResendDeliveryEvent {
   type: TrackedEmailEvent;
   /** When Resend saw the event (top level; `data.created_at` is the email's own). */
   created_at?: string;
+  /** Signed by Resend, but typed loosely: a wrong shape is ignored, never a 500 loop. */
   data?: {
-    email_id?: string;
-    click?: { link?: string };
-    bounce?: { message?: string; type?: string; subType?: string };
+    email_id?: unknown;
+    click?: { link?: unknown };
+    bounce?: { message?: unknown; type?: unknown; subType?: unknown };
   };
 }
 
@@ -63,44 +75,56 @@ const RESEND_ID = /^[A-Za-z0-9_-]{1,128}$/;
 /** How long a sent email stays resolvable for delivery/open/click events. */
 const EMAIL_EVENT_LOOKUP_DAYS = 90;
 
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+
 /**
- * Written by the broadcast step after Resend accepted the email and before
- * the row settles `sent`, so an event that arrives fast still finds it.
- * Never throws: the email is already out, and a lost lookup only loses its
- * events.
+ * Called by the broadcast step once Resend accepted the email, before the
+ * settle: in one transaction, while the step still holds the claim, it
+ * stamps the Resend id on the row and writes the lookup with the address the
+ * email actually went to. An event that arrives before the settle then
+ * finds a row it can wait for (see ProviderEventNotReadyError). Never
+ * throws: the email is already out, and a lost lookup only loses its events.
  */
 export async function recordBroadcastEmailLookup(input: {
+  row: ClaimedRow;
   emailId: string;
-  broadcastId: string;
-  contactId: string;
+  toEmail: string;
   subAccountId: string;
   agencyId: string;
 }): Promise<void> {
+  const { row } = input;
   if (!RESEND_ID.test(input.emailId)) return;
   const doc: EmailEventLookupDoc = {
     kind: "broadcast",
-    broadcastId: input.broadcastId,
-    contactId: input.contactId,
+    broadcastId: row.broadcastRef.id,
+    contactId: row.sendRef.id,
     subAccountId: input.subAccountId,
     agencyId: input.agencyId,
+    toEmail: input.toEmail,
     sentAt: FieldValue.serverTimestamp(),
     expiresAt: Timestamp.fromMillis(Date.now() + EMAIL_EVENT_LOOKUP_DAYS * 24 * 3_600_000),
   };
+  const db = getAdminDb();
   try {
-    await getAdminDb().collection("emailEvents").doc(input.emailId).set(doc);
+    await db.runTransaction(async (tx) => {
+      const current = (await tx.get(row.sendRef)).data() as BroadcastSendDoc | undefined;
+      if (current?.status !== "queued" || current.claimId !== row.claimId) return;
+      tx.update(row.sendRef, { resendMessageId: input.emailId });
+      tx.set(db.collection("emailEvents").doc(input.emailId), doc);
+    });
   } catch (err) {
     console.warn(
       "[email-events] lookup write failed; this email's events will be ignored",
-      input.broadcastId,
-      input.contactId,
+      row.broadcastRef.id,
+      row.sendRef.id,
       err instanceof Error ? err.message : String(err),
     );
   }
 }
 
 /** The event's own time, never in the future; now when absent or unparseable. */
-function eventTime(createdAt: string | undefined): Timestamp {
-  const ms = createdAt ? Date.parse(createdAt) : NaN;
+function eventTime(createdAt: unknown): Timestamp {
+  const ms = typeof createdAt === "string" ? Date.parse(createdAt) : NaN;
   return Number.isFinite(ms) && ms <= Date.now() ? Timestamp.fromMillis(ms) : Timestamp.now();
 }
 
@@ -111,7 +135,7 @@ interface Outcome {
 
 export async function handleResendDeliveryEvent(event: ResendDeliveryEvent): Promise<void> {
   const emailId = event.data?.email_id;
-  if (!emailId || !RESEND_ID.test(emailId)) return;
+  if (typeof emailId !== "string" || !RESEND_ID.test(emailId)) return;
   const db = getAdminDb();
   const lookupSnap = await db.collection("emailEvents").doc(emailId).get();
   if (!lookupSnap.exists) return;
@@ -120,14 +144,15 @@ export async function handleResendDeliveryEvent(event: ResendDeliveryEvent): Pro
     lookup.kind !== "broadcast" ||
     !isDocId(lookup.broadcastId) ||
     !isDocId(lookup.contactId) ||
-    !isDocId(lookup.subAccountId)
+    !isDocId(lookup.subAccountId) ||
+    !normalizeEmail(str(lookup.toEmail))
   ) {
     return;
   }
   const at = eventTime(event.created_at);
 
   if (event.type === "email.opened" || event.type === "email.clicked") {
-    const link = event.type === "email.clicked" ? (event.data?.click?.link ?? "").slice(0, 500) : "";
+    const link = event.type === "email.clicked" ? str(event.data?.click?.link).slice(0, 500) : "";
     // Resend rewrites the unsubscribe link too. Opting out is not engagement.
     if (link && isUnsubscribeLink(link, process.env.NEXT_PUBLIC_APP_URL ?? "")) return;
     await recordBroadcastEngagement({
@@ -144,29 +169,34 @@ export async function handleResendDeliveryEvent(event: ResendDeliveryEvent): Pro
   const broadcastRef = db.collection("broadcasts").doc(lookup.broadcastId);
   const sendRef = broadcastRef.collection("sends").doc(lookup.contactId);
   const bounce = event.data?.bounce;
+  const bounceType = str(bounce?.type);
   const bounceReason =
-    [bounce?.type, bounce?.subType, bounce?.message].filter(Boolean).join(" · ").slice(0, 300) || "bounced";
+    [bounceType, str(bounce?.subType), str(bounce?.message)].filter(Boolean).join(" · ").slice(0, 300) || "bounced";
   // Only a permanent bounce suppresses: a full mailbox ("Transient") or an
   // ambiguous DSN ("Undetermined") would otherwise block the address for good.
-  const hardBounce = type === "email.bounced" && (bounce?.type ?? "").toLowerCase() === "permanent";
+  const hardBounce = type === "email.bounced" && bounceType.toLowerCase() === "permanent";
 
   const outcome = await db.runTransaction(async (tx): Promise<Outcome> => {
     const snap = await tx.get(sendRef);
     if (!snap.exists) return { first: false, send: null };
     const send = snap.data() as BroadcastSendDoc;
-    if (send.status !== "sent" || send.resendMessageId !== emailId || send.subAccountId !== lookup.subAccountId) {
-      return { first: false, send: null };
-    }
-    // A bounced row is final.
-    if (send.bouncedAt) return { first: false, send };
+    const state = providerRowState(send, emailId, lookup.subAccountId);
+    if (state === "pending") throw new ProviderEventNotReadyError(sendRef.path);
+    if (state !== "ready") return { first: false, send: null };
     switch (type) {
       case "email.delivered":
-        if (send.deliveredAt) return { first: false, send };
+        if (send.deliveredAt || send.bouncedAt) return { first: false, send };
         tx.update(sendRef, { deliveredAt: at });
         tx.update(broadcastRef, { "totals.delivered": FieldValue.increment(1) });
         return { first: true, send };
       case "email.bounced":
-        tx.update(sendRef, { bouncedAt: at, bounceReason });
+        if (send.bouncedAt) {
+          // A permanent report after a transient one upgrades the row (no second count).
+          if (!hardBounce || send.hardBounce) return { first: false, send };
+          tx.update(sendRef, { hardBounce: true, bounceReason });
+          return { first: true, send };
+        }
+        tx.update(sendRef, { bouncedAt: at, bounceReason, hardBounce });
         tx.update(broadcastRef, { "totals.bounced": FieldValue.increment(1) });
         return { first: true, send };
       case "email.complained":
@@ -178,20 +208,20 @@ export async function handleResendDeliveryEvent(event: ResendDeliveryEvent): Pro
   });
 
   const { send } = outcome;
-  if (!send) return;
-  if (outcome.first && type !== "email.delivered") {
-    await contactSideEffects(lookup, send, type, { at, bounceReason, hardBounce });
-  }
-  // Last, and on a repeat too: if it throws, Resend's retry lands it. A
-  // complaint on a row that bounced first still suppresses.
-  if (hardBounce) await ensureSuppressed(send, "hard_bounce");
-  if (type === "email.complained") await ensureSuppressed(send, "complaint");
+  if (!send || type === "email.delivered") return;
+  if (outcome.first) await firstOccurrence(lookup, send, type, { at, bounceReason, hardBounce });
+  if (type === "email.complained") await optOutContact(lookup, send);
+  if (hardBounce) await ensureSuppressed(lookup, send, "hard_bounce");
+  if (type === "email.complained") await ensureSuppressed(lookup, send, "complaint");
 }
 
-/** Adds the address to the sub-account's suppression list unless it is already there. */
-async function ensureSuppressed(send: BroadcastSendDoc, reason: EmailSuppressionReason): Promise<void> {
-  const email = normalizeEmail(send.toEmail ?? "");
-  if (!email) return;
+/** Adds the sent address to the sub-account's suppression list unless it is already there. */
+async function ensureSuppressed(
+  lookup: EmailEventLookupDoc,
+  send: BroadcastSendDoc,
+  reason: EmailSuppressionReason,
+): Promise<void> {
+  const email = normalizeEmail(lookup.toEmail);
   const doc: EmailSuppressionDoc = {
     agencyId: send.agencyId,
     subAccountId: send.subAccountId,
@@ -209,34 +239,37 @@ async function ensureSuppressed(send: BroadcastSendDoc, reason: EmailSuppression
   }
 }
 
-/** First occurrence only: the timeline row and the contact flag. Best-effort. */
-async function contactSideEffects(
+/** The contact the row was sent to, or null once it was deleted or moved to another sub-account. */
+async function rowContact(lookup: EmailEventLookupDoc, send: BroadcastSendDoc) {
+  const ref = getAdminDb().collection("contacts").doc(lookup.contactId);
+  const data = (await ref.get()).data();
+  return data?.subAccountId === send.subAccountId ? { ref, data } : null;
+}
+
+/** Every delivery of a complaint; throws, so a failure is retried. */
+async function optOutContact(lookup: EmailEventLookupDoc, send: BroadcastSendDoc): Promise<void> {
+  const contact = await rowContact(lookup, send);
+  if (contact && contact.data.emailOptedOut !== true) await contact.ref.update({ emailOptedOut: true });
+}
+
+/** First occurrence only: the timeline row, and the bounce flag. Best-effort. */
+async function firstOccurrence(
   lookup: EmailEventLookupDoc,
   send: BroadcastSendDoc,
   type: "email.bounced" | "email.complained",
   e: { at: Timestamp; bounceReason: string; hardBounce: boolean },
 ): Promise<void> {
-  const db = getAdminDb();
-  const contactRef = db.collection("contacts").doc(lookup.contactId);
   try {
-    const [contactSnap, broadcastSnap] = await Promise.all([
-      contactRef.get(),
-      db.collection("broadcasts").doc(lookup.broadcastId).get(),
-    ]);
-    const contact = contactSnap.data();
-    // A deleted or moved contact gets no orphan activity and no flag.
-    if (contact?.subAccountId !== send.subAccountId) return;
+    const contact = await rowContact(lookup, send);
+    if (!contact) return;
+    const broadcastSnap = await getAdminDb().collection("broadcasts").doc(lookup.broadcastId).get();
     const templateName = (broadcastSnap.data()?.templateName as string | undefined) ?? "broadcast";
     // The flag means "this contact's address bounced": not once they changed it.
-    const sameAddress = normalizeEmail(String(contact.email ?? "")) === normalizeEmail(send.toEmail ?? "");
-    const patch =
-      type === "email.complained"
-        ? { emailOptedOut: true }
-        : e.hardBounce && sameAddress
-          ? { emailBouncedAt: e.at }
-          : null;
-    if (patch) await contactRef.update(patch);
-    await contactRef.collection("activities").add({
+    const sameAddress = normalizeEmail(str(contact.data.email)) === normalizeEmail(lookup.toEmail);
+    if (type === "email.bounced" && e.hardBounce && sameAddress) {
+      await contact.ref.update({ emailBouncedAt: e.at });
+    }
+    await contact.ref.collection("activities").add({
       type: type === "email.bounced" ? "email_bounced" : "email_complained",
       content:
         type === "email.complained"

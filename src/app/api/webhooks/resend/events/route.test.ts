@@ -71,6 +71,7 @@ function seed() {
     contactId: "c1",
     subAccountId: "sa1",
     agencyId: "ag1",
+    toEmail: ADDRESS,
   });
 }
 
@@ -141,7 +142,7 @@ describe("POST /api/webhooks/resend/events — refusals write nothing", () => {
 
 describe("POST /api/webhooks/resend/events — tenant binding", () => {
   it("ignores a lookup whose sub-account is not the row's", async () => {
-    mem.seed(`emailEvents/${EMAIL2}`, { kind: "broadcast", broadcastId: "b1", contactId: "c1", subAccountId: "sa2", agencyId: "ag1" });
+    mem.seed(`emailEvents/${EMAIL2}`, { kind: "broadcast", broadcastId: "b1", contactId: "c1", subAccountId: "sa2", agencyId: "ag1", toEmail: ADDRESS });
     mem.seed("broadcasts/b1/sends/c1", { ...row(), resendMessageId: EMAIL2 });
     const before = data();
     for (const type of ["email.delivered", "email.opened", "email.clicked", "email.complained"]) {
@@ -152,7 +153,7 @@ describe("POST /api/webhooks/resend/events — tenant binding", () => {
   });
 
   it("ignores a lookup naming a row that recorded a different Resend id", async () => {
-    mem.seed(`emailEvents/${EMAIL2}`, { kind: "broadcast", broadcastId: "b1", contactId: "c1", subAccountId: "sa1", agencyId: "ag1" });
+    mem.seed(`emailEvents/${EMAIL2}`, { kind: "broadcast", broadcastId: "b1", contactId: "c1", subAccountId: "sa1", agencyId: "ag1", toEmail: ADDRESS });
     const before = data();
     await POST(signed(ev("email.bounced", { email_id: EMAIL2, ...hard })));
     await POST(signed(ev("email.opened", { email_id: EMAIL2 })));
@@ -164,7 +165,7 @@ describe("POST /api/webhooks/resend/events — tenant binding", () => {
     const nested = "b0/sends/c0/nested";
     mem.seed(`broadcasts/${nested}`, { agencyId: "ag1", subAccountId: "sa1", totals: {} });
     mem.seed(`broadcasts/${nested}/sends/c1`, { ...row(), resendMessageId: EMAIL2 });
-    mem.seed(`emailEvents/${EMAIL2}`, { kind: "broadcast", broadcastId: nested, contactId: "c1", subAccountId: "sa1", agencyId: "ag1" });
+    mem.seed(`emailEvents/${EMAIL2}`, { kind: "broadcast", broadcastId: nested, contactId: "c1", subAccountId: "sa1", agencyId: "ag1", toEmail: ADDRESS });
     const before = data();
     expect((await POST(signed(ev("email.delivered", { email_id: "no-such-email" })))).status).toBe(200);
     expect((await POST(signed(ev("email.delivered", { email_id: EMAIL2 })))).status).toBe(200);
@@ -197,6 +198,8 @@ describe("POST /api/webhooks/resend/events — delivery events", () => {
     expect(activities()).toHaveLength(1);
     expect(activities()[0]).toMatchObject({ type: "email_bounced", subAccountId: "sa1" });
     // A bounced row takes no further events.
+    await POST(signed(ev("email.delivered")));
+    expect(row().deliveredAt).toBeUndefined();
     await POST(signed(ev("email.opened")));
     await POST(signed(ev("email.bounced", hard)));
     expect(row().opens).toBeUndefined();

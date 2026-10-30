@@ -35,10 +35,40 @@ import type { BroadcastSendDoc, SubAccountDoc } from "@/types";
  * `openedAt` / `clickedAt` keep the EARLIEST time — a provider event carries
  * the time Resend saw it and replaces a later stamp. The same switches
  * govern both. A provider event only lands on the row that recorded its
- * Resend id, in the lookup's sub-account. A bounced row takes neither.
+ * Resend id, in the lookup's sub-account, and waits (throws) while that row
+ * is still queued. A bounced row takes neither.
  */
 
 export const ENGAGEMENT_COUNT_CAP = 100;
+
+/**
+ * A provider event for a row the step has not settled yet (the Resend id is
+ * stamped, the row still `queued`). The webhook answers 5xx so the provider
+ * retries once the row reads `sent`.
+ */
+export class ProviderEventNotReadyError extends Error {
+  constructor(path: string) {
+    super(`send row not settled yet: ${path}`);
+    this.name = "ProviderEventNotReadyError";
+  }
+}
+
+/**
+ * Whether a provider event for `emailId` may land on `send`: `ready` (sent,
+ * with this id, in this sub-account), `pending` (still queued with this id
+ * or none yet: retry later), or `foreign` (ignore).
+ */
+export function providerRowState(
+  send: BroadcastSendDoc,
+  emailId: string,
+  subAccountId: string,
+): "ready" | "pending" | "foreign" {
+  if (send.subAccountId !== subAccountId) return "foreign";
+  if (send.status === "queued" && (send.resendMessageId == null || send.resendMessageId === emailId)) {
+    return "pending";
+  }
+  return send.status === "sent" && send.resendMessageId === emailId ? "ready" : "foreign";
+}
 
 export type EngagementKind = "opened" | "clicked";
 
@@ -65,11 +95,13 @@ export async function recordBroadcastEngagement(input: {
     const snap = await tx.get(sendRef);
     if (!snap.exists) return { first: false, send: null };
     const send = snap.data() as BroadcastSendDoc;
-    if (send.status !== "sent" || !send.subAccountId || send.bouncedAt) return { first: false, send: null };
     const provider = input.provider;
-    if (provider && (send.resendMessageId !== provider.emailId || send.subAccountId !== provider.subAccountId)) {
-      return { first: false, send: null };
+    if (provider) {
+      const state = providerRowState(send, provider.emailId, provider.subAccountId);
+      if (state === "pending") throw new ProviderEventNotReadyError(sendRef.path);
+      if (state !== "ready") return { first: false, send: null };
     }
+    if (send.status !== "sent" || !send.subAccountId || send.bouncedAt) return { first: false, send: null };
     const sub = (await tx.get(db.collection("subAccounts").doc(send.subAccountId))).data() as
       | SubAccountDoc
       | undefined;

@@ -168,13 +168,15 @@ export interface BroadcastSendDoc {
   bouncedAt?: Timestamp | FieldValue | null;
   /** Resend's bounce type · subtype · message, capped at 300 characters. */
   bounceReason?: string;
+  /** A permanent bounce (also one reported after a transient bounce). */
+  hardBounce?: boolean;
   complainedAt?: Timestamp | FieldValue | null;
 }
 
 /**
  * `emailEvents/{resendEmailId}` — written by the send step when Resend (not
- * SMTP) accepted a broadcast email, so the events webhook resolves an event
- * to its send row in one read. Server-only; pruned by api-cleanup after
+ * SMTP) accepted a broadcast email, in the transaction that stamps the id on
+ * the row, so the events webhook resolves an event to its send row in one read. Server-only; pruned by api-cleanup after
  * `expiresAt`.
  */
 export interface EmailEventLookupDoc {
@@ -183,6 +185,8 @@ export interface EmailEventLookupDoc {
   contactId: string;
   subAccountId: string;
   agencyId: string;
+  /** The address the step actually sent to (the live contact email, not the fan-out snapshot). */
+  toEmail: string;
   sentAt: Timestamp | FieldValue | null;
   expiresAt: Timestamp | FieldValue | Date;
 }

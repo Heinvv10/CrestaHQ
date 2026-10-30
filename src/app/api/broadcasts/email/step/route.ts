@@ -334,13 +334,14 @@ async function deliver(
     attempted = providerAttempted(err);
   }
   if (resendMessageId) {
-    // Resend reports delivery events by its email id; the lookup must exist
-    // before the row reads "sent", or a fast event finds nothing. SMTP: none.
+    // Resend reports delivery events by its email id; the lookup (and the id
+    // on the row) must exist before the row reads "sent", or a fast event
+    // finds nothing. It records the address sent to. SMTP: none.
     if (viaResend) {
       await recordBroadcastEmailLookup({
+        row,
         emailId: resendMessageId,
-        broadcastId,
-        contactId,
+        toEmail: contact.email,
         subAccountId: broadcast.subAccountId,
         agencyId: broadcast.agencyId,
       });

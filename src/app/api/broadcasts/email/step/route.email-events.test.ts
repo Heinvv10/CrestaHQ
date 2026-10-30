@@ -20,6 +20,16 @@ vi.mock("@/lib/automations/unsubscribe-token", () => ({
   buildUnsubscribeUrl: (id: string) => `https://app.test/u/${id}`,
 }));
 vi.mock("@/lib/reviews/review-ask", () => ({ logIfReviewAsk: async () => undefined }));
+/** Holds the settle back, to see the row as an event arriving before it would. */
+const settle = vi.hoisted(() => ({ skip: false }));
+vi.mock("@/lib/broadcasts/settle-send", async (orig) => {
+  const real = await orig<typeof import("@/lib/broadcasts/settle-send")>();
+  return {
+    ...real,
+    settleSend: (...a: Parameters<typeof real.settleSend>) =>
+      settle.skip ? Promise.resolve(false) : real.settleSend(...a),
+  };
+});
 
 const RESEND_ID = "4ef9a417-02e9-4d39-ad75-9611e0fcc33c";
 const resendSend = vi.hoisted(() =>
@@ -37,6 +47,7 @@ process.env.EMAIL_FROM = "Fixture <hi@platform.test>";
 
 const { SA, AGENCY, SMTP_SUB, mem, resetSeam, smtpSend } = await s();
 const { POST } = await import("./route");
+const { recordBroadcastEmailLookup } = await import("@/lib/comms/email-events");
 
 function seed(sub: Record<string, unknown>) {
   resetSeam();
@@ -58,7 +69,14 @@ function seed(sub: Record<string, unknown>) {
     status: "sending",
     totals: { queued: 1, sent: 0, skipped: 0, failed: 0 },
   });
-  mem.seed("broadcasts/b1/sends/c1", { status: "queued", skippedReason: null });
+  mem.seed("broadcasts/b1/sends/c1", {
+    status: "queued",
+    skippedReason: null,
+    subAccountId: SA,
+    resendMessageId: null,
+    // The fan-out snapshot; the contact's address changed before the step ran.
+    toEmail: "thandi.old@example.co.za",
+  });
 }
 
 const step = () =>
@@ -70,7 +88,10 @@ const step = () =>
     }),
   );
 
-beforeEach(() => resendSend.mockClear());
+beforeEach(() => {
+  resendSend.mockClear();
+  settle.skip = false;
+});
 
 describe("broadcast step — Resend delivery-event lookup", () => {
   it("writes emailEvents/{resend id} naming the row, its tenant and an expiry", async () => {
@@ -85,9 +106,36 @@ describe("broadcast step — Resend delivery-event lookup", () => {
       contactId: "c1",
       subAccountId: SA,
       agencyId: AGENCY,
+      // The address the email went to (the live contact), not the fan-out snapshot.
+      toEmail: "thandi@example.co.za",
     });
+    expect(resendSend.mock.calls[0]![0]).toMatchObject({ to: "thandi@example.co.za" });
     const expiresMs = (lookup!.expiresAt as { toMillis: () => number }).toMillis();
     expect(expiresMs - Date.now()).toBeGreaterThan(89 * 24 * 3_600_000);
+  });
+
+  it("stamps the Resend id on the row with the lookup, before the settle", async () => {
+    seed({ agencyId: AGENCY, name: "Platform sender" });
+    settle.skip = true;
+    await step();
+    expect(mem.read("broadcasts/b1/sends/c1")).toMatchObject({ status: "queued", resendMessageId: RESEND_ID });
+    expect(mem.read(`emailEvents/${RESEND_ID}`)).toBeDefined();
+  });
+
+  it("writes neither when the step no longer holds the claim", async () => {
+    seed({ agencyId: AGENCY, name: "Platform sender" });
+    mem.seed("broadcasts/b1/sends/c1", { status: "queued", claimId: "someone-else", subAccountId: SA, resendMessageId: null });
+    const sendRef = mem.db.collection("broadcasts").doc("b1").collection("sends").doc("c1");
+    const broadcastRef = mem.db.collection("broadcasts").doc("b1");
+    await recordBroadcastEmailLookup({
+      row: { sendRef, broadcastRef, claimId: "mine" } as unknown as Parameters<typeof recordBroadcastEmailLookup>[0]["row"],
+      emailId: RESEND_ID,
+      toEmail: "thandi@example.co.za",
+      subAccountId: SA,
+      agencyId: AGENCY,
+    });
+    expect(mem.read("broadcasts/b1/sends/c1")!.resendMessageId).toBeNull();
+    expect(mem.list("emailEvents")).toEqual([]);
   });
 
   it("writes no lookup for an SMTP send", async () => {
