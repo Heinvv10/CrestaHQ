@@ -563,6 +563,34 @@
           "order": "ASCENDING"
         },
         {
+          "fieldPath": "stageChangedAt",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "activities",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "meta.dealId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "createdAt",
+          "order": "DESCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "deals",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "subAccountId",
+          "order": "ASCENDING"
+        },
+        {
           "fieldPath": "mode",
           "order": "ASCENDING"
         },

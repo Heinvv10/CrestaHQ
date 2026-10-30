@@ -21,7 +21,7 @@ concurrency:
 
 jobs:
   go:
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: services/wa-agent-bridge
@@ -42,7 +42,8 @@ jobs:
           # vulnerability gate pinned to a toolchain that cannot pass it is
           # not a gate. go.mod carries the same floor, for builds that never
           # go through CI.
-          go-version: '1.26.6'
+          go-version-file: services/wa-agent-bridge/go.mod
+          cache-dependency-path: services/wa-agent-bridge/go.sum
       # README.md calls gofmt a gate, so it has to actually be one. A gate
       # believed to run and not running is worse than no gate.
       - name: gofmt
@@ -76,10 +77,10 @@ jobs:
       # — nothing in this workflow is continue-on-error, and nothing should
       # become so.
       #
-      # Pinned to v1.7.0 rather than @latest: this runner is self-hosted and
-      # shared with four other repositories, so an unpinned `go run` of
-      # third-party code is a supply-chain path into all of them, and
-      # @latest also means CI can turn red with no code change here. The
+      # Pinned to v1.7.0 rather than @latest: an unpinned `go run` of
+      # third-party code is a supply-chain path into a job that holds this
+      # repo's token, and @latest also means CI can turn red with no code
+      # change here. The
       # trade-off is real and deliberate: a pinned scanner will not pick up
       # newly published advisories until this pin is bumped. Bump it on
       # purpose; do not "fix" it back to @latest.

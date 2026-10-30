@@ -8,6 +8,10 @@ import { activeOwnerRefusal } from "@/lib/auth/require-active-agency-owner";
 import { metaAppConfigured } from "@/lib/comms/meta";
 import { aiOutboundSmsEnableBlock } from "@/lib/comms/ai/outbound-sms-enable";
 import {
+  setClientUsageRebilling,
+  UsageRebillingRefusedError,
+} from "@/lib/server/usage-rebilling";
+import {
   sanitizeUsageQuotas,
   sanitizeUsageRates,
 } from "@/lib/server/usage-meter";
@@ -95,6 +99,11 @@ interface PatchBody {
   usageQuotas?: import("@/types/usage").UsageQuotas | null;
   /** v1.5 — per-workspace overage-rate override; same contract as quotas. */
   usageRates?: import("@/types/usage").UsageRates | null;
+  /**
+   * Usage rebilling for this client. Not a gate (never plan-managed);
+   * switching it on is refused unless the agency's master switch is on.
+   */
+  usageRebillingEnabled?: boolean;
   // "Hide instead of lock" overrides for the sidebar-gated features.
   // Only take effect while the matching gate is off. See `*HiddenWhenDisabled`
   // on SubAccountDoc.
@@ -128,9 +137,24 @@ export async function PATCH(
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
+  if (
+    body.usageRebillingEnabled !== undefined &&
+    typeof body.usageRebillingEnabled !== "boolean"
+  ) {
+    return NextResponse.json(
+      { error: "usageRebillingEnabled must be a boolean." },
+      { status: 400 }
+    );
+  }
+
   // Switching a reach gate on widens what an agency key reaches, so the
   // owner claim alone is not enough: it outlives a removal.
-  if (body.apiAccessEnabled === true || body.agentApiEnabled === true) {
+  // Rebilling a client is a money switch, held to the same live-row check.
+  if (
+    body.apiAccessEnabled === true ||
+    body.agentApiEnabled === true ||
+    body.usageRebillingEnabled === true
+  ) {
     const refusal = await activeOwnerRefusal(access.uid, access.agencyId!);
     if (refusal) return refusal;
   }
@@ -243,7 +267,9 @@ export async function PATCH(
   // to plan/unlimited; an object sanitizes to valid positive integers.
   const wantsUsageQuotas = body.usageQuotas !== undefined;
   const wantsUsageRates = body.usageRates !== undefined;
+  const wantsRebilling = typeof body.usageRebillingEnabled === "boolean";
   if (
+    !wantsRebilling &&
     !wantsUsageQuotas &&
     !wantsUsageRates &&
     !wantsEmail &&
@@ -335,6 +361,23 @@ export async function PATCH(
     const block = await aiOutboundSmsEnableBlock(subSnap.data() ?? {});
     if (block) {
       return NextResponse.json({ error: block }, { status: 409 });
+    }
+  }
+
+  // Written (or refused) after every read-only refusal and before any other
+  // write, in its own transaction, so a refusal leaves the rest of the body alone.
+  if (wantsRebilling) {
+    try {
+      await setClientUsageRebilling(
+        subAccountId,
+        body.usageRebillingEnabled === true,
+        access.uid
+      );
+    } catch (err) {
+      if (err instanceof UsageRebillingRefusedError) {
+        return NextResponse.json({ error: err.message }, { status: 400 });
+      }
+      throw err;
     }
   }
 
@@ -570,6 +613,9 @@ export async function PATCH(
       ? { reviewsAutoReplyEnabled: body.reviewsAutoReplyEnabled }
       : {}),
     ...(wantsAgentApi ? { agentApiEnabled: body.agentApiEnabled } : {}),
+    ...(wantsRebilling
+      ? { usageRebillingEnabled: body.usageRebillingEnabled }
+      : {}),
     ...(wantsWebinar1Hidden
       ? { webinar1HiddenWhenDisabled: body.webinar1HiddenWhenDisabled }
       : {}),

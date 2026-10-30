@@ -93,12 +93,24 @@ the PR's individual commits stay readable in history.
 
 ### CI runner
 
-CI runs on a **self-hosted runner** (`velo-crestahq-u`, labels
-`self-hosted, linux, velo, crestahq`) because GitHub-hosted runner billing is
-paused on this account. It runs as its own unix user (`gha-crestahq`) under
-`actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`, matching the four
-sibling runners on the same box. If PRs sit queued forever, check that service
-first — a stopped runner looks exactly like a slow CI.
+CI runs on **GitHub-hosted `ubuntu-latest`** (lint/typecheck/test/build, secret
+scan, FROZEN-shrink, the Go workflows), with two exceptions: the **E2E job in
+`ci.yml` and `e2e-smoke.yml` stay on the self-hosted runner** `velo-crestahq-u`
+(labels `self-hosted, linux, velo, crestahq, crestahq-e2e`; service
+`actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`, running as unix user
+`gha-crestahq`).
+
+Why: every E2E run seeds and purges the same fixture sub-accounts in the
+production Firestore (`e2e/global-setup.ts` `purgeFixtureData` is global), so
+runs must be serialised. One labelled runner does that without losing runs; a
+GitHub concurrency group does not, because it keeps only one *pending* run and
+cancels the older one when a third queues. If PRs sit queued forever, check the
+runner service first — a stopped runner looks exactly like a slow CI. The hosted
+jobs and E2E share no artifacts; E2E only `needs` the hosted gates.
+
+Follow-up: scope `purgeFixtureData` per run id (as `e2e/lib/run-id.ts` already
+does for specs' fixture prefixes), then move E2E and the smoke to hosted
+runners.
 
 ### Deploy
 

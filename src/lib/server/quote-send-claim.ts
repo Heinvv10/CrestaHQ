@@ -57,7 +57,9 @@ export async function releaseSendClaim(ref: FirebaseFirestore.DocumentReference,
 /** Step 8 of the send: record it (never over a recorded payment) and drop
  *  our claim, if any. True when a claimed send's document is no longer the
  *  one the email showed, or was paid meanwhile (claims are only taken on an
- *  unpaid quote); then no pay link is written onto it. */
+ *  unpaid quote); then no pay link is written onto it. A quote accepted (or
+ *  signed) while the email was out keeps its status and its link: nothing of
+ *  the send is recorded over the accept, and the answer is always true. */
 export async function recordSendAndRelease(
   ref: FirebaseFirestore.DocumentReference,
   claim: SendClaim | null,
@@ -68,12 +70,20 @@ export async function recordSendAndRelease(
   await getAdminDb().runTransaction(async (tx) => {
     const current = (await tx.get(ref)).data() as Quote | undefined;
     const paid = current?.status === "paid";
-    changed = !!claim && (!current || paid || quoteFingerprint(current) !== claim.fingerprint);
+    // An invoice converted from a signed quote carries the signature and is
+    // sent normally; only a quote's accept is final.
+    const accepted = !!current && current.kind !== "invoice" && (!!current.signature || current.status === "accepted");
+    changed = accepted || (!!claim && (!current || paid || quoteFingerprint(current) !== claim.fingerprint));
+    const releaseClaim = claim && (current as { sendingClaim?: SendClaim | null } | undefined)?.sendingClaim?.id === claim.id;
+    if (accepted) {
+      if (releaseClaim) tx.update(ref, { sendingClaim: null });
+      return;
+    }
     tx.update(ref, {
       ...(paid ? {} : { status: "sent" }),
       ...update,
       ...(claim && paid ? {} : (payLink ?? {})),
-      ...(claim && (current as { sendingClaim?: SendClaim | null } | undefined)?.sendingClaim?.id === claim.id ? { sendingClaim: null } : {}),
+      ...(releaseClaim ? { sendingClaim: null } : {}),
     });
   });
   return changed;

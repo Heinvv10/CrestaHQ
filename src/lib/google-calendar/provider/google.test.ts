@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
 import { googleGcalProvider as g } from "./google";
-import type { GcalEventInput } from "./types";
+import { GcalSyncTokenExpiredError, type GcalEventInput } from "./types";
 
 /** The real provider against a stubbed fetch: request shapes and error mapping. */
 
@@ -57,6 +57,65 @@ describe("listEvents", () => {
     stub(...Array.from({ length: 11 }, (_, i) => ({ body: { items: [], nextPageToken: `p${i}` } })));
     await expect(g.listEvents("tok", WINDOW)).rejects.toMatchObject({ kind: "malformed" });
     expect(calls).toHaveLength(10);
+  });
+});
+
+describe("syncEvents (calendar import)", () => {
+  const sync = (o: Partial<{ syncToken: string | null; maxPages: number; details: boolean; ordered: boolean }> = {}) =>
+    g.syncEvents("tok", { syncToken: null, ...WINDOW, maxPages: 5, details: false, ...o });
+
+  it("a full walk is windowed, follows pages, and returns Google's next sync token", async () => {
+    stub(
+      { body: { items: [{ id: "1" }], timeZone: "UTC", nextPageToken: "p2" } },
+      { body: { items: [{ id: "2" }], nextSyncToken: "sync-9" } },
+    );
+    expect(await sync()).toEqual({ items: [{ id: "1" }, { id: "2" }], timeZone: "UTC", nextSyncToken: "sync-9", truncated: false });
+    const q = new URL(calls[0].url).searchParams;
+    expect(q.get("timeMin")).toBe(WINDOW.timeMin.toISOString());
+    expect(q.get("timeMax")).toBe(WINDOW.timeMax.toISOString());
+    expect(q.get("singleEvents")).toBe("true");
+    expect(q.has("syncToken")).toBe(false);
+    expect(new URL(calls[1].url).searchParams.get("pageToken")).toBe("p2");
+  });
+
+  it("orders by start time only when asked (no sync token comes back for an ordered walk)", async () => {
+    stub({ body: { items: [] } }, { body: { items: [] } });
+    await sync();
+    await sync({ ordered: true });
+    expect(new URL(calls[0].url).searchParams.has("orderBy")).toBe(false);
+    expect(new URL(calls[1].url).searchParams.get("orderBy")).toBe("startTime");
+  });
+
+  it("an incremental walk sends only the token (Google refuses it with a window)", async () => {
+    stub({ body: { items: [], nextSyncToken: "sync-10" } });
+    expect((await sync({ syncToken: "sync-9" })).nextSyncToken).toBe("sync-10");
+    const q = new URL(calls[0].url).searchParams;
+    expect(q.get("syncToken")).toBe("sync-9");
+    expect(q.has("timeMin") || q.has("timeMax")).toBe(false);
+  });
+
+  it("never asks for descriptions, guest emails or links; titles and places only with details", async () => {
+    stub({ body: { items: [] } }, { body: { items: [] } });
+    await sync();
+    await sync({ details: true });
+    const [busy, details] = calls.map((c) => new URL(c.url).searchParams.get("fields") ?? "");
+    for (const f of [busy, details]) expect(f).not.toMatch(/description|email|hangoutLink|conferenceData|attachments/);
+    expect(busy).not.toMatch(/summary|location/);
+    expect(details).toMatch(/summary/);
+    expect(details).toMatch(/location/);
+  });
+
+  it("410 on a sync token is GcalSyncTokenExpiredError; other errors stay typed", async () => {
+    stub({ status: 410, body: { error: { code: 410 } } });
+    await expect(sync({ syncToken: "old" })).rejects.toBeInstanceOf(GcalSyncTokenExpiredError);
+    stub({ status: 401 });
+    await expect(sync({ syncToken: "old" })).rejects.toMatchObject({ kind: "auth_expired" });
+  });
+
+  it("pages left after maxPages: truncated, and no sync token", async () => {
+    stub(...Array.from({ length: 3 }, (_, i) => ({ body: { items: [{ id: `${i}` }], nextPageToken: `p${i}`, nextSyncToken: "no" } })));
+    expect(await sync({ maxPages: 3 })).toMatchObject({ truncated: true, nextSyncToken: null });
+    expect(calls).toHaveLength(3);
   });
 });
 

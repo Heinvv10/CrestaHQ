@@ -174,6 +174,7 @@ export async function updateDraftQuote(
       | "currency"
       | "autoCreateDealOnAccept"
       | "dealId"
+      | "requireSignature"
     >
   >,
 ): Promise<void> {
