@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { spyBillingProvider } from "@/test/billing-provider-spies";
 import { CHARGE, NOW, SUB, charges, events, frozen, mail, mem, queue, setupUsageBillingTests } from "@/test/usage-billing-harness";
 
@@ -22,6 +22,7 @@ vi.mock("@/lib/server/billing-attention-notify", () => notify);
 
 const { runUsageClose } = await import("./usage-billing-service");
 const { listAgencyBillingFlags, resolveAgencyBillingFlag } = await import("@/lib/server/billing-attention");
+const { isoWeekKey } = await import("./usage-billing-flags");
 
 setupUsageBillingTests();
 
@@ -146,5 +147,45 @@ describe("a send of unknown state is not dropped silently", () => {
     expect(frozen()?.withheldAt).toBeUndefined();
     expect(queue()).toHaveLength(0);
     expect(await flags()).toEqual([expect.objectContaining({ reason: expect.stringMatching(/send state is unknown/) })]);
+  });
+});
+
+describe("a problem that recurs after it was resolved flags again, once per ISO week", () => {
+  afterEach(() => vi.useRealTimers());
+  const at = (iso: string) => vi.setSystemTime(new Date(iso));
+
+  it("isoWeekKey follows ISO 8601 across year boundaries", () => {
+    expect(isoWeekKey(new Date("2026-10-12T00:00:00Z"))).toBe("2026-W42");
+    expect(isoWeekKey(new Date("2026-10-18T23:59:59Z"))).toBe("2026-W42");
+    expect(isoWeekKey(new Date("2026-10-19T00:00:00Z"))).toBe("2026-W43");
+    expect(isoWeekKey(new Date("2026-01-01T12:00:00Z"))).toBe("2026-W01");
+    expect(isoWeekKey(new Date("2024-12-30T12:00:00Z"))).toBe("2025-W01");
+    expect(isoWeekKey(new Date("2021-01-03T12:00:00Z"))).toBe("2020-W53");
+  });
+
+  it("resolved in week 42, back in week 43: a new flag; further days of that week add none", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    spyBillingProvider("paystack");
+    mem.seed("subAccounts/sa1", { ...SUB, accountContact: null });
+
+    at("2026-10-12T08:00:00Z");
+    await runUsageClose(day(0));
+    at("2026-10-14T08:00:00Z");
+    await runUsageClose(day(1));
+    expect(await flags()).toHaveLength(1);
+
+    const [first] = await listAgencyBillingFlags("ag1");
+    expect(await resolveAgencyBillingFlag("ag1", first.flagId, { uid: "own", email: "o@x.co" })).toBe(true);
+    at("2026-10-16T08:00:00Z");
+    await runUsageClose(day(2));
+    expect(await listAgencyBillingFlags("ag1")).toEqual([]);
+
+    at("2026-10-19T08:00:00Z");
+    await runUsageClose(day(3));
+    expect(await listAgencyBillingFlags("ag1")).toHaveLength(1);
+    at("2026-10-21T08:00:00Z");
+    await runUsageClose(day(4));
+    expect(await flags()).toHaveLength(2);
+    expect(await listAgencyBillingFlags("ag1")).toHaveLength(1);
   });
 });

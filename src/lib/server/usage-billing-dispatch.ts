@@ -78,6 +78,21 @@ export async function processPendingCharges(
     // Checked before any path is built from it.
     if (!sub.agencyId) return refuse("the sub-account has no agency");
 
+    // The month is already withheld (the stamp is committed with the cancel):
+    // a retry after a crash before the announce, or a mint that lost a race to a
+    // withhold. Re-announce (idempotent: deterministic rows, a one-off flag) and
+    // clear the entry, so a crash can never lose the audit rows or the flag.
+    const reannounceWithheld = async (): Promise<void> => {
+      const closed = ((await ledgerRef.get()).data() as { closed?: UsageClosedSnapshot } | undefined)?.closed;
+      const canceled = (await chargeRef.get()).data()?.status === "canceled";
+      await announceWithheld({
+        sub, month: p.month, chargeId, charge: canceled ? "canceled" : "none",
+        why: closed?.withheldReason ?? "withheld", carryBackCents: closed?.carriedInCents ?? 0,
+      });
+      await q.ref.delete();
+    };
+    if (frozen.withheldAt) return reannounceWithheld();
+
     // Fail closed: the full eligibility rule (both switches AND `since` at or
     // before the month's start, as at the freeze) is applied again to the
     // stored docs. A client toggled off and on since the freeze fails it.
@@ -136,12 +151,9 @@ export async function processPendingCharges(
         return held(err);
       });
       if (created === null) return;
-      // A concurrent run withheld this month while we were minting: it has
-      // already audited and flagged it, so this one only clears its entry.
-      if (created.withheld) {
-        await q.ref.delete();
-        return;
-      }
+      // A concurrent run withheld this month while we were minting. It may not
+      // have announced yet (or may have died first), so this one does, idempotently.
+      if (created.withheld) return reannounceWithheld();
       if (created.created) charged++;
     }
 

@@ -42,6 +42,13 @@ const withhold = () =>
   withholdUnsent({ sub, month: "2026-09", chargeId: CHARGE, now: NOW, ledgerRef: mem.db.doc(LEDGER) as never, carryBackCents: 300 });
 const pending = () => mem.read(CHARGE_PATH)?.status === "pending";
 const withheld = () => frozen()?.withheldAt !== undefined;
+/** mulberry32: a fixed seed makes the interleavings, and so the test, repeatable. */
+const prng = (seed: number) => () => {
+  seed = (seed + 0x6d2b79f5) | 0;
+  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+};
 const ticks = (n: number) => new Promise<void>((r) => { let i = 0; const go = () => (i++ >= n ? r() : setImmediate(go)); go(); });
 
 describe("a mint and a withhold never both win", () => {
@@ -120,15 +127,16 @@ describe("a mint and a withhold never both win", () => {
     expect(withheld() && pending()).toBe(false);
   });
 
-  it("40 randomly interleaved races never leave a withheld month with a live charge", async () => {
+  it("40 interleaved races (fixed seed) never leave a withheld month with a live charge", async () => {
     spyBillingProvider("stripe");
     const outcomes = new Set<string>();
+    const random = prng(20261001);
     for (let i = 0; i < 40; i++) {
       mem.clear();
       mem.seed("agencies/ag1", { ownerUid: "own", usageRebillingEnabled: true });
       mem.seed("subAccounts/sa1", SUB);
       seedFrozen();
-      const [a, b] = [Math.floor(Math.random() * 6), Math.floor(Math.random() * 6)];
+      const [a, b] = [Math.floor(random() * 6), Math.floor(random() * 6)];
       await Promise.all([ticks(a).then(mint), ticks(b).then(withhold)]);
       expect(withheld() && pending()).toBe(false);
       expect(withheld()).toBe(true);

@@ -2,7 +2,6 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
-import { recordBillingEvent } from "@/lib/server/billing-lifecycle";
 import { flagUsageIssue } from "@/lib/server/usage-billing-flags";
 import { DAY_MS, toMillis, type PendingChargeDoc } from "@/lib/server/usage-billing-shared";
 import { formatUsageMonth } from "@/lib/billing/usage";
@@ -45,7 +44,24 @@ export function withheldPatch(why: string, carryBackCents: number): Record<strin
   };
 }
 
-/** After the commit: audit rows and the attention flag. */
+/** One audit row under a deterministic id: written once, however often the announce re-runs. */
+async function auditOnce(id: string, entry: { agencyId: string; subAccountId: string; event: string; detail: Record<string, unknown> }) {
+  try {
+    await getAdminDb()
+      .collection("billingEvents")
+      .doc(id)
+      .create({ ...entry, createdAt: FieldValue.serverTimestamp() });
+  } catch (err) {
+    if ((err as { code?: number }).code !== 6) throw err; // 6 = already written
+  }
+}
+
+/**
+ * After the commit: audit rows and the attention flag. IDEMPOTENT (deterministic
+ * row ids written with create(), a one-off flag id), and it throws on a write
+ * failure, so the run fails with its queue entry kept and the retry re-announces
+ * (the month's ledger carries `withheldAt`, which the retry reads).
+ */
 export async function announceWithheld(input: {
   sub: SubAccountDoc;
   month: string;
@@ -56,21 +72,22 @@ export async function announceWithheld(input: {
 }): Promise<void> {
   const { sub, month, chargeId, charge, why, carryBackCents } = input;
   console.warn(`[usage-close] month withheld sa=${sub.id} month=${month} charge=${charge}: ${why}`);
+  const base = { agencyId: sub.agencyId, subAccountId: sub.id };
   if (charge === "canceled") {
-    recordBillingEvent({
-      agencyId: sub.agencyId,
-      subAccountId: sub.id,
+    await auditOnce(`usage-withheld-charge-canceled-${sub.id}-${month}`, {
+      ...base,
       event: "charge.canceled",
       detail: { chargeId, kind: "usage", usageMonth: month, reason: why },
     });
   }
-  recordBillingEvent({
-    agencyId: sub.agencyId,
-    subAccountId: sub.id,
+  await auditOnce(`usage-withheld-${sub.id}-${month}`, {
+    ...base,
     event: "usage.withheld",
     detail: { month, chargeId, chargeCanceled: charge === "canceled", reason: why, carryBackCents },
   });
   await flagUsageIssue({
+    strict: true,
+    once: true,
     agencyId: sub.agencyId,
     subAccountId: sub.id,
     month,

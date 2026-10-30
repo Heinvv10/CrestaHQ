@@ -8,7 +8,7 @@ import { formatBillingPrice } from "@/lib/billing/status";
 import type { AttentionItem } from "@/types/billing";
 
 /**
- * Flagged payments awaiting a person, with "Mark resolved". Used by Client
+ * Items that need attention (flagged payments, usage months) awaiting a person, with "Mark resolved". Used by Client
  * billing (plan-payment flags, `/api/agency/billing-attention`) and Reports →
  * Payments (order flags, `/api/sub-accounts/[id]/order-attention`). POST
  * sends `{ flagId, orderId }`; the agency route reads flagId, the order route
@@ -32,11 +32,11 @@ export function AttentionList({
     void fetch(endpoint)
       .then(async (r) => {
         const d = (await r.json().catch(() => ({}))) as { items?: AttentionItem[]; error?: string };
-        if (!r.ok) throw new Error(d.error ?? "Could not load flagged payments.");
+        if (!r.ok) throw new Error(d.error ?? "Could not load items that need attention.");
         setItems(d.items ?? []);
         setError(null);
       })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not load flagged payments."));
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : "Could not load items that need attention."));
   }, [endpoint]);
 
   useEffect(load, [load]);
