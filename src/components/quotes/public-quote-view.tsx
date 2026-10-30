@@ -100,6 +100,8 @@ export function PublicQuoteView({
   const [signingOpen, setSigningOpen] = useState(false);
   // Shown in the banner right after signing, before any refresh.
   const [justSignedBy, setJustSignedBy] = useState<string | null>(null);
+  // Server says whether a signed copy is actually going out (email set up + address known).
+  const [copyEmailed, setCopyEmailed] = useState(false);
   const signerDisplay = justSignedBy ?? quote.signature?.signerName ?? null;
   const signedAtDisplay = quote.signature?.signedAt
     ? new Date(quote.signature.signedAt).toLocaleDateString("en-GB", {
@@ -129,7 +131,7 @@ export function PublicQuoteView({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
-      const body = (await res.json().catch(() => ({}))) as { error?: string; signed?: boolean };
+      const body = (await res.json().catch(() => ({}))) as { error?: string; signed?: boolean; copyEmailed?: boolean };
       if (!res.ok) {
         // The quote started requiring a signature after this page loaded:
         // there is no name field to fill in until the page is reloaded.
@@ -143,6 +145,7 @@ export function PublicQuoteView({
       // requirement was switched off after load accepts without one.
       if (body.signed === true && payload.signerName) {
         setJustSignedBy(payload.signerName);
+        setCopyEmailed(body.copyEmailed === true);
       }
       setDeclineOpen(false);
     } catch (err) {
@@ -238,6 +241,7 @@ export function PublicQuoteView({
           kind={quote.kind}
           signedBy={signerDisplay}
           signedAt={signedAtDisplay}
+          copyEmailed={copyEmailed}
         />
       )}
 
@@ -639,6 +643,7 @@ function StatusBanner({
   kind,
   signedBy,
   signedAt,
+  copyEmailed,
 }: {
   quoteStatus: SerializableQuote["status"];
   expired: boolean;
@@ -646,6 +651,7 @@ function StatusBanner({
   kind: SerializableQuote["kind"];
   signedBy: string | null;
   signedAt: string | null;
+  copyEmailed: boolean;
 }) {
   const isInvoice = kind === "invoice";
   if (isInvoice && quoteStatus === "paid") {
@@ -678,6 +684,7 @@ function StatusBanner({
               <p className="mt-1 text-xs text-foreground">
                 Signed by <span className="font-medium">{signedBy}</span>
                 {signedAt ? ` on ${signedAt}` : ""}.
+                {copyEmailed ? " A signed copy with a certificate page is on its way to your inbox." : ""}
               </p>
             )}
             <p className="mt-1 text-xs text-muted-foreground">

@@ -203,6 +203,57 @@ const styles = StyleSheet.create({
     color: "#9a9aa3",
     textAlign: "center",
   },
+  certTitle: {
+    fontSize: 16,
+    fontFamily: "Helvetica-Bold",
+    fontWeight: 700,
+    marginBottom: 4,
+  },
+  certSubtitle: {
+    fontSize: 9,
+    color: "#6b6b75",
+    marginBottom: 24,
+  },
+  certRow: {
+    flexDirection: "row",
+    paddingVertical: 7,
+    borderBottomWidth: 0.5,
+    borderBottomColor: "#e8e8ec",
+  },
+  certLabel: {
+    width: 150,
+    fontSize: 9,
+    color: "#6b6b75",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  certValue: {
+    flex: 1,
+    fontSize: 10,
+  },
+  certValueBold: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: "Helvetica-Bold",
+    fontWeight: 700,
+  },
+  certHash: {
+    flex: 1,
+    fontSize: 8.5,
+    fontFamily: "Courier",
+  },
+  certNote: {
+    marginTop: 20,
+    fontSize: 9,
+    lineHeight: 1.5,
+    color: "#1a1a22",
+  },
+  certSmall: {
+    marginTop: 10,
+    fontSize: 8,
+    lineHeight: 1.5,
+    color: "#6b6b75",
+  },
 });
 
 interface InvoicePdfProps {
@@ -215,6 +266,11 @@ interface InvoicePdfProps {
   recipientName: string;
   /** ISO date string for "Issued" line. Defaults to today. */
   issuedDateLabel?: string;
+  /**
+   * "recipient" leaves the signer's IP and browser off the certificate, since
+   * that copy travels (public link, forwarded email). The operator copy is full.
+   */
+  certificateDetail?: "full" | "recipient";
 }
 
 export function InvoicePdfDocument({
@@ -223,6 +279,7 @@ export function InvoicePdfDocument({
   businessLogoUrl,
   recipientName,
   issuedDateLabel,
+  certificateDetail = "full",
 }: InvoicePdfProps) {
   const safeLogoUrl =
     typeof businessLogoUrl === "string" &&
@@ -378,8 +435,108 @@ export function InvoicePdfDocument({
           {businessName} · {docLabel.toLowerCase()} {quote.quoteNumber}
         </Text>
       </Page>
+      {/* Signature certificate: who agreed, when, from where, and the fingerprint
+          of the exact content they agreed to. */}
+      {quote.signature && (
+        <Page size="A4" style={styles.page}>
+          <Text style={styles.certTitle}>Signature certificate</Text>
+          <Text style={styles.certSubtitle}>
+            {docLabel} {quote.quoteNumber} · {businessName} ·{" "}
+            {formatCurrency(totals.total, quote.currency)}
+          </Text>
+
+          <View style={styles.certRow}>
+            <Text style={styles.certLabel}>Signed by</Text>
+            <Text style={styles.certValueBold}>
+              {quote.signature.signerName}
+            </Text>
+          </View>
+          {quote.signature.signedAsNumber !== quote.quoteNumber && (
+            <View style={styles.certRow}>
+              <Text style={styles.certLabel}>Signed as</Text>
+              <Text style={styles.certValue}>
+                Quote {quote.signature.signedAsNumber}
+              </Text>
+            </View>
+          )}
+          <View style={styles.certRow}>
+            <Text style={styles.certLabel}>Email</Text>
+            <Text style={styles.certValue}>
+              {quote.signature.signerEmail ?? "—"}
+            </Text>
+          </View>
+          <View style={styles.certRow}>
+            <Text style={styles.certLabel}>Signed at</Text>
+            <Text style={styles.certValue}>
+              {timestampLabel(quote.signature.signedAt)}
+            </Text>
+          </View>
+          {certificateDetail === "full" && (
+            <View style={styles.certRow}>
+              <Text style={styles.certLabel}>IP address</Text>
+              <Text style={styles.certValue}>
+                {quote.signature.ipAddress ?? "—"}
+              </Text>
+            </View>
+          )}
+          {certificateDetail === "full" && (
+            <View style={styles.certRow}>
+              <Text style={styles.certLabel}>Browser</Text>
+              <Text style={styles.certValue}>
+                {quote.signature.userAgent ?? "—"}
+              </Text>
+            </View>
+          )}
+          <View style={styles.certRow}>
+            <Text style={styles.certLabel}>Document fingerprint</Text>
+            <Text style={styles.certHash}>
+              SHA-256 {quote.signature.documentHash}
+            </Text>
+          </View>
+
+          <Text style={styles.certNote}>
+            By typing their name and ticking the agreement box, the signer
+            indicated their intent to be bound by the terms of this document
+            (electronic signature).
+          </Text>
+          <Text style={styles.certSmall}>
+            The fingerprint identifies the exact content that was signed: the
+            line items, amounts, terms, parties and validity. Any later change
+            to the document produces a different fingerprint. Record version{" "}
+            {quote.signature.hashVersion}.
+          </Text>
+
+          <Text style={styles.footer} fixed>
+            {businessName} · {docLabel.toLowerCase()} {quote.quoteNumber} ·
+            signature certificate
+          </Text>
+        </Page>
+      )}
     </Document>
   );
+}
+
+function timestampLabel(value: unknown): string {
+  if (value instanceof Date) return `${value.toUTCString()} (UTC)`;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "toDate" in value &&
+    typeof (value as { toDate: () => Date }).toDate === "function"
+  ) {
+    const d = (value as { toDate: () => Date }).toDate();
+    return `${d.toUTCString()} (UTC)`;
+  }
+  // A timestamp that lost its prototype (serialized) still carries seconds.
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { seconds?: unknown }).seconds === "number"
+  ) {
+    const d = new Date((value as { seconds: number }).seconds * 1000);
+    return `${d.toUTCString()} (UTC)`;
+  }
+  return "—";
 }
 
 function formatPaymentDueLabel(days: number | null): string | null {

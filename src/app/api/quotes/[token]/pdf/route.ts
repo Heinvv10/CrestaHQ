@@ -61,11 +61,13 @@ export async function GET(
   const businessLogoUrl =
     typeof subData.logoUrl === "string" ? (subData.logoUrl as string) : null;
 
+  // Link holders get the recipient certificate: no IP or browser string.
   const stream = await renderQuotePdfStream({
     quote,
     businessName,
     businessLogoUrl,
     recipientName,
+    certificateDetail: "recipient",
   });
   return new NextResponse(stream, {
     headers: {

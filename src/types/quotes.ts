@@ -197,6 +197,8 @@ export interface Quote {
   requireSignature?: boolean;
   /** Set on a signed accept. Carried onto the invoice on convert. */
   signature?: QuoteSignature | null;
+  /** Set once, in a transaction, before the signed copies are sent: at most one send per signature. */
+  signedCopyEmailedAt?: Timestamp | FieldValue | null;
 
   // ── Lifecycle timestamps ─────────────────────────────────────────
   sentAt: Timestamp | FieldValue | null;

@@ -1,6 +1,6 @@
 import "server-only";
 
-import { renderToStream } from "@react-pdf/renderer";
+import { renderToBuffer, renderToStream } from "@react-pdf/renderer";
 import { InvoicePdfDocument } from "@/lib/quotes/pdf-document";
 import { loadLogoDataUri } from "@/lib/branding/logo-data-uri";
 import type { Quote } from "@/types/quotes";
@@ -13,23 +13,29 @@ import type { Quote } from "@/types/quotes";
  * it via Readable.toWeb so Next's NextResponse / fetch contracts are
  * happy under all runtimes.
  */
+interface RenderInput {
+  quote: Quote;
+  businessName: string;
+  businessLogoUrl?: string | null;
+  recipientName: string;
+  /** See InvoicePdfDocument; defaults to the full operator certificate. */
+  certificateDetail?: "full" | "recipient";
+}
+
 export async function renderQuotePdfStream({
   quote,
   businessName,
   businessLogoUrl,
   recipientName,
-}: {
-  quote: Quote;
-  businessName: string;
-  businessLogoUrl?: string | null;
-  recipientName: string;
-}): Promise<ReadableStream<Uint8Array>> {
+  certificateDetail,
+}: RenderInput): Promise<ReadableStream<Uint8Array>> {
   const nodeStream = await renderToStream(
     <InvoicePdfDocument
       quote={quote}
       businessName={businessName}
       businessLogoUrl={businessLogoUrl ? await loadLogoDataUri(businessLogoUrl) : null}
       recipientName={recipientName}
+      certificateDetail={certificateDetail}
     />,
   );
   // Node Readable → Web ReadableStream so NextResponse can consume it
@@ -38,6 +44,25 @@ export async function renderQuotePdfStream({
   return Readable.toWeb(
     nodeStream as unknown as InstanceType<typeof Readable>,
   ) as ReadableStream<Uint8Array>;
+}
+
+/** Same document as a Buffer, for email attachments. */
+export async function renderQuotePdfBuffer({
+  quote,
+  businessName,
+  businessLogoUrl,
+  recipientName,
+  certificateDetail,
+}: RenderInput): Promise<Buffer> {
+  return renderToBuffer(
+    <InvoicePdfDocument
+      quote={quote}
+      businessName={businessName}
+      businessLogoUrl={businessLogoUrl ? await loadLogoDataUri(businessLogoUrl) : null}
+      recipientName={recipientName}
+      certificateDetail={certificateDetail}
+    />,
+  );
 }
 
 export function pdfFilename(quote: Pick<Quote, "kind" | "quoteNumber">): string {
