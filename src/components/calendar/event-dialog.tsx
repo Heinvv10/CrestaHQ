@@ -37,6 +37,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { updateEvent, deleteEvent } from "@/lib/firestore/events";
 import { BookingReassign } from "@/components/calendar/booking-reassign";
 import { GoogleSyncNotice } from "@/components/calendar/google-sync-notice";
+import { ImportedEventSheet } from "@/components/calendar/imported-event-sheet";
 import {
   changedFields,
   notifySkipDetail,
@@ -50,6 +51,7 @@ import {
   eventSource,
   eventStatus,
   eventStatusLabel,
+  isImportedEvent,
   type CalendarEvent,
   type EventFormData,
   type EventNotifySkipReason,
@@ -385,6 +387,10 @@ export function EventDialog({
   }
 
   const isBookingPageEvent = event ? eventSource(event) === "booking_page" : false;
+
+  if (event && isImportedEvent(event)) {
+    return <ImportedEventSheet open={open} onOpenChange={onOpenChange} event={event} />;
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>

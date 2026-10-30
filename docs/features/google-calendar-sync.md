@@ -73,7 +73,7 @@ Deleting an event in Google does **not** cancel the booking (ruling 9).
 
 ## Import (C1, port of 1.0.54) — NOT runtime-verified
 
-> Merged dark: no Settings UI yet (C2), and not walked against a real Google account. Nothing is imported until an admin allows it through the API below.
+> Merged dark: not walked against a real Google account, and the UI (C2, below) is not browser-verified. Nothing is imported until a sub-account admin allows it.
 
 A member's own Google events shown on the CRM calendar as read-only `events` docs. Code: [import.ts](../../src/lib/google-calendar/import.ts) (the pass), [import-map.ts](../../src/lib/google-calendar/import-map.ts) (what is stored), [import-state.ts](../../src/lib/google-calendar/import-state.ts) (keys and cleanups).
 
@@ -90,7 +90,14 @@ A member's own Google events shown on the CRM calendar as read-only `events` doc
 - **Schedule:** no QStash schedule of its own. The 15-minute `email-sync` tick publishes one message to `POST /api/cron/calendar-import` (QStash-signed, URL-bound) when any workspace allows import; it syncs members least recently attempted first, three at a time, within 45 s.
 - **API:** `PATCH /api/sub-accounts/[id]/google-calendar/import` with exactly one of `{allowWorkspace: boolean}` (admin; on needs the gate and a configured deployment), `{mode: "off"|"busy"|"details"}` (the caller's own calendar only; on needs the gate, the allowance and a connected calendar; off always works) or `{syncNow: true}` (the caller's full pass, awaited). `GET /api/sub-accounts/[id]/google-calendar` adds `importAllowed`, `importMode`, `importStatus`, `importError`, `importLastSyncAt`, `importedCount`.
 - **Rules:** no client may update or delete a `source: "google"` event (nor create one — `source` was already server-only). Every member may read them; a per-doc read condition would break the calendar's list queries ("rules are not filters"), which is why sharing details is the owner's explicit choice.
-- **Not built (C1 scope):** no contact linking from guest emails (upstream links one in details mode); no UI (C2). Until C2, the Calendar page lists imported events like any other and its dialog offers edits the rules refuse — C2 renders them read-only.
+- **Not built:** no contact linking from guest emails (upstream links one in details mode).
+
+### Import UI (C2) — NOT browser-verified
+
+- **Settings → Calendar sync:** [google-calendar-import-controls.tsx](../../src/components/settings/google-calendar-import-controls.tsx), inside the Google Calendar card. A sub-account admin sees the workspace allowance checkbox (turning it off asks first, since it removes every import). Every member sees Off / Busy only / Full details for their own calendar (Full details asks first), Sync now, and the last sync (count, age, or the error). It reads the `GET` fields above and writes through the import `PATCH`; the server enforces every key, so the UI only reflects them. It shows "Connect your Google Calendar" to a member who is not connected, and a note to a member when the workspace has not allowed import. While the first pass is pending it re-reads the status every 4 s, five times.
+- **Calendar page:** an imported event is a dashed, muted chip (`data-imported`, tooltip "Imported from Google Calendar") with the owner's first name and "All day" in place of a time. Its owner comes from the members roster (the doc stores only `importOwnerUid`), fetched only when an imported event is on screen. Clicking it opens [imported-event-sheet.tsx](../../src/components/calendar/imported-event-sheet.tsx): read-only, headed "Imported from Google", no form, Save, Delete or booking actions, with a "shares this time as Busy only" note for a time-only import. The Appointments list never shows imports (C0).
+- **All-day events** are stored midnight to midnight in the Google calendar's zone, so a viewer in another zone can see one on the neighbouring day. A multi-day event sits on its first day only, like every other event on the grid.
+- **Spec:** [e2e/specs/google-calendar-import-ui.spec.ts](../../e2e/specs/google-calendar-import-ui.spec.ts) (unrun locally: it needs the fake provider and the fixture tenant).
 
 ## Fake provider (dev/CI)
 

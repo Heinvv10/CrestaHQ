@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
+import { GoogleImportControls, type ImportStatus } from "@/components/settings/google-calendar-import-controls";
 
 /**
  * The signed-in member's own Google Calendar connection (SP3 G1/G4), inside
@@ -15,7 +16,7 @@ import { Button } from "@/components/ui/button";
  * caller — never a token, never a colleague's connection.
  */
 
-interface Status {
+interface Status extends Partial<ImportStatus> {
   gateOff?: boolean;
   configured?: boolean;
   connected: boolean;
@@ -190,6 +191,8 @@ export function GoogleCalendarCard() {
           </Button>
         )}
       </div>
+
+      {status && !status.gateOff && !error && <GoogleImportControls status={status} onChanged={load} />}
     </div>
   );
 }

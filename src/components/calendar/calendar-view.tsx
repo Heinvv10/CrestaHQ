@@ -6,8 +6,11 @@ import { cn } from "@/lib/utils";
 import { toDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { EventDialog } from "@/components/calendar/event-dialog";
+import { useSubAccount } from "@/context/sub-account-context";
+import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
+import { importedOwnerName } from "@/lib/calendar/imported-event";
 import { shownEvent } from "@/lib/calendar/event-overrides-view";
-import type { CalendarEvent, EventStatus } from "@/types/events";
+import { isImportedEvent, type CalendarEvent, type EventStatus } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -56,6 +59,9 @@ export function CalendarView({
   onDeleted,
   onCreated,
 }: CalendarViewProps) {
+  const { subAccountId } = useSubAccount();
+  // The roster names the owner of an imported event; only fetched when one is on screen.
+  const { members } = useSubAccountMembers(events.some(isImportedEvent) ? subAccountId : null);
   const today = useMemo(() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
@@ -244,25 +250,44 @@ export function CalendarView({
                     const contact = ev.contactId
                       ? contactById.get(ev.contactId)
                       : null;
+                    const imported = isImportedEvent(ev);
+                    // An imported event shows whose Google Calendar it is from.
+                    const who = imported
+                      ? importedOwnerName(members, ev.importOwnerUid)?.split(" ")[0]
+                      : contact?.name?.split(" ")[0];
                     return (
                       <button
                         key={ev.id}
                         type="button"
                         onClick={(e) => openEdit(ev, e)}
-                        className="group/event flex w-full items-center gap-1 truncate rounded-md border border-transparent bg-gradient-to-r from-indigo-500/10 via-violet-500/10 to-pink-500/10 px-1.5 py-1 text-left text-[11px] font-medium leading-tight transition-colors hover:border-primary/30"
+                        title={imported ? "Imported from Google Calendar" : undefined}
+                        data-imported={imported ? "true" : undefined}
+                        className={cn(
+                          "group/event flex w-full items-center gap-1 truncate rounded-md border px-1.5 py-1 text-left text-[11px] font-medium leading-tight transition-colors hover:border-primary/30",
+                          imported
+                            ? "border-dashed border-border bg-muted/40 text-muted-foreground"
+                            : "border-transparent bg-gradient-to-r from-indigo-500/10 via-violet-500/10 to-pink-500/10",
+                        )}
                       >
-                        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-gradient-to-br from-indigo-500 via-violet-500 to-pink-500" />
+                        <span
+                          className={cn(
+                            "inline-block h-1.5 w-1.5 shrink-0 rounded-full",
+                            imported
+                              ? "bg-muted-foreground/50"
+                              : "bg-gradient-to-br from-indigo-500 via-violet-500 to-pink-500",
+                          )}
+                        />
                         {start && (
                           <span className="shrink-0 text-muted-foreground">
-                            {formatTime(start)}
+                            {ev.allDay ? "All day" : formatTime(start)}
                           </span>
                         )}
                         <span className="truncate">
                           {ev.title}
-                          {contact && (
+                          {who && (
                             <span className="text-muted-foreground">
                               {" · "}
-                              {contact.name?.split(" ")[0] ?? ""}
+                              {who}
                             </span>
                           )}
                         </span>
