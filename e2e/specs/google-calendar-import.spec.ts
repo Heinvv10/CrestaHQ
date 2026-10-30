@@ -118,11 +118,15 @@ test("an admin allows import, a member opts in to busy-only, syncs, and opting o
   expect((await api(page, { allowWorkspace: true })).status).toBe(200);
   expect((await api(page, { mode: "busy" })).status).toBe(200);
   // The mode change already starts a full pass after its response, so a sync
-  // asked for straight after can land inside the 60 s full-pass cooldown. Either
-  // answer is correct; the poll below proves a pass ran.
+  // asked for straight after can find that pass still holding the lease (409
+  // in_progress) or just finished (429 cooldown). All three answers are correct;
+  // the poll below proves a pass ran. Other 409s (not_eligible,
+  // settings_changed) still fail.
   const sync = await api(page, { syncNow: true });
   if (sync.status === 429) {
     expect(sync.json.code).toBe("cooldown");
+  } else if (sync.status === 409) {
+    expect(sync.json.code).toBe("in_progress");
   } else {
     expect(sync.status).toBe(200);
     expect(sync.json.result).toMatchObject({ ok: true, full: true });
@@ -137,10 +141,13 @@ test("an admin allows import, a member opts in to busy-only, syncs, and opting o
     expect(doc.data()).not.toHaveProperty(k);
   }
 
-  // A re-run duplicates nothing (it may also be refused by the same cooldown).
+  // A re-run adds nothing. Inside 60 s it is almost always refused (cooldown, or
+  // in_progress while the first pass releases its lease); idempotence itself is
+  // covered by src/lib/google-calendar/import.test.ts.
   const rerun = await api(page, { syncNow: true });
-  expect([200, 429]).toContain(rerun.status);
+  expect([200, 409, 429]).toContain(rerun.status);
   if (rerun.status === 429) expect(rerun.json.code).toBe("cooldown");
+  if (rerun.status === 409) expect(rerun.json.code).toBe("in_progress");
   expect(await imports()).toHaveLength(1);
 
   // Opting out removes it at once.
