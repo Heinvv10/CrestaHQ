@@ -249,6 +249,23 @@ describe("community grant", () => {
     expect(html).toContain("works once, for up to 24 hours");
   });
 
+  it("two concurrent orders from one brand-new email make one member, one membership, one contact, memberCount 1", async () => {
+    seedOrder({}, "ord2");
+    const results = await Promise.all([
+      grantForOrder(target),
+      grantForOrder({ orderId: "ord2", subAccountId: SA }),
+    ]);
+    await flushAfterResponse();
+
+    expect(results.reduce((n, r) => n + r.delivered, 0)).toBe(2);
+    expect(mem.list(`subAccounts/${SA}/members`)).toHaveLength(1);
+    expect(mem.list("contacts")).toHaveLength(1);
+    expect(mem.list(`subAccounts/${SA}/members`)[0].contactId).toBe(mem.list("contacts")[0].id);
+    expect(memberships()).toHaveLength(1);
+    expect(group().memberCount).toBe(1);
+    expect(mem.list("entitlements").map((e) => e.id).sort()).toEqual(["ord1_p1", "ord2_p1"]);
+  });
+
   it("a course product grants its group and a paid course purchase", async () => {
     mem.seed(`subAccounts/${SA}/communityGroups/g1/courses/c1`, {
       subAccountId: SA,
