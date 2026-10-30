@@ -18,7 +18,7 @@ interface RenderInput {
   businessName: string;
   businessLogoUrl?: string | null;
   recipientName: string;
-  /** See InvoicePdfDocument; defaults to the full operator certificate. */
+  /** See InvoicePdfDocument; defaults to the recipient certificate. */
   certificateDetail?: "full" | "recipient";
 }
 

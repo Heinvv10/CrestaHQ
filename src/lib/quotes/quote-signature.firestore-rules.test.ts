@@ -177,6 +177,14 @@ const CASES: [string, Case, "allow" | "deny"][] = [
   ["create: owner cannot create one carrying a signature", { caller: owner, method: "create", path: QTE, after: { ...UNSTAMPED, status: "accepted", signature: SIG } }, "deny"],
   ["create: admin cannot create one carrying signature: null", { caller: saAdmin, method: "create", path: QTE, after: { ...UNSTAMPED, signature: null } }, "deny"],
 
+  // ---- signedCopyEmailedAt: Admin-SDK-only, or a forged one silences the signed-copy emails ----
+  ["create: admin cannot create one carrying signedCopyEmailedAt", { caller: saAdmin, method: "create", path: QTE, after: { ...UNSTAMPED, signedCopyEmailedAt: 1 } }, "deny"],
+  ["unsigned: admin cannot set signedCopyEmailedAt", upd(saAdmin, QUOTE, { signedCopyEmailedAt: 1, updatedAt: 2 }), "deny"],
+  ["unsigned: owner writes signedCopyEmailedAt: null, which reads as absent (control)", upd(owner, QUOTE, { signedCopyEmailedAt: null, updatedAt: 2 }), "allow"],
+  ["signed: admin cannot set signedCopyEmailedAt", upd(saAdmin, SIGNED, { signedCopyEmailedAt: 1, updatedAt: 2 }), "deny"],
+  ["signed+stamped: admin cannot clear signedCopyEmailedAt", upd(saAdmin, { ...SIGNED, signedCopyEmailedAt: 1 }, { signedCopyEmailedAt: null, updatedAt: 2 }), "deny"],
+  ["signed+stamped: admin edits updatedAt, stamp unchanged (control)", upd(saAdmin, { ...SIGNED, signedCopyEmailedAt: 1 }, { updatedAt: 2 }), "allow"],
+
   // ---- an unsigned quote: editable as before, but never signed by a client ----
   ["unsigned: admin edits the lines (control)", upd(saAdmin, QUOTE, { lineItems: [{ ...LINE, unitPrice: 1400 }], updatedAt: 2 }), "allow"],
   ["unsigned: collaborator edits the terms (control)", upd(collaborator, QUOTE, { termsAndNotes: "Full payment.", updatedAt: 2 }), "allow"],

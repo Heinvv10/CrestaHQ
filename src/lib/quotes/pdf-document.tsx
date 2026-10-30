@@ -267,8 +267,9 @@ interface InvoicePdfProps {
   /** ISO date string for "Issued" line. Defaults to today. */
   issuedDateLabel?: string;
   /**
-   * "recipient" leaves the signer's IP and browser off the certificate, since
-   * that copy travels (public link, forwarded email). The operator copy is full.
+   * "recipient" (the default) leaves the signer's email, IP and browser off the
+   * certificate, since that copy travels (public link, forwarded email). Only an
+   * authenticated operator or the business's own copy opts into "full".
    */
   certificateDetail?: "full" | "recipient";
 }
@@ -279,7 +280,7 @@ export function InvoicePdfDocument({
   businessLogoUrl,
   recipientName,
   issuedDateLabel,
-  certificateDetail = "full",
+  certificateDetail = "recipient",
 }: InvoicePdfProps) {
   const safeLogoUrl =
     typeof businessLogoUrl === "string" &&
@@ -289,11 +290,14 @@ export function InvoicePdfDocument({
   const isInvoice = quote.kind === "invoice";
   const docLabel = isInvoice ? "INVOICE" : "QUOTE";
   const totals = computeQuoteTotals(quote);
-  const issued = issuedDateLabel ?? new Date().toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  // The document's own date, never the render date: a signed copy rendered
+  // later must not say it was issued today.
+  const issuedAt = toDate(quote.sentAt) ?? toDate(quote.createdAt);
+  const issued =
+    issuedDateLabel ??
+    (issuedAt
+      ? issuedAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
+      : "—");
 
   const dueLine = isInvoice
     ? formatPaymentDueLabel(quote.paymentDueDays)
@@ -459,12 +463,14 @@ export function InvoicePdfDocument({
               </Text>
             </View>
           )}
-          <View style={styles.certRow}>
-            <Text style={styles.certLabel}>Email</Text>
-            <Text style={styles.certValue}>
-              {quote.signature.signerEmail ?? "—"}
-            </Text>
-          </View>
+          {certificateDetail === "full" && (
+            <View style={styles.certRow}>
+              <Text style={styles.certLabel}>Email</Text>
+              <Text style={styles.certValue}>
+                {quote.signature.signerEmail ?? "—"}
+              </Text>
+            </View>
+          )}
           <View style={styles.certRow}>
             <Text style={styles.certLabel}>Signed at</Text>
             <Text style={styles.certValue}>
@@ -516,16 +522,15 @@ export function InvoicePdfDocument({
   );
 }
 
-function timestampLabel(value: unknown): string {
-  if (value instanceof Date) return `${value.toUTCString()} (UTC)`;
+function toDate(value: unknown): Date | null {
+  if (value instanceof Date) return value;
   if (
     typeof value === "object" &&
     value !== null &&
     "toDate" in value &&
     typeof (value as { toDate: () => Date }).toDate === "function"
   ) {
-    const d = (value as { toDate: () => Date }).toDate();
-    return `${d.toUTCString()} (UTC)`;
+    return (value as { toDate: () => Date }).toDate();
   }
   // A timestamp that lost its prototype (serialized) still carries seconds.
   if (
@@ -533,10 +538,14 @@ function timestampLabel(value: unknown): string {
     value !== null &&
     typeof (value as { seconds?: unknown }).seconds === "number"
   ) {
-    const d = new Date((value as { seconds: number }).seconds * 1000);
-    return `${d.toUTCString()} (UTC)`;
+    return new Date((value as { seconds: number }).seconds * 1000);
   }
-  return "—";
+  return null;
+}
+
+function timestampLabel(value: unknown): string {
+  const d = toDate(value);
+  return d ? `${d.toUTCString()} (UTC)` : "—";
 }
 
 function formatPaymentDueLabel(days: number | null): string | null {

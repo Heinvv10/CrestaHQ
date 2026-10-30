@@ -71,6 +71,8 @@ export async function GET(
     businessName,
     businessLogoUrl,
     recipientName,
+    // Authenticated member: the full certificate, with the signer's IP and browser.
+    certificateDetail: "full",
   });
   return new NextResponse(stream, {
     headers: {

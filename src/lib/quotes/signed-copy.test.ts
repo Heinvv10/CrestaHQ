@@ -1,8 +1,8 @@
 import { Timestamp } from "firebase-admin/firestore";
-import type { ReactElement, ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createMemoryFirestore } from "@/test/memory-firestore";
+import { textOf } from "@/test/pdf-text";
 
 /**
  * The signed copy emails, through the real sendSignedCopies, the real claim
@@ -27,12 +27,13 @@ vi.mock("@/lib/comms/resend", () => ({
 }));
 
 // The real renderer, recording which certificate detail produced which bytes.
-const rendered = vi.hoisted(() => ({ byDetail: new Map<string, string>() }));
+const rendered = vi.hoisted(() => ({ byDetail: new Map<string, string>(), failNext: false }));
 vi.mock("./pdf-render", async (orig) => {
   const real = await orig<typeof import("./pdf-render")>();
   return {
     ...real,
     renderQuotePdfBuffer: async (input: Parameters<typeof real.renderQuotePdfBuffer>[0]) => {
+      if (rendered.failNext) throw new Error("render failed");
       const pdf = await real.renderQuotePdfBuffer(input);
       rendered.byDetail.set(String(input.certificateDetail), pdf.toString("base64"));
       return pdf;
@@ -62,6 +63,8 @@ const QUOTE = {
   billedToOrganization: null,
   billingAddress: null,
   validUntil: null,
+  createdAt: Timestamp.fromDate(new Date("2026-10-18T08:00:00Z")),
+  sentAt: Timestamp.fromDate(new Date("2026-10-20T08:00:00Z")),
   signature: {
     signerName: "Jane Doe",
     signedAsNumber: "Q-2026-0007",
@@ -83,13 +86,6 @@ function seed(over: Record<string, unknown> = {}) {
 const quote = () => ({ ...(mem.read("quotes/q1") as object), id: "q1" }) as never;
 const sentTo = () => mail.sendEmail.mock.calls.map((c) => c[0].to);
 
-/** Every string in a React element tree: what the PDF would print. */
-function textOf(node: ReactNode): string {
-  if (node === null || node === undefined || typeof node === "boolean") return "";
-  if (typeof node === "string" || typeof node === "number") return String(node);
-  if (Array.isArray(node)) return node.map(textOf).join("");
-  return textOf((node as ReactElement<{ children?: ReactNode }>).props?.children);
-}
 const certificate = (detail: "full" | "recipient") =>
   textOf(
     InvoicePdfDocument({
@@ -104,6 +100,7 @@ beforeEach(() => {
   mem.clear();
   vi.clearAllMocks();
   mail.configured = true;
+  rendered.failNext = false;
 });
 
 describe("sendSignedCopies", () => {
@@ -128,6 +125,55 @@ describe("sendSignedCopies", () => {
     expect(attachmentTo("jane@example.com")).toBe(rendered.byDetail.get("recipient"));
     expect(attachmentTo("owner@acme.test")).toBe(rendered.byDetail.get("full"));
     expect(rendered.byDetail.get("recipient")).not.toBe(rendered.byDetail.get("full"));
+  });
+
+  it("passes the right arguments: signer copy filed on the contact, business copy not archived, replies cross over", async () => {
+    seed();
+    await sendSignedCopies(quote());
+    const to = (addr: string) => mail.sendEmail.mock.calls.find((c) => c[0].to === addr)![0];
+    expect(to("jane@example.com")).toMatchObject({ contactId: "c1", replyTo: "owner@acme.test" });
+    expect(to("jane@example.com").archive).toBeUndefined();
+    expect(to("owner@acme.test")).toMatchObject({ archive: false, replyTo: "jane@example.com" });
+    expect(to("owner@acme.test").contactId).toBeUndefined();
+  });
+
+  it("a contact in another sub-account is no contact: signer copy not filed on it, its name unused", async () => {
+    seed();
+    mem.seed("contacts/c1", { subAccountId: "sa_other", name: "Mallory", email: "m@evil.test" });
+    await sendSignedCopies(quote());
+    const signerMail = mail.sendEmail.mock.calls.find((c) => c[0].to === "jane@example.com")![0];
+    expect(signerMail.contactId).toBeUndefined();
+    expect(String(signerMail.text)).toContain("Hi Jane Doe,");
+    expect(String(signerMail.text)).not.toContain("Mallory");
+  });
+
+  it("a failing signer send still sends the business copy, keeps the stamp and notes it on the contact", async () => {
+    seed();
+    mail.sendEmail.mockImplementation(async (a) => {
+      if (a.to === "jane@example.com") throw new Error("mailbox full");
+      return { id: "m1" };
+    });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await sendSignedCopies(quote());
+    expect(sentTo().sort()).toEqual(["jane@example.com", "owner@acme.test"]);
+    expect(mem.read("quotes/q1")?.signedCopyEmailedAt).toBeInstanceOf(Date);
+    const notes = mem.list("contacts/c1/activities").map((d) => String(d.content));
+    expect(notes).toEqual([expect.stringContaining("could not be emailed to the signer: mailbox full")]);
+    warn.mockRestore();
+    mail.sendEmail.mockImplementation(async () => ({ id: "m1" }));
+  });
+
+  it("a render failure before any send releases the claim so a retry can send", async () => {
+    seed();
+    rendered.failNext = true;
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    await sendSignedCopies(quote());
+    expect(mail.sendEmail).not.toHaveBeenCalled();
+    expect(mem.read("quotes/q1")?.signedCopyEmailedAt).toBeUndefined();
+    rendered.failNext = false;
+    await sendSignedCopies(quote());
+    expect(mail.sendEmail).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
   });
 
   it("falls back to the sub-account contact when the creator has no email", async () => {
@@ -204,10 +250,28 @@ describe("the certificate page", () => {
     expect(text).toContain("Record version 1");
   });
 
-  it("the signer's copy omits IP and browser; the full one has them", () => {
-    expect(certificate("recipient")).not.toMatch(/203\.0\.113\.9|Mozilla|IP address/);
-    expect(certificate("full")).toMatch(/203\.0\.113\.9/);
-    expect(certificate("full")).toMatch(/Mozilla\/5\.0 test/);
+  it("defaults to the recipient detail: no email, IP or browser", () => {
+    const text = textOf(InvoicePdfDocument({ quote: QUOTE as never, businessName: "Acme Fibre", recipientName: "Jane" }));
+    expect(text).toContain("Jane Doe");
+    expect(text).not.toMatch(/jane@example\.com|203\.0\.113\.9|Mozilla|IP address|Browser/);
+  });
+
+  it("the full certificate adds email, IP and browser", () => {
+    const text = certificate("full");
+    expect(text).toContain("jane@example.com");
+    expect(text).toContain("203.0.113.9");
+    expect(text).toContain("Mozilla/5.0 test");
+  });
+
+  it("the Issued date is when it was sent, else created, never the render date", () => {
+    const issued = (over: Record<string, unknown>) =>
+      textOf(InvoicePdfDocument({ quote: { ...QUOTE, ...over } as never, businessName: "Acme", recipientName: "Jane" }));
+    expect(issued({})).toContain("Issued 20 Oct 2026");
+    expect(issued({ sentAt: null })).toContain("Issued 18 Oct 2026");
+    const today = new Date().toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" });
+    const none = issued({ sentAt: null, createdAt: null });
+    expect(none).toContain("Issued —");
+    expect(none).not.toContain(today);
   });
 
   it("renders to a real PDF", async () => {
