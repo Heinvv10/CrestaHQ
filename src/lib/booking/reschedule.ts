@@ -233,6 +233,10 @@ export async function runRescheduleSideEffects(args: {
       },
       startAt,
       endAt,
+      // The link and place the booking was made with (a Google Meet link
+      // stays the same across a reschedule: the push only moves the event).
+      meetingUrl: event.meetingUrl ?? null,
+      location: event.location || undefined,
       publicEventUrl,
     });
     rendered.subject = `Updated: ${rendered.subject.replace(/^Confirmed: /, "")}`;
@@ -247,7 +251,7 @@ export async function runRescheduleSideEffects(args: {
       endAt,
       summary: event.title || page?.name || "Meeting",
       description: page?.confirmationMessage ?? "",
-      location: event.location || "",
+      location: event.meetingUrl || event.location || "",
       method: "REQUEST",
       status: "CONFIRMED",
       sequence: event.icsSequence,

@@ -7,7 +7,9 @@ import { GbpProviderError } from "@/lib/gbp/provider/types";
 import { GCAL_SCOPES } from "../scopes";
 import {
   GCAL_EVENT_ID_RE,
+  meetUrlOf,
   type GcalEvent,
+  type GcalEventInput,
   type GcalProvider,
 } from "./types";
 
@@ -85,12 +87,30 @@ export const googleGcalProvider: GcalProvider = {
 
   async putEvent(accessToken, eventId, input, signal) {
     const url = eventUrl(eventId);
+    const { conferenceData, ...plain } = input;
+    const post = async (body: GcalEventInput) => {
+      const query = body.conferenceData ? "?conferenceDataVersion=1" : "";
+      const res = (await fetchJson(`${EVENTS}${query}`, init(accessToken, "POST", { id: eventId, ...body }, signal))) as {
+        hangoutLink?: unknown;
+      } | null;
+      return { created: true, meetUrl: meetUrlOf(res?.hangoutLink) };
+    };
     try {
-      await fetchJson(EVENTS, init(accessToken, "POST", { id: eventId, ...input }, signal));
+      try {
+        return await post(input);
+      } catch (err) {
+        // Accounts where Meet is off (some Workspace domains) refuse the
+        // conference request; the booking still belongs on the calendar.
+        if (!(conferenceData && err instanceof GbpProviderError && err.status === 400)) throw err;
+        return await post(plain);
+      }
     } catch (err) {
       // Our id already exists (an earlier push, or a racing one): overwrite.
+      // Never with conferenceData: a PATCH without it leaves the event's Meet
+      // room alone, so a reschedule keeps the link the booker was sent.
       if (!(err instanceof GbpProviderError && err.status === 409)) throw err;
-      await fetchJson(url, init(accessToken, "PATCH", input, signal));
+      const res = (await fetchJson(url, init(accessToken, "PATCH", plain, signal))) as { hangoutLink?: unknown } | null;
+      return { created: false, meetUrl: meetUrlOf(res?.hangoutLink) };
     }
   },
 

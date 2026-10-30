@@ -44,6 +44,29 @@ export interface DateOverride {
 }
 
 /**
+ * How the meeting happens, one per booking page.
+ *   video_link     the page's meetingUrl (Zoom, Teams, …)
+ *   google_meet    a unique Meet link per booking (googleMeet)
+ *   in_person      at the business's address (`value`)
+ *   we_call        the business phones the booker (booker's phone)
+ *   they_call      the booker phones the business (`value` = number)
+ *   their_address  at the booker's address (asked at booking)
+ */
+export type BookingLocationType =
+  | "video_link"
+  | "google_meet"
+  | "in_person"
+  | "we_call"
+  | "they_call"
+  | "their_address";
+
+export interface BookingLocation {
+  type: BookingLocationType;
+  /** in_person: the address; they_call: the number to call. Otherwise null. */
+  value: string | null;
+}
+
+/**
  * An extra question shown on the public booking form, beyond the
  * mandatory name / email / phone. v1 supports plain text, multi-line
  * text, and single-select. Operators usually want one or two ("What
@@ -239,6 +262,19 @@ export interface BookingPage {
    * as "no meeting URL" consistently.
    */
   meetingUrl?: string | null;
+  /**
+   * Create a unique Google Meet link per booking on the host's Google
+   * Calendar (lib/google-calendar/push.ts). Derived from `location` by the
+   * validator, never set on its own. Falls back to `meetingUrl` when no
+   * Meet link could be made. Absent = off.
+   */
+  googleMeet?: boolean;
+  /**
+   * Where the meeting happens. Absent on older pages: read via
+   * `effectiveBookingLocation()`, which derives a video link from
+   * `meetingUrl`.
+   */
+  location?: BookingLocation | null;
 
   // ── Confirmation + reminders ──────────────────────────────────
   /** Markdown shown on the confirmation page after a successful booking. */
@@ -335,6 +371,8 @@ export type BookingPageFormData = Pick<
   | "accentColor"
   | "themePreset"
   | "meetingUrl"
+  | "googleMeet"
+  | "location"
   | "confirmationMessage"
   | "redirectUrl"
   | "redirectAppendParams"

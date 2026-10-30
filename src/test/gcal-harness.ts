@@ -23,7 +23,7 @@ export function stubProvider(): StubProvider {
     refresh: vi.fn(async () => ({ accessToken: "fresh", refreshToken: null, expiresAt: Date.now() + 3600_000, scopes: [] })),
     userEmail: vi.fn(),
     listEvents: vi.fn(async () => ({ items: [], timeZone: "UTC" })),
-    putEvent: vi.fn(async () => {}),
+    putEvent: vi.fn(async () => ({ created: true, meetUrl: null })),
     deleteEvent: vi.fn(async () => {}),
   };
 }

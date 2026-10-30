@@ -48,6 +48,8 @@ export function defaultBookingPageFormData(
     accentColor: null,
     themePreset: null,
     meetingUrl: null,
+    googleMeet: false,
+    location: null,
     confirmationMessage: "",
     redirectUrl: null,
     redirectAppendParams: true,

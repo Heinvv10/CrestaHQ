@@ -18,7 +18,7 @@ export const FORM_KEYS = [
   "slug", "name", "description", "status", "durationMinutes", "bufferMinutes", "bufferBeforeMinutes", "slotIntervalMinutes",
   "workingHours", "dateOverrides", "timezone", "visibleDays", "minNoticeHours", "maxPerDay", "intakeFields", "hosts",
   "allowHostSelection", "calendarType", "distribution", "seatsPerSlot", "services", "logoUrl", "accentColor", "themePreset", "meetingUrl",
-  "confirmationMessage", "redirectUrl", "redirectAppendParams", "remindersEnabled", "reminderOffsetsMinutes", "payment",
+  "location", "confirmationMessage", "redirectUrl", "redirectAppendParams", "remindersEnabled", "reminderOffsetsMinutes", "payment",
   "defaultTerritoryId",
 ] as const satisfies ReadonlyArray<keyof BookingPageFormData>;
 

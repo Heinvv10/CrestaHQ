@@ -1,6 +1,13 @@
 import { publicBookingStyle } from "@/lib/booking/public-style";
-import { validateDuration, validatePayment, validateTimezone, validateVisibleDays } from "@/lib/booking/validation";
-import type { BookingPage, BookingService, IntakeField } from "@/types/booking";
+import { effectiveBookingLocation } from "@/lib/booking/location";
+import {
+  validateBookingLocation,
+  validateDuration,
+  validatePayment,
+  validateTimezone,
+  validateVisibleDays,
+} from "@/lib/booking/validation";
+import type { BookingLocation, BookingPage, BookingService, IntakeField } from "@/types/booking";
 import type { CheckoutThemeId } from "@/types/checkout-pages";
 import type { CalendarEvent, EventStatus } from "@/types/events";
 
@@ -14,6 +21,9 @@ import type { CalendarEvent, EventStatus } from "@/types/events";
  * objects included. A field added to the stored doc later (a meeting link,
  * an internal id, migration data) stays on the server unless it is added
  * here AND to the type, which is also the type of the views' props.
+ *
+ * `location` carries the type and, for in-person / they-call pages, the
+ * address or number the business chose to show — never the meeting link.
  *
  * Deliberately absent: `meetingUrl` (reaches the booker only after booking,
  * in the confirmation email, the calendar invite and reminders),
@@ -41,6 +51,8 @@ export interface PublicBookingPageData {
     holdHours: number;
   } | null;
   themePreset: CheckoutThemeId | null;
+  /** Where the meeting happens. Null: not set. */
+  location: BookingLocation | null;
 }
 
 export interface PublicBookingBranding {
@@ -129,6 +141,12 @@ function publicPaymentLinkUrl(value: unknown): string | null {
   }
 }
 
+/** The page's location, re-checked as the editor saves it; a bad one is dropped. */
+function publicLocation(doc: BookingPage): BookingLocation | null {
+  const checked = validateBookingLocation(effectiveBookingLocation(doc));
+  return checked.ok ? checked.value : null;
+}
+
 function publicTimezone(value: unknown): string {
   const checked = validateTimezone(value);
   return checked.ok ? checked.value : "UTC";
@@ -191,6 +209,7 @@ export function publicBookingPage(doc: BookingPage, canonicalSlug: string): Publ
     intakeFields: publicIntakeFields(doc.intakeFields),
     payment: publicPayment(doc.payment),
     themePreset: publicBookingStyle(doc).themePreset,
+    location: publicLocation(doc),
   };
 }
 

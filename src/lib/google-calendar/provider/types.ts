@@ -53,6 +53,21 @@ export interface GcalEventInput {
   end: { dateTime: string };
   /** `leadstackEventId` marks the event as ours: busy loading skips it. */
   extendedProperties: { private: { leadstackEventId: string } };
+  /**
+   * Ask Google for a Meet room on a NEW event (sent with
+   * conferenceDataVersion=1; inside the calendar.events scope). An overwrite
+   * never sends it, so an existing room — and its link — stays as it is.
+   */
+  conferenceData?: {
+    createRequest: { requestId: string; conferenceSolutionKey: { type: "hangoutsMeet" } };
+  };
+}
+
+export interface GcalPutResult {
+  /** True when this call created the event; false when it overwrote ours. */
+  created: boolean;
+  /** The event's Google Meet link (https://meet.google.com/…), when it has one. */
+  meetUrl: string | null;
 }
 
 export interface GcalProvider {
@@ -76,9 +91,22 @@ export interface GcalProvider {
    * Create the event under OUR id, or — when that id already exists (409) —
    * overwrite it. Idempotent, so two racing pushes can never duplicate.
    */
-  putEvent(accessToken: string, eventId: string, input: GcalEventInput, signal?: AbortSignal): Promise<void>;
+  putEvent(accessToken: string, eventId: string, input: GcalEventInput, signal?: AbortSignal): Promise<GcalPutResult>;
   /** Throws `not_found` for an event that is already gone. */
   deleteEvent(accessToken: string, eventId: string, signal?: AbortSignal): Promise<void>;
+}
+
+/** A Meet link as Google returns it in `hangoutLink`; anything else is dropped. */
+export function meetUrlOf(value: unknown): string | null {
+  if (typeof value !== "string" || value.length > 200) return null;
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && url.hostname === "meet.google.com" && !url.username && !url.password
+      ? value
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Google event ids are base32hex; anchored so an id can't smuggle a path. */

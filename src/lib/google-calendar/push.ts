@@ -6,6 +6,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { queryHostEvents } from "@/lib/booking/hosts";
 import { eventHostUids } from "@/lib/booking/page-slots";
+import { effectiveBookingLocation } from "@/lib/booking/location";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
 import type { BookingPage } from "@/types/booking";
 import { eventOccupiesSlot, eventStatus, isImportedEvent, type CalendarEvent } from "@/types/events";
@@ -111,12 +112,12 @@ async function clearSyncError(ref: FirebaseFirestore.DocumentReference, e: Synce
   return null;
 }
 
-function input(eventId: string, e: SyncedEvent, start: Date, end: Date): GcalEventInput {
+function input(eventId: string, e: SyncedEvent, start: Date, end: Date, meetUrl: string | null): GcalEventInput {
   return {
     status: "confirmed",
     summary: e.title || "Booking",
     description: e.notes || "",
-    location: e.meetingUrl || e.location || "",
+    location: meetUrl || e.meetingUrl || e.location || "",
     start: { dateTime: start.toISOString() },
     end: { dateTime: end.toISOString() },
     extendedProperties: { private: { leadstackEventId: eventId } },
@@ -124,11 +125,25 @@ function input(eventId: string, e: SyncedEvent, start: Date, end: Date): GcalEve
 }
 
 /**
- * One pass. Returns the fingerprint it converged to, or null when it did
- * nothing. `removeAll`: take every Google copy down (the event is about to be
- * deleted outright).
+ * Google Meet pages: the host whose Google copy carries the Meet room — the
+ * assigned host (a collective meeting's first host), when eligible. Every
+ * other host's copy carries the link as its location. Decided from the page
+ * (reached through the server-set `bookingPageSlug`), so a client-written
+ * event can't ask for a room.
  */
-async function convergeOnce(eventId: string, removeAll = false): Promise<string | null> {
+function meetHostFor(e: SyncedEvent, page: BookingPage | null, eligible: string[]): string | null {
+  if (!page || effectiveBookingLocation(page)?.type !== "google_meet") return null;
+  return e.assignedToUid && eligible.includes(e.assignedToUid) ? e.assignedToUid : null;
+}
+
+type Converged = { fingerprint: string; meetUrl: string | null };
+
+/**
+ * One pass. Returns the fingerprint it converged to (and the event's Meet
+ * link, when this pass saw one), or null when it did nothing. `removeAll`:
+ * take every Google copy down (the event is about to be deleted outright).
+ */
+async function convergeOnce(eventId: string, removeAll = false): Promise<Converged | null> {
   const ref = getAdminDb().collection("events").doc(eventId);
   const snap = await ref.get();
   if (!snap.exists) return null;
@@ -159,16 +174,28 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
     (uid) => `Not in ${hostName(uid)}'s Google Calendar: no longer an active member of this sub-account.`,
   );
   const ids: Record<string, string> = { ...prior };
+  const meetHost = live ? meetHostFor(e, page, eligible) : null;
+  let meetUrl: string | null = null;
+  let meetCreated = false;
 
   const upsert = async (uid: string) => {
     try {
       const conn = await readConnection(sa, uid);
       if (!conn || conn.status !== "connected") return;
       const gid = prior[uid] ?? googleEventIdFor(eventId, uid);
-      await withBudget(GOOGLE_PUSH_TIMEOUT_MS, async (signal) => {
+      const body = input(eventId, e, start!, end!, meetUrl);
+      // The room is asked for once, when the Meet host's copy is first made.
+      if (uid === meetHost && !prior[uid]) {
+        body.conferenceData = { createRequest: { requestId: `meet-${gid}`, conferenceSolutionKey: { type: "hangoutsMeet" } } };
+      }
+      const put = await withBudget(GOOGLE_PUSH_TIMEOUT_MS, async (signal) => {
         const provider = await getGcalProviderFor(sa, uid);
-        await withGoogleToken(conn, provider, (t) => provider.putEvent(t, gid, input(eventId, e, start!, end!), signal), signal);
+        return withGoogleToken(conn, provider, (t) => provider.putEvent(t, gid, body, signal), signal);
       });
+      if (uid === meetHost) {
+        meetUrl = put.meetUrl;
+        meetCreated = put.created;
+      }
       ids[uid] = gid;
       if (conn.lastPushError) {
         await getAdminDb().doc(gcalConnectionPath(sa, uid)).update({ lastPushError: null, lastPushErrorAt: null });
@@ -204,27 +231,36 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<string 
     }
   };
 
+  // The Meet host first: the other hosts' copies carry its link.
+  if (meetHost) await upsert(meetHost);
   await Promise.all([
-    ...eligible.map(upsert),
+    ...eligible.filter((uid) => uid !== meetHost).map(upsert),
     ...Object.keys(prior).filter((uid) => !eligible.includes(uid)).map(remove),
   ]);
 
+  // A room just made replaces the page's fallback link on the event; a room
+  // found on an overwrite fills only an event that has no link (one whose
+  // first push timed out after Google made it). An operator's own link wins.
+  const storeMeet = !!meetUrl && meetUrl !== e.meetingUrl && (meetCreated || !e.meetingUrl);
   await ref.update({
     googleEventIds: ids,
     googleSyncError: failures.length > 0 ? { message: failures.join(" "), at: new Date() } : null,
+    ...(storeMeet ? { meetingUrl: meetUrl } : {}),
   });
-  return fingerprint(e);
+  return { fingerprint: fingerprint(e), meetUrl: storeMeet || meetUrl === e.meetingUrl ? meetUrl : null };
 }
 
-async function sync(eventId: string): Promise<void> {
+async function sync(eventId: string): Promise<{ meetUrl: string | null }> {
   const converged = await convergeOnce(eventId);
-  if (converged === null) return;
+  if (converged === null) return { meetUrl: null };
   // A reschedule / cancel / reassign that landed while we were talking to
   // Google: converge once more to what is stored now.
   const now = await getAdminDb().collection("events").doc(eventId).get();
-  if (now.exists && fingerprint(now.data() as SyncedEvent) !== converged) {
-    await convergeOnce(eventId);
+  if (now.exists && fingerprint(now.data() as SyncedEvent) !== converged.fingerprint) {
+    const again = await convergeOnce(eventId);
+    return { meetUrl: converged.meetUrl ?? again?.meetUrl ?? null };
   }
+  return { meetUrl: converged.meetUrl };
 }
 
 /**
@@ -325,10 +361,21 @@ export async function removeMemberGoogleCopies(subAccountId: string, uid: string
 
 /** Converge Google to `events/{eventId}`. Never throws. */
 export async function pushBookingToGoogle(eventId: string): Promise<void> {
+  await pushBookingAndGetMeetUrl(eventId);
+}
+
+/**
+ * The same push, for a caller that needs the booking's Google Meet link
+ * (the book route, before the confirmation email). `meetUrl` is the link now
+ * stored on the event, or null when no room was made (not a Meet page, the
+ * host isn't connected, Google failed). Never throws.
+ */
+export async function pushBookingAndGetMeetUrl(eventId: string): Promise<{ meetUrl: string | null }> {
   try {
-    await sync(eventId);
+    return await sync(eventId);
   } catch (err) {
     const kind = err instanceof Error ? `${err.name}: ${err.message}` : typeof err;
     console.error(`[google-calendar] push failed event=${eventId}`, kind);
+    return { meetUrl: null };
   }
 }

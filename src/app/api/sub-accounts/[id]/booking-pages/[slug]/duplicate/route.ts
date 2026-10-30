@@ -11,6 +11,7 @@ import {
   validateSlug,
 } from "@/lib/booking/validation";
 import { resolveBookingHosts } from "@/lib/booking/hosts";
+import { meetSetupError } from "@/lib/server/booking-page-write";
 import { isCheckoutThemeId } from "@/lib/checkout/themes";
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import type { BookingPage, BookingPageFormData } from "@/types/booking";
@@ -143,6 +144,7 @@ export async function POST(
       ? source.themePreset
       : null,
     meetingUrl: source.meetingUrl ?? null,
+    location: source.location ?? null,
     confirmationMessage: source.confirmationMessage ?? "",
     redirectUrl: source.redirectUrl ?? null,
     redirectAppendParams: source.redirectAppendParams ?? true,
@@ -162,7 +164,7 @@ export async function POST(
       { status: 400 },
     );
   }
-  const data = validated.value;
+  let data = validated.value;
 
   // Re-resolve hosts against live membership (drop removed members, refresh
   // name snapshots) — identical to create/update.
@@ -173,6 +175,13 @@ export async function POST(
       { error: `Couldn't duplicate this page: ${hostsOk.error}` },
       { status: 400 },
     );
+  }
+  // Meet stopped being possible since the source was saved (a host
+  // disconnected, Calendar sync switched off): copy without it, like payment.
+  const meetProblem = await meetSetupError(subAccountId, data.location, hosts);
+  if (meetProblem) {
+    data = { ...data, location: null, googleMeet: false };
+    warning = [warning, `Google Meet was removed from the copy: ${meetProblem}`].filter(Boolean).join(" ");
   }
 
   // Land territoryId defensively, same derivation as the create route.

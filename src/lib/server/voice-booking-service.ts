@@ -17,6 +17,7 @@ import {
   loadHostNotifyContact,
   loadHostUpcomingCounts,
 } from "@/lib/booking/hosts";
+import { effectiveBookingLocation, eventLocationText } from "@/lib/booking/location";
 import { issueEventToken } from "@/lib/booking/event-token";
 import {
   emitBookingWebhook,
@@ -300,7 +301,7 @@ export async function bookVoiceSlot(input: {
         startAt: slotStart,
         endAt: slotEnd,
         contactId,
-        location: "",
+        location: eventLocationText(effectiveBookingLocation(page), { phone: callerPhone }),
         meetingUrl: page.meetingUrl ?? null,
         notes: "Booked by phone via the AI voice agent.",
         agencyId,

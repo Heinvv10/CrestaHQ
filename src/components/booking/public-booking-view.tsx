@@ -9,8 +9,10 @@ import {
   ChevronLeft,
   ChevronRight,
   Info,
+  MapPin,
 } from "lucide-react";
 import { PublicServicePicker } from "@/components/booking/public-service-picker";
+import { describeBookingLocation } from "@/lib/booking/location";
 import type { IntakeField } from "@/types/booking";
 import type {
   PublicBookingBranding,
@@ -378,6 +380,12 @@ export function PublicBookingView({
               {page.description}
             </p>
           )}
+          {describeBookingLocation(page.location) && (
+            <p className="flex items-center justify-center gap-1 text-xs text-muted-foreground">
+              <MapPin className="h-3.5 w-3.5 shrink-0" />
+              {describeBookingLocation(page.location)}
+            </p>
+          )}
           <p className="inline-flex items-center gap-1 text-xs text-muted-foreground">
             <Clock className="h-3.5 w-3.5" />
             {durationMinutes} minutes
@@ -623,6 +631,9 @@ function IntakeFormSection({
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
+  const [address, setAddress] = useState("");
+  const locationType = page.location?.type ?? null;
+  const needsAddress = locationType === "their_address";
   const [extras, setExtras] = useState<Record<string, string>>({});
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -636,6 +647,10 @@ function IntakeFormSection({
     setError(null);
     if (!name.trim() || !email.trim() || !phone.trim()) {
       setError("Name, email, and phone are required.");
+      return;
+    }
+    if (needsAddress && !address.trim()) {
+      setError("Please enter the address for the visit.");
       return;
     }
     for (const f of page.intakeFields) {
@@ -656,6 +671,7 @@ function IntakeFormSection({
             name: name.trim(),
             email: email.trim(),
             phone: phone.trim(),
+            ...(needsAddress ? { address: address.trim() } : {}),
             extras,
             ...(hostUid ? { hostUid } : {}),
             ...(serviceId ? { serviceId } : {}),
@@ -724,7 +740,12 @@ function IntakeFormSection({
             required
           />
         </Field>
-        <Field label="Phone" htmlFor="b-phone" required className="sm:col-span-2">
+        <Field
+          label={locationType === "we_call" ? "Phone (we'll call you on this)" : "Phone"}
+          htmlFor="b-phone"
+          required
+          className="sm:col-span-2"
+        >
           <input
             id="b-phone"
             type="tel"
@@ -735,6 +756,24 @@ function IntakeFormSection({
             required
           />
         </Field>
+        {needsAddress && (
+          <Field
+            label="Address for the visit"
+            htmlFor="b-address"
+            required
+            className="sm:col-span-2"
+          >
+            <input
+              id="b-address"
+              value={address}
+              onChange={(e) => setAddress(e.target.value)}
+              className="h-9 w-full rounded-lg border border-input bg-background px-2.5 text-sm outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+              maxLength={300}
+              autoComplete="street-address"
+              required
+            />
+          </Field>
+        )}
       </div>
 
       {page.intakeFields.length > 0 && (

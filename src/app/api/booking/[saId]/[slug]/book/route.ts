@@ -26,7 +26,16 @@ import {
 } from "@/lib/booking/page-slots";
 import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
 import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
-import { pushBookingToGoogleAfterResponse } from "@/lib/google-calendar/push";
+import {
+  pushBookingAndGetMeetUrl,
+  pushBookingToGoogleAfterResponse,
+} from "@/lib/google-calendar/push";
+import {
+  LOCATION_ADDRESS_MAX,
+  effectiveBookingLocation,
+  eventLocationText,
+  isPlainLocationText,
+} from "@/lib/booking/location";
 import { bookingRateLimitsDisabled } from "@/lib/booking/rate-limit-e2e";
 import {
   loadHostNotifyContact,
@@ -132,6 +141,8 @@ interface BookBody {
   hostUid?: string;
   /** Service pages: the service the visitor picked. Required there. */
   serviceId?: string;
+  /** "At their place" pages: where the visit happens. Required there. */
+  address?: string;
 }
 
 export async function POST(
@@ -218,6 +229,24 @@ export async function POST(
   if (page.status !== "published") {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
+
+  // Where the meeting happens. "At their place" needs the booker's address;
+  // "we call you" uses the phone above.
+  const pageLocation = effectiveBookingLocation(page);
+  const address = typeof body.address === "string" ? body.address.trim() : "";
+  if (
+    pageLocation?.type === "their_address" &&
+    (!address || address.length > LOCATION_ADDRESS_MAX || !isPlainLocationText(address))
+  ) {
+    return NextResponse.json(
+      { error: "Please enter the address for the visit (one line, no < or >)." },
+      { status: 400 },
+    );
+  }
+  const locationText = eventLocationText(pageLocation, {
+    phone,
+    address: pageLocation?.type === "their_address" ? address : null,
+  });
 
   // Validate page-defined required intake fields. (UI also enforces.)
   const extras: Record<string, string> = {};
@@ -414,7 +443,7 @@ export async function POST(
         startAt: slotStart,
         endAt: slotEnd,
         contactId: reconciled.id,
-        location: "",
+        location: locationText,
         // Snapshot the page's meeting URL onto the event so a later edit
         // to the page doesn't rewrite historical invites.
         meetingUrl: page.meetingUrl ?? null,
@@ -490,6 +519,23 @@ export async function POST(
       ?.replace(/\/.*$/, "")
       ?.toLowerCase() ?? "leadstack.dev";
 
+  // Google Meet: the confirmation carries the booking's own Meet link, so the
+  // push runs BEFORE the email, not after the response. The booking is
+  // already committed — a push that fails or makes no room only means the
+  // page's fallback link (or none) goes out. A paid hold confirms later
+  // (mark-paid), so its push stays after the response.
+  const meetPushNow = pageLocation?.type === "google_meet" && !paymentRequired;
+  let meetingUrl = page.meetingUrl ?? null;
+  if (meetPushNow) {
+    const pushed = await pushBookingAndGetMeetUrl(created.eventDocRef.id);
+    if (pushed.meetUrl) meetingUrl = pushed.meetUrl;
+  }
+  // No Meet room and no fallback link: say so instead of a bare "Google Meet".
+  const meetLinkMissing = meetPushNow && !meetingUrl;
+  const bookerLocation = meetLinkMissing
+    ? `${locationText} (the joining link will follow)`
+    : locationText;
+
   // Confirmation / payment-pending email.
   if (emailIsConfigured(sub)) {
     try {
@@ -523,7 +569,8 @@ export async function POST(
             },
             startAt: slotStart,
             endAt: slotEnd,
-            meetingUrl: page.meetingUrl ?? null,
+            meetingUrl,
+            location: bookerLocation || undefined,
             publicEventUrl,
             // Name the host the customer chose (null in single/pooled mode).
             hostName: created.assignedToName,
@@ -547,7 +594,7 @@ export async function POST(
               .join("\n\n"),
             // Calendar apps render a clickable "Join" affordance when
             // LOCATION is a URL — Zoom / Meet / Whereby all auto-detect.
-            location: page.meetingUrl ?? "",
+            location: meetingUrl || bookerLocation,
             organizerEmail: sub.replyToEmail ?? undefined,
             organizerName: sub.name ?? undefined,
             attendeeEmail: email,
@@ -607,8 +654,16 @@ export async function POST(
             customerEmail: email,
             customerPhone: phone,
             notes:
-              Object.entries(extras)
-                .map(([k, v]) => `${labelForField(page, k)}: ${v}`)
+              [
+                locationText ? `Where: ${locationText}` : "",
+                meetLinkMissing
+                  ? "No Google Meet link could be made for this booking (check Settings → Calendar sync) — send the customer a joining link."
+                  : "",
+                ...Object.entries(extras).map(
+                  ([k, v]) => `${labelForField(page, k)}: ${v}`,
+                ),
+              ]
+                .filter(Boolean)
                 .join("\n") || null,
             manageUrl: publicEventUrl,
           });
@@ -649,7 +704,7 @@ export async function POST(
     });
   }
 
-  pushBookingToGoogleAfterResponse(created.eventDocRef.id);
+  if (!meetPushNow) pushBookingToGoogleAfterResponse(created.eventDocRef.id);
 
   // Activity + automation trigger.
   await recordBookingActivity(

@@ -4,7 +4,9 @@ import { canTakePayment, NO_PAYMENT_RAIL_MESSAGE } from "@/lib/payments/can-take
 import { getAdminDb } from "@/lib/firebase/admin";
 import { validateBookingPageFormData, validateCalendarTypeHosts } from "@/lib/booking/validation";
 import { resolveBookingHosts } from "@/lib/booking/hosts";
-import type { BookingPageFormData, CalendarType } from "@/types/booking";
+import { readConnection } from "@/lib/google-calendar/connection";
+import { googleCalendarGateOn } from "@/lib/google-calendar/gate";
+import type { BookingHost, BookingLocation, BookingPageFormData, CalendarType } from "@/types/booking";
 
 /**
  * Booking-page writes shared by the booking-page routes and the agent's
@@ -50,7 +52,35 @@ export async function prepareBookingPage(
   // A body without a type keeps the stored one - check hosts against that.
   const hostsOk = validateCalendarTypeHosts(data.calendarType ?? storedType, hosts.length);
   if (!hostsOk.ok) return { ok: false, status: 400, error: hostsOk.error };
+  const meet = await meetSetupError(subAccountId, data.location, hosts);
+  if (meet) return { ok: false, status: 400, error: meet };
   return { ok: true, data: { ...data, hosts }, agencyId };
+}
+
+/**
+ * Google Meet links are made on a host's own Google Calendar by the booking
+ * push, so the page may only offer Meet while Calendar sync is on for the
+ * sub-account and every host (live membership, already resolved) has a
+ * working connection. Null = fine, or not a Meet page.
+ */
+export async function meetSetupError(
+  subAccountId: string,
+  location: BookingLocation | null | undefined,
+  hosts: BookingHost[],
+): Promise<string | null> {
+  if (location?.type !== "google_meet") return null;
+  if (!(await googleCalendarGateOn(subAccountId))) {
+    return "Google Meet needs Calendar sync, which isn't switched on for this workspace.";
+  }
+  if (hosts.length === 0) {
+    return "Google Meet needs a host on this page with Google Calendar connected. Add a host under Team, or pick another location.";
+  }
+  const conns = await Promise.all(hosts.map((h) => readConnection(subAccountId, h.uid)));
+  const missing = hosts.filter((_, i) => conns[i]?.status !== "connected").map((h) => h.name);
+  if (missing.length > 0) {
+    return `Google Meet needs every host's Google Calendar connected (Settings → Calendar sync). Not connected: ${missing.join(", ")}.`;
+  }
+  return null;
 }
 
 type QueryGet = (q: FirebaseFirestore.Query) => Promise<FirebaseFirestore.QuerySnapshot>;

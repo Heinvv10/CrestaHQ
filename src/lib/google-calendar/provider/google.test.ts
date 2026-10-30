@@ -75,6 +75,53 @@ describe("putEvent", () => {
     expect(calls[1].url).toBe("https://www.googleapis.com/calendar/v3/calendars/primary/events/lsabc123");
   });
 
+  const MEET = { ...INPUT, conferenceData: { createRequest: { requestId: "meet-lsabc123", conferenceSolutionKey: { type: "hangoutsMeet" as const } } } };
+
+  it("a Meet request is sent with conferenceDataVersion=1 and returns the room's link", async () => {
+    stub({ body: { id: "lsabc123", hangoutLink: "https://meet.google.com/abc-defg-hij" } });
+    expect(await g.putEvent("tok", "lsabc123", MEET)).toEqual({ created: true, meetUrl: "https://meet.google.com/abc-defg-hij" });
+    expect(new URL(calls[0].url).searchParams.get("conferenceDataVersion")).toBe("1");
+    expect(JSON.parse(String(calls[0].init.body)).conferenceData).toEqual(MEET.conferenceData);
+  });
+
+  it("a plain insert carries no conference version", async () => {
+    stub({ body: { id: "lsabc123" } });
+    expect(await g.putEvent("tok", "lsabc123", INPUT)).toEqual({ created: true, meetUrl: null });
+    expect(new URL(calls[0].url).search).toBe("");
+  });
+
+  it("Meet refused (400, Meet off for the account): inserted again without it", async () => {
+    stub({ status: 400, body: { error: { code: 400 } } }, { body: { id: "lsabc123" } });
+    expect(await g.putEvent("tok", "lsabc123", MEET)).toEqual({ created: true, meetUrl: null });
+    expect(calls).toHaveLength(2);
+    expect(new URL(calls[1].url).search).toBe("");
+    expect(JSON.parse(String(calls[1].init.body)).conferenceData).toBeUndefined();
+  });
+
+  it("a 400 on a plain insert is not retried", async () => {
+    stub({ status: 400, body: { error: { code: 400 } } });
+    await expect(g.putEvent("tok", "lsabc123", INPUT)).rejects.toMatchObject({ kind: "malformed" });
+    expect(calls).toHaveLength(1);
+  });
+
+  it("an overwrite (409) never sends the conference request, so the room stays; its link is read back", async () => {
+    stub({ status: 409, body: { error: { code: 409 } } }, { body: { id: "lsabc123", hangoutLink: "https://meet.google.com/abc-defg-hij" } });
+    expect(await g.putEvent("tok", "lsabc123", MEET)).toEqual({ created: false, meetUrl: "https://meet.google.com/abc-defg-hij" });
+    expect(calls[1].init.method).toBe("PATCH");
+    expect(new URL(calls[1].url).search).toBe("");
+    expect(JSON.parse(String(calls[1].init.body)).conferenceData).toBeUndefined();
+  });
+
+  it.each([
+    "http://meet.google.com/abc",
+    "https://meet.google.com.evil.example/abc",
+    "https://evil.example/abc",
+    "javascript:alert(1)",
+  ])("drops a hangoutLink that is not a Meet link: %s", async (hangoutLink) => {
+    stub({ body: { id: "lsabc123", hangoutLink } });
+    expect((await g.putEvent("tok", "lsabc123", MEET)).meetUrl).toBeNull();
+  });
+
   it("refuses an id that could smuggle a path", async () => {
     await expect(g.putEvent("tok", "../x", INPUT)).rejects.toBeInstanceOf(GbpProviderError);
     expect(calls).toHaveLength(0);

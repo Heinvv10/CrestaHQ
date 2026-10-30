@@ -56,7 +56,7 @@ It reaches every slot decision through `resolvePageAvailability`'s `externalBusy
 
 **Who it may write to.** One rule, shared with busy loading (`activeGoogleHosts`): of the event's own hosts — `assignedToUid` ∪ `hostUids` — the **active members** (or the agency owner). A host taken off the page but still assigned keeps (and moves) their copy; a host who left the sub-account is skipped and the skip is written to `googleSyncError`. The fields that decide the target — `assignedToUid`, `assignedToName`, `source`, `bookingPageSlug`, `hostUids`, `googleEventIds`, `googleSyncError`, `googleSyncRetryAt` — are locked from client writes in `firestore.rules`, and a client cannot delete an event whose `googleEventIds` is non-empty. The calendar dialog deletes such an event through `DELETE /api/events/by-id/[id]` (active member of the event's sub-account, within their territory scope), which takes the Google copies down first; so does the v1 API's delete. Both then re-read the event and **refuse** (409 `google_removal_failed`, reason on `googleSyncError`) while any copy is left, rather than delete and orphan it; the dialog says "Couldn't remove it from <host>'s Google Calendar — try again". When a push has nothing to do (completed / no-show, cancelled with no Google copy, gate off) it clears any stale `googleSyncError`. Removing a member takes their Google copies of upcoming bookings down before their tokens are deleted (five at a time, 20 s in all; a copy it could not remove is recorded on that booking).
 
-**Time budget.** Hosts run in parallel, each with a 5 s budget that aborts the underlying Google calls. The public book route and the voice agent run the push after the response via Next's `after()`, so neither waits on Google; outside a request scope (tests) it runs detached.
+**Time budget.** Hosts run in parallel, each with a 5 s budget that aborts the underlying Google calls. The public book route and the voice agent run the push after the response via Next's `after()`, so neither waits on Google; outside a request scope (tests) it runs detached. The exception is a free booking on a Google Meet page: the book route awaits the push (the Meet host first, then the rest — up to ~10 s worst case) so its confirmation carries the link.
 
 **Failures** never throw. They are written to `googleSyncError` on the event, naming the host ("Not in Ann's Google Calendar: …"), and to that member's `lastPushError`. Nothing retries automatically: the calendar event dialog shows the reason with a **Retry sync** button, which calls `POST /api/events/by-id/[id]/google-sync` (any active member of the event's sub-account; same eligibility rule; one retry per event per 30 s, 429 otherwise). The member's card words a push failure apart from a busy-read failure ("Last booking change not synced: …", with removals worded separately).
 
@@ -70,6 +70,18 @@ It is called once per post-commit path:
 - the assign route — a reassign moves the Google copy from the old host's calendar to the new host's.
 
 Deleting an event in Google does **not** cancel the booking (ruling 9).
+
+### Google Meet
+
+On a page whose location is Google Meet (read from the page through the server-set `bookingPageSlug`, so a client-written event can't ask), the push asks Google for a room — `conferenceData.createRequest` (`hangoutsMeet`, request id `meet-<google id>`) sent with `conferenceDataVersion=1`, inside the existing `calendar.events` scope. Rules:
+
+- **One room per booking**, on the assigned host's copy (a collective meeting's first host), asked for only when that copy is first created. That host is written first; every other host's copy carries the link as its location.
+- **An overwrite never sends `conferenceData`** (a PATCH without it leaves the room alone), so a reschedule moves the Google event and keeps the link the booker was sent.
+- **The link is stored on the event's `meetingUrl`** when the room was just made (replacing the page's fallback snapshot), or when an overwrite finds a room and the event has no link yet (a first push that timed out after Google made it). An operator's own link is never replaced.
+- Google answering 400 to the conference request (Meet off for that Google account) inserts the event again without it.
+- A `hangoutLink` that is not `https://meet.google.com/…` is dropped (`meetUrlOf`).
+- `pushBookingAndGetMeetUrl(eventId)` is the same push returning `{ meetUrl }` — the book route awaits it for free Meet bookings so the confirmation carries the link. Never throws; `null` when no room was made.
+- The fake provider mints `https://meet.google.com/fake-…` on a create that asks, and keeps it across overwrites.
 
 ## Fake provider (dev/CI)
 
