@@ -53,6 +53,8 @@ export interface GcalEventInput {
   end: { dateTime: string };
   /** `leadstackEventId` marks the event as ours: busy loading skips it. */
   extendedProperties: { private: { leadstackEventId: string } };
+  /** Sent only for a Meet room's owner copy: "transparent" while kept after a reassign. */
+  transparency?: "opaque" | "transparent";
   /**
    * Ask Google for a Meet room on a NEW event (sent with
    * conferenceDataVersion=1; inside the calendar.events scope). An overwrite

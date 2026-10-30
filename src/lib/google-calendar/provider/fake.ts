@@ -115,6 +115,7 @@ export function createFakeGcalProvider(
     summary: input.summary,
     description: input.description,
     location: input.location,
+    ...(input.transparency ? { transparency: input.transparency } : {}),
     start: input.start,
     end: input.end,
     extendedProperties: input.extendedProperties,

@@ -6,7 +6,8 @@ import type { GcalEventInput } from "@/lib/google-calendar/provider/types";
  * Reassigning a Google Meet booking end to end: the real assign route and
  * the real Google push over an in-memory Firestore; only Google is a stub.
  * The booker was sent a Meet link; the new host gets the SAME link on their
- * copy, no second room is made, and the old host's copy is removed.
+ * copy and no second room is made. The old host's copy owns the room, so it
+ * is KEPT (marked, free time) until the booking is cancelled or deleted.
  */
 
 const mem = createMemoryFirestore();
@@ -27,6 +28,16 @@ vi.mock("@/lib/google-calendar/provider/select", () => ({
 }));
 
 const { POST } = await import("./route");
+const { KEPT_FOR_MEET_PREFIX } = await import("@/lib/google-calendar/push");
+const reassign = () =>
+  POST(
+    new Request("http://x/api", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ assignedToUid: "b" }),
+    }),
+    { params: Promise.resolve({ id: "ev" }) },
+  );
 
 const ts = (iso: string) => {
   const d = new Date(iso);
@@ -68,26 +79,29 @@ beforeEach(() => {
     meetingUrl: MEET_LINK,
     location: "Google Meet video call",
     googleEventIds: { a: "ls-old-a" },
+    googleMeetOwnerUid: "a",
     startAt: ts("2027-09-14T09:00:00Z"),
     endAt: ts("2027-09-14T09:30:00Z"),
   });
 });
 
 describe("reassigning a Google Meet booking", () => {
-  it("moves the copy to the new host with the same link and makes no new room", async () => {
-    const res = await POST(
-      new Request("http://x/api", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ assignedToUid: "b" }),
-      }),
-      { params: Promise.resolve({ id: "ev" }) },
-    );
+  it("gives the new host the same link, makes no new room, and keeps the room owner's copy marked", async () => {
+    const res = await reassign();
     expect(res.status, await res.clone().text()).toBe(200);
-    expect(google.deleteEvent).toHaveBeenCalledWith("tok-a", "ls-old-a", expect.any(AbortSignal));
+    expect(google.deleteEvent).not.toHaveBeenCalled();
     expect(sentTo("b")?.conferenceData).toBeUndefined();
     expect(sentTo("b")?.location).toBe(MEET_LINK);
-    expect(mem.read("events/ev")).toMatchObject({ assignedToUid: "b", meetingUrl: MEET_LINK });
+    expect(sentTo("a")).toMatchObject({ summary: `${KEPT_FOR_MEET_PREFIX}Intro`, transparency: "transparent" });
+    expect(mem.read("events/ev")).toMatchObject({ assignedToUid: "b", meetingUrl: MEET_LINK, googleMeetOwnerUid: "a" });
+    expect(Object.keys((mem.read("events/ev") as { googleEventIds: object }).googleEventIds).sort()).toEqual(["a", "b"]);
+  });
+
+  it("with no room owner recorded, the old host's copy is removed as before", async () => {
+    mem.seed("events/ev", { ...(mem.read("events/ev") as object), googleMeetOwnerUid: null });
+    expect((await reassign()).status).toBe(200);
+    expect(google.deleteEvent).toHaveBeenCalledWith("tok-a", "ls-old-a", expect.any(AbortSignal));
+    expect(sentTo("b")?.conferenceData).toBeUndefined();
     expect(Object.keys((mem.read("events/ev") as { googleEventIds: object }).googleEventIds)).toEqual(["b"]);
   });
 });

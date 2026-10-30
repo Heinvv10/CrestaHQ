@@ -51,7 +51,17 @@ export interface GoogleSyncFields {
   /** Host uid → the Google event id written to that host's primary calendar. */
   googleEventIds?: Record<string, string> | null;
   googleSyncError?: { message: string; at: Date } | null;
+  /**
+   * The host whose Google copy owns the booking's Meet room. After a
+   * reassign that copy is KEPT (marked, shown as free) rather than deleted,
+   * until the booking is cancelled or deleted: whether a Meet link survives
+   * its calendar event being deleted is not yet proven on a live walk.
+   */
+  googleMeetOwnerUid?: string | null;
 }
+
+/** Summary prefix on a copy kept only because it owns the Meet room. */
+export const KEPT_FOR_MEET_PREFIX = "[Reassigned, kept for the Google Meet link] ";
 
 type SyncedEvent = CalendarEvent & GoogleSyncFields;
 
@@ -156,12 +166,13 @@ async function storeMeetUrl(
   ref: FirebaseFirestore.DocumentReference,
   fallback: string | null,
   meetUrl: string,
+  ownerUid: string,
 ): Promise<boolean> {
   const stored = await getAdminDb().runTransaction(async (tx) => {
     const snap = await tx.get(ref);
     if (!snap.exists) return false;
     if (!replaceable((snap.data() as SyncedEvent).meetingUrl, fallback)) return false;
-    tx.update(ref, { meetingUrl: meetUrl });
+    tx.update(ref, { meetingUrl: meetUrl, googleMeetOwnerUid: ownerUid });
     return true;
   });
   if (!stored) console.warn(`[google-calendar] Meet room kept off event=${ref.id}: it holds its own meeting link`);
@@ -206,6 +217,15 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<Converg
   const ids: Record<string, string> = { ...prior };
   const meetHost = live ? meetHostFor(e, page, eligible) : null;
   let meetUrl: string | null = null;
+  // Reassigned away from the host whose copy owns the Meet room: keep that
+  // copy (marked, free time) while the booking is live and that host is
+  // still an active member. A cancel or delete removes it like any other.
+  const owner = typeof e.googleMeetOwnerUid === "string" ? e.googleMeetOwnerUid : null;
+  const keptOwner =
+    live && owner && prior[owner] && !eligible.includes(owner) && meetUrlOf(e.meetingUrl) &&
+    (await activeGoogleHosts(sa, [owner])).length === 1
+      ? owner
+      : null;
 
   const upsert = async (uid: string) => {
     try {
@@ -213,6 +233,15 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<Converg
       if (!conn || conn.status !== "connected") return;
       const gid = prior[uid] ?? googleEventIdFor(eventId, uid);
       const body = input(eventId, e, start!, end!, meetUrl);
+      if (uid === keptOwner) {
+        body.summary = `${KEPT_FOR_MEET_PREFIX}${body.summary}`;
+        body.description = [
+          "This booking was reassigned to another host. This copy stays because the booking's Google Meet room belongs to it; it is removed when the booking is cancelled or deleted.",
+          body.description,
+        ].filter(Boolean).join("\n\n");
+      }
+      // The owner's copy is marked free while kept, busy again once theirs.
+      if (uid === owner) body.transparency = uid === keptOwner ? "transparent" : "opaque";
       // The room is asked for once, when the Meet host's copy is first made.
       if (uid === meetHost && !prior[uid]) {
         body.conferenceData = { createRequest: { requestId: `meet-${gid}`, conferenceSolutionKey: { type: "hangoutsMeet" } } };
@@ -261,7 +290,8 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<Converg
   if (meetHost) await upsert(meetHost);
   await Promise.all([
     ...eligible.filter((uid) => uid !== meetHost).map(upsert),
-    ...Object.keys(prior).filter((uid) => !eligible.includes(uid)).map(remove),
+    ...(keptOwner ? [upsert(keptOwner)] : []),
+    ...Object.keys(prior).filter((uid) => !eligible.includes(uid) && uid !== keptOwner).map(remove),
   ]);
 
   await ref.update({
@@ -275,7 +305,7 @@ async function convergeOnce(eventId: string, removeAll = false): Promise<Converg
   const fallback = page?.meetingUrl ?? null;
   const stored =
     !!room && room !== e.meetingUrl && replaceable(e.meetingUrl, fallback)
-      ? await storeMeetUrl(ref, fallback, room)
+      ? await storeMeetUrl(ref, fallback, room, meetHost!)
       : false;
   if (room && !stored && room !== e.meetingUrl && !replaceable(e.meetingUrl, fallback)) {
     console.warn(`[google-calendar] Meet room kept off event=${eventId}: it holds its own meeting link`);

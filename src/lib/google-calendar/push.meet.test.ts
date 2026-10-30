@@ -11,12 +11,19 @@ vi.mock("@/lib/firebase/admin", async () => (await import("@/test/google-oauth-h
 vi.mock("./provider/select", () => ({ getGcalProviderFor: vi.fn(async () => provider) }));
 vi.mock("firebase-admin/firestore", async () => (await import("@/test/google-oauth-harness")).firestoreMock());
 
-import { state } from "@/test/google-oauth-harness";
+import { SUB_PATH, state } from "@/test/google-oauth-harness";
 import { PAGE, connect, event, resetGcal, seedEvent, setGate, stubProvider, type StubProvider } from "@/test/gcal-harness";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
 import type { GcalEventInput } from "./provider/types";
 import { flushAfterResponse } from "@/lib/server/after-response";
-import { googleEventIdFor, pushBookingAndGetMeetUrl, pushBookingAndGetMeetUrlWithin, pushBookingToGoogle } from "./push";
+import {
+  KEPT_FOR_MEET_PREFIX,
+  googleEventIdFor,
+  pushBookingAndGetMeetUrl,
+  pushBookingAndGetMeetUrlWithin,
+  pushBookingToGoogle,
+  removeBookingFromGoogle,
+} from "./push";
 
 let provider: StubProvider;
 const MEET_LINK = "https://meet.google.com/abc-defg-hij";
@@ -57,7 +64,11 @@ describe("a Google Meet booking", () => {
     expect(sentTo("host_a")?.conferenceData).toEqual({
       createRequest: { requestId: `meet-${gid("host_a")}`, conferenceSolutionKey: { type: "hangoutsMeet" } },
     });
-    expect(event()).toMatchObject({ meetingUrl: MEET_LINK, googleEventIds: { host_a: gid("host_a") } });
+    expect(event()).toMatchObject({
+      meetingUrl: MEET_LINK,
+      googleMeetOwnerUid: "host_a",
+      googleEventIds: { host_a: gid("host_a") },
+    });
   });
 
   it("collective: the room is on the first host's copy only; the others carry its link", async () => {
@@ -126,7 +137,7 @@ describe("a Google Meet booking", () => {
     expect(event().meetingUrl).toBe(MEET_LINK);
   });
 
-  it("a reassign keeps the room: the new host's copy carries the link, no new room is asked for", async () => {
+  it("a reassign of a booking with no recorded room owner: the new host's copy carries the link, no new room", async () => {
     connect("host_a");
     connect("host_b");
     seedMeetBooking({ meetingUrl: MEET_LINK, assignedToUid: "host_b", googleEventIds: { host_a: gid("host_a") } });
@@ -208,5 +219,69 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
     connect("host_a");
     seedMeetBooking();
     expect(await pushBookingAndGetMeetUrlWithin("ev_1", 5_000)).toEqual({ meetUrl: MEET_LINK });
+  });
+});
+
+describe("a reassigned Google Meet booking keeps the room owner's copy", () => {
+  /** host_a's copy owns the room; the booking now belongs to host_b. */
+  function seedReassigned(over: Record<string, unknown> = {}) {
+    connect("host_a");
+    connect("host_b");
+    seedMeetBooking({
+      meetingUrl: MEET_LINK,
+      assignedToUid: "host_b",
+      googleMeetOwnerUid: "host_a",
+      googleEventIds: { host_a: gid("host_a") },
+      ...over,
+    });
+  }
+
+  it("keeps it, marked as kept for the conference and shown as free; the new host gets the link", async () => {
+    seedReassigned();
+    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: MEET_LINK });
+    expect(provider.deleteEvent).not.toHaveBeenCalled();
+    const kept = sentTo("host_a")!;
+    expect(kept.summary).toBe(`${KEPT_FOR_MEET_PREFIX}Consult — Ada`);
+    expect(kept.description).toMatch(/removed when the booking is cancelled or deleted/);
+    expect(kept.transparency).toBe("transparent");
+    expect(kept.conferenceData).toBeUndefined();
+    expect(sentTo("host_b")).toMatchObject({ location: MEET_LINK });
+    expect(sentTo("host_b")?.conferenceData).toBeUndefined();
+    expect(event().googleEventIds).toEqual({ host_a: gid("host_a"), host_b: gid("host_b") });
+  });
+
+  it("a cancel removes the kept copy with the rest", async () => {
+    seedReassigned({ status: "cancelled", googleEventIds: { host_a: gid("host_a"), host_b: gid("host_b") } });
+    await pushBookingToGoogle("ev_1");
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", gid("host_a"), expect.any(AbortSignal));
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_b", gid("host_b"), expect.any(AbortSignal));
+    expect(event().googleEventIds).toEqual({});
+  });
+
+  it("deleting the booking removes the kept copy", async () => {
+    seedReassigned({ googleEventIds: { host_a: gid("host_a"), host_b: gid("host_b") } });
+    await removeBookingFromGoogle("ev_1");
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", gid("host_a"), expect.any(AbortSignal));
+    expect(provider.deleteEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("an owner who left the sub-account is not kept: their copy is removed", async () => {
+    seedReassigned();
+    state.docs.set(`${SUB_PATH}/subAccountMembers/host_a`, { uid: "host_a", status: "removed" });
+    await pushBookingToGoogle("ev_1");
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", gid("host_a"), expect.any(AbortSignal));
+  });
+
+  it("a booking without a Meet link is not kept, owner or not", async () => {
+    seedReassigned({ meetingUrl: FALLBACK });
+    await pushBookingToGoogle("ev_1");
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", gid("host_a"), expect.any(AbortSignal));
+  });
+
+  it("reassigned back to the owner: the copy is theirs again, unmarked and busy", async () => {
+    seedReassigned({ assignedToUid: "host_a", googleEventIds: { host_a: gid("host_a"), host_b: gid("host_b") } });
+    await pushBookingToGoogle("ev_1");
+    expect(sentTo("host_a")).toMatchObject({ summary: "Consult — Ada", transparency: "opaque" });
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_b", gid("host_b"), expect.any(AbortSignal));
   });
 });
