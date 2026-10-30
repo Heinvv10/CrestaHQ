@@ -13,7 +13,7 @@ import {
   changeEventStatus,
   statusChangeError,
 } from "@/lib/server/event-status-service";
-import type { CalendarEvent } from "@/types/events";
+import { isImportedEvent, type CalendarEvent } from "@/types/events";
 import { refInSubAccount } from "@/lib/server/tenant-ref";
 import { removeBookingFromGoogleBeforeDelete } from "@/lib/google-calendar/push";
 import { isLongEvent } from "@/lib/booking/long-event";
@@ -25,7 +25,7 @@ export const GET = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
   }
   const d = snap.data()!;
-  if (d.subAccountId !== ctx.subAccountId || d.mode !== ctx.mode) {
+  if (d.subAccountId !== ctx.subAccountId || d.mode !== ctx.mode || isImportedEvent(d)) {
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
   }
   return apiOk(ctx, { event: serializeEventForApi(snap.id, d, ctx.mode) });
@@ -46,7 +46,7 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
   // Booking-page and voice bookings carry no `mode`, so they never match a
   // key's mode and are not exposed here — every event this route can reach
   // is a manual (API or dashboard) event.
-  if (existing.subAccountId !== ctx.subAccountId || existing.mode !== ctx.mode) {
+  if (existing.subAccountId !== ctx.subAccountId || existing.mode !== ctx.mode || isImportedEvent(existing)) {
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
   }
 
@@ -128,7 +128,7 @@ export const DELETE = withApiAuth<{ id: string }>(async ({ params, ctx }) => {
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
   }
   const d = snap.data()!;
-  if (d.subAccountId !== ctx.subAccountId || d.mode !== ctx.mode) {
+  if (d.subAccountId !== ctx.subAccountId || d.mode !== ctx.mode || isImportedEvent(d)) {
     return apiError(ctx, "not_found", "event_not_found", "Event not found.");
   }
   // Its Google copies first — nothing would find them after the delete, so a
