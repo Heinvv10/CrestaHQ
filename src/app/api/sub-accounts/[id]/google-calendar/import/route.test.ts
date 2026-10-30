@@ -181,6 +181,18 @@ describe("status and disconnect", () => {
     expect(await (await call(GET, ADMIN)).json()).toMatchObject({ connected: false, importMode: "off", importedCount: 0 });
   });
 
+  it("GET's importGeneration moves with every mode change, even to the same outcome", async () => {
+    const { setImportMode } = await import("@/lib/google-calendar/import-state");
+    const gen = async () => (await (await call(GET, U1)).json()).importGeneration as number;
+    const g0 = await gen();
+    await setImportMode(SA, U1, "details");
+    const g1 = await gen();
+    await setImportMode(SA, U1, "busy");
+    const g2 = await gen();
+    expect(g1).toBeGreaterThan(g0);
+    expect(g2).toBeGreaterThan(g1);
+  });
+
   it("DELETE still disconnects when the import cleanup fails (logged; the orphan sweep is the backstop)", async () => {
     const real = storeDb.collection;
     const spy = vi.spyOn(storeDb, "collection").mockImplementation(((p: string) => {

@@ -78,6 +78,12 @@ describe("importedEventDays", () => {
     it("Auckland owner, 31 Oct: one day (the start day is shifted by one: the documented limit)", () => {
       expect(paint("2030-10-30T11:00:00Z", "2030-10-31T11:00:00Z")).toEqual(["10/30"]);
     });
+    it("Johannesburg owner, 31 Oct: exactly 31 Oct", () => {
+      expect(paint("2030-10-30T22:00:00Z", "2030-10-31T22:00:00Z")).toEqual(["10/31"]);
+    });
+    it("Nairobi owner, 31 Oct: one day (shifted to 30 Oct: the documented limit)", () => {
+      expect(paint("2030-10-30T21:00:00Z", "2030-10-31T21:00:00Z")).toEqual(["10/30"]);
+    });
     it("a 3-day block from a UTC owner is 3 days", () => {
       expect(paint("2030-10-31T00:00:00Z", "2030-11-03T00:00:00Z")).toEqual(["10/31", "11/1", "11/2"]);
     });

@@ -26,6 +26,8 @@ export interface ImportStatus {
   importError?: string | null;
   importLastSyncAt?: string | null;
   importedCount?: number;
+  /** Bumped by every mode change, so a read taken after one never equals one taken before it. */
+  importGeneration?: number;
 }
 
 const OPTIONS: { value: ImportMode; label: string; hint: string }[] = [
@@ -47,7 +49,8 @@ const WORKSPACE_OFF_CONFIRM =
 export const POLL_MS = 4_000;
 export const POLL_MAX = 5;
 
-const sigOf = (st: ImportStatus) => `${st.importLastSyncAt ?? ""}|${st.importStatus ?? ""}|${st.importError ?? ""}`;
+const sigOf = (st: ImportStatus) =>
+  `${st.importGeneration ?? ""}|${st.importLastSyncAt ?? ""}|${st.importStatus ?? ""}|${st.importError ?? ""}`;
 const countLabel = (n: number) => `${n} ${n === 1 ? "event" : "events"}`;
 
 export function GoogleImportControls({ status, onChanged }: { status: ImportStatus; onChanged: () => Promise<void> }) {
@@ -69,8 +72,8 @@ export function GoogleImportControls({ status, onChanged }: { status: ImportStat
   const stillSyncing = pending && gaveUp;
 
   useEffect(() => {
-    // Any change from what was on screen means the server's clear has landed (or a pass has
-    // reported): what follows is the new pass's, even if it repeats the old message.
+    // Any change from what was on screen (the mode change bumps the generation, so every read
+    // after it differs) means what follows is the new pass's, even if it repeats the old message.
     if (staleSig !== null && sigOf(status) !== staleSig) setStaleSig(null);
   }, [staleSig, status]);
 

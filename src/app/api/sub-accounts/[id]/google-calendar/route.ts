@@ -14,7 +14,7 @@ import { gcalAppConfigured } from "@/lib/google-calendar/provider/mode";
  *   GET    /api/sub-accounts/[id]/google-calendar
  *     → { configured, connected, status, googleEmail, lastError, lastPushError,
  *         importAllowed, importMode, importStatus, importError, importLastSyncAt,
- *         importedCount }
+ *         importedCount, importGeneration }
  *     Any active member. While the agency gate is off: { gateOff: true,
  *     connected, googleEmail } only — enough for the card to offer Disconnect
  *     on a connection left behind. Never a token, never another member's.
@@ -59,6 +59,8 @@ export async function GET(request: Request, ctx: Ctx) {
     importError: conn?.importError ?? null,
     importLastSyncAt: isoOrNull(conn?.importLastSyncAt),
     importedCount: conn?.importedCount ?? 0,
+    // Bumped by every mode change: lets the card tell a read taken after one from a read before it.
+    importGeneration: conn?.importGeneration ?? 0,
   });
 }
 

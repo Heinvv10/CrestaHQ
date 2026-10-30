@@ -232,3 +232,30 @@ it("a new pass that fails with the same message as the last is shown, not hidden
   await tick(POLL_MS * 3);
   expect(onChanged.mock.calls.length).toBe(calls);
 });
+
+it("the new pass fails with the SAME message before the post-save read lands: shown, not 'Still syncing'", async () => {
+  vi.useFakeTimers();
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const failed: Status = {
+    ...connected,
+    importMode: "busy",
+    importStatus: "error",
+    importError: "Google said no",
+    importGeneration: 1,
+  };
+  await show(failed);
+  // The server cleared the status and the new pass failed identically before this read: the
+  // client never sees the cleared state, only the same message under the next generation.
+  onChanged.mockImplementation(() => rerender({ ...failed, importMode: "details", importGeneration: 2 }));
+  await click("gcal-import-mode-details");
+  // The save handler's continuation runs a few microtasks after the click's act returns.
+  await act(async () => {
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+  });
+  expect(status()).toBe("Last sync failed: Google said no");
+  expect(byId("gcal-import-refresh")).toBeNull();
+  const calls = onChanged.mock.calls.length;
+  await tick(POLL_MS * (POLL_MAX + 1));
+  expect(onChanged.mock.calls.length).toBe(calls);
+  expect(status()).toBe("Last sync failed: Google said no");
+});
