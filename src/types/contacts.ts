@@ -248,6 +248,10 @@ export type ActivityType =
   // An email to this contact was refused because the address is on the
   // sub-account's suppression list (lib/comms/email-suppression.ts).
   | "email_suppressed"
+  // First open / first click of a broadcast email, from our own pixel and
+  // click redirect (lib/broadcasts/engagement.ts). Opens are an estimate.
+  | "email_opened"
+  | "email_clicked"
   // An inbound call was forwarded but went unanswered, so Missed Call Text
   // Back auto-texted the caller. Written by /api/webhooks/twilio/voice/status.
   | "missed_call"

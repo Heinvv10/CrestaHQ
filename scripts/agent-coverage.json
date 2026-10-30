@@ -227,6 +227,12 @@
     },
     "rr": {
       "scope": true
+    },
+    "t": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Broadcast email open pixel and click redirect, loaded by the recipient's mail client and authenticated only by the HMAC token in the URL; the recipient acts, never an agent key."
+      }
     }
   },
   "routes": {

@@ -23,6 +23,7 @@ interface PatchBody {
   replyToEmail?: string | null;
   defaultPhoneCountry?: string | null;
   automationsPaused?: boolean;
+  emailTracking?: { opens?: unknown; clicks?: unknown } | null;
   accountContact?: {
     name?: string | null;
     email?: string | null;
@@ -185,6 +186,27 @@ export async function PATCH(
       );
     }
     update.automationsPaused = body.automationsPaused;
+  }
+
+  if (body.emailTracking !== undefined) {
+    // Dot paths: switching one kind never resets the other.
+    const t = body.emailTracking;
+    if (!t || typeof t !== "object") {
+      return NextResponse.json(
+        { error: "emailTracking must be an object of booleans." },
+        { status: 400 },
+      );
+    }
+    for (const kind of ["opens", "clicks"] as const) {
+      if (t[kind] === undefined) continue;
+      if (typeof t[kind] !== "boolean") {
+        return NextResponse.json(
+          { error: `emailTracking.${kind} must be a boolean.` },
+          { status: 400 },
+        );
+      }
+      update[`emailTracking.${kind}`] = t[kind];
+    }
   }
 
   if (body.accountContact !== undefined) {

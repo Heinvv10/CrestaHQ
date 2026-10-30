@@ -42,6 +42,8 @@ export const ACTIVITY_CHIP = {
   whatsapp_received: "messages",
   email_received: "messages",
   email_suppressed: "messages",
+  email_opened: "messages",
+  email_clicked: "messages",
   messenger_received: "messages",
   instagram_received: "messages",
   webchat_received: "messages",
