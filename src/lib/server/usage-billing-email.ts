@@ -2,7 +2,12 @@ import "server-only";
 
 import { formatBillingPrice } from "@/lib/billing/status";
 import { formatUsageMonth } from "@/lib/billing/usage";
-import { noPlatformSender, resolvePlatformSender, sendPlatformEmail } from "@/lib/comms/platform-email";
+import {
+  noPlatformSender,
+  resolvePlatformSender,
+  sendPlatformEmail,
+  type PlatformSender,
+} from "@/lib/comms/platform-email";
 import { renderSystemEmail } from "@/lib/comms/system-email";
 import { resolveCustomBrand } from "@/lib/landing/resolve-brand";
 import type { UsageChargeLine } from "@/types/billing";
@@ -11,11 +16,23 @@ import type { SubAccountDoc } from "@/types";
 export type UsageEmailKind = "invoice" | "beforeDue" | "onDue" | "overdue";
 
 /**
+ * The sender usage mail goes out through, or null (logged) when there is none.
+ * Resolved BEFORE a pay link is staged, so no link work is done for a send that
+ * cannot go.
+ */
+export async function resolveUsageSender(subAccountId: string): Promise<PlatformSender | null> {
+  const sender = await resolvePlatformSender(subAccountId);
+  if (!sender) noPlatformSender("[usage-close] usage email", subAccountId);
+  return sender;
+}
+
+/**
  * One usage-charge email (the invoice, then reminders) through the platform
  * sender. Returns whether it went out; never throws, since the charge is
  * already minted and must not be rolled back over email.
  */
 export async function sendUsageEmail(input: {
+  sender: PlatformSender;
   kind: UsageEmailKind;
   to: string;
   sub: SubAccountDoc;
@@ -28,11 +45,6 @@ export async function sendUsageEmail(input: {
 }): Promise<boolean> {
   if (!input.payUrl) return false;
   try {
-    const sender = await resolvePlatformSender(input.sub.id);
-    if (!sender) {
-      noPlatformSender("[usage-close] usage email", input.sub.id);
-      return false;
-    }
     const ws = input.sub.name || "Your workspace";
     const monthLabel = formatUsageMonth(input.month);
     const total = formatBillingPrice(input.amountCents, input.currency);
@@ -59,7 +71,7 @@ export async function sendUsageEmail(input: {
       button: { label: "Pay now", url: input.payUrl },
       note: "Payment is handled securely by our payment provider. Your card isn't saved.",
     });
-    await sendPlatformEmail(sender, { to: input.to, subject, text, html });
+    await sendPlatformEmail(input.sender, { to: input.to, subject, text, html });
     return true;
   } catch (err) {
     console.warn(`[usage-close] ${input.kind} email failed sa=${input.sub.id}: ${err instanceof Error ? err.message : String(err)}`);

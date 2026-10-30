@@ -100,6 +100,17 @@ it("a usage close that held items answers 500 naming the job, and a clean one an
   expect((await run()).status).toBe(200);
 });
 
+it("a 500 for failures also names the refusals held alongside them", async () => {
+  jobs.usageClose.mockResolvedValueOnce({
+    closed: 0, charged: 0, reminded: 0, failed: 1,
+    refusals: [{ subAccountId: "sa9", month: "2026-09", reason: "no email sender is configured" }],
+  });
+  const body = await (await run()).json();
+  expect(body.failed).toEqual([
+    { job: "usage-close", message: "usage_close_failed: 1 item(s); 1 also held (sa9/2026-09: no email sender is configured)" },
+  ]);
+});
+
 it("a permanent refusal is reported in the body but never answers 500 (a retry could not fix it)", async () => {
   const refusals = [{ subAccountId: "sa1", month: "2026-09", reason: "Paystack needs an email to open a payment page" }];
   jobs.usageClose.mockResolvedValueOnce({ closed: 1, charged: 0, reminded: 0, failed: 0, refusals });

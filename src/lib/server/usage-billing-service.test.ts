@@ -12,9 +12,12 @@ import { restoreBillingProviderAfterEach, spyBillingProvider } from "@/test/bill
 const mem = createMemoryFirestore();
 vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => mem.db }));
 vi.mock("@/lib/api/webhooks/dispatch", () => ({ emitWebhookEvent: vi.fn(async () => {}) }));
-const mail = vi.hoisted(() => ({ send: vi.fn(async (..._a: unknown[]) => ({})) }));
+const mail = vi.hoisted(() => ({
+  send: vi.fn(async (..._a: unknown[]) => ({})),
+  sender: { kind: "shared" } as { kind: "shared" } | null,
+}));
 vi.mock("@/lib/comms/platform-email", () => ({
-  resolvePlatformSender: async () => ({ kind: "shared" }),
+  resolvePlatformSender: async () => mail.sender,
   sendPlatformEmail: (...a: unknown[]) => mail.send(...a),
   noPlatformSender: () => new Error("no sender"),
 }));
@@ -23,7 +26,10 @@ vi.mock("@/lib/landing/resolve-brand", () => ({ resolveCustomBrand: async () => 
 const { runUsageClose, freezeMonthForSubAccount } = await import("./usage-billing-service");
 const { verifyChargeToken } = await import("@/lib/billing/token");
 const { flushAfterResponse } = await import("@/lib/server/after-response");
-const { createUsageCharge, createChargeCheckoutSession, listChargesForSubAccount, mintChargeCheckoutLink } = await import("./billing-service");
+const {
+  createUsageCharge, createChargeCheckoutSession, listChargesForSubAccount, mintChargeCheckoutLink,
+  stageChargeLink, commitChargeLink,
+} = await import("./billing-service");
 
 restoreBillingProviderAfterEach();
 
@@ -59,6 +65,7 @@ const frozen = (month = "2026-09") =>
 beforeEach(() => {
   mem.clear();
   mail.send.mockClear();
+  mail.sender = { kind: "shared" };
   vi.stubEnv("AUTOMATIONS_TOKEN_SECRET", "x".repeat(32));
   vi.stubEnv("NEXT_PUBLIC_APP_URL", "https://app.example.com");
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -302,7 +309,9 @@ describe("a switch turned off after the freeze", () => {
   };
   const unsent = (extra: Record<string, unknown> = {}) => {
     const d = mem.read(`billingCharges/${CHARGE}`)!;
-    mem.seed(`billingCharges/${CHARGE}`, { ...d, emailedTo: null, invoiceEmailClaimedAt: undefined, ...extra });
+    mem.seed(`billingCharges/${CHARGE}`, {
+      ...d, emailedTo: null, invoiceEmailClaimedAt: undefined, emailAttemptedAt: undefined, ...extra,
+    });
   };
   const DUE = new Date(2026, 9, 15, 12, 0);
   const day = (d: number) => new Date(2026, 9, d, 5, 0);
@@ -323,7 +332,7 @@ describe("a switch turned off after the freeze", () => {
       expect.objectContaining({ chargeId: CHARGE, reason: "rebilling_switched_off_before_invoice" }),
     ]);
     expect(await events("usage.withheld")).toEqual([
-      expect.objectContaining({ detail: { month: "2026-09", chargeId: CHARGE, chargeCanceled: true } }),
+      expect.objectContaining({ detail: { month: "2026-09", chargeId: CHARGE, chargeCanceled: true, reason: "rebilling_switched_off_before_invoice" } }),
     ]);
   });
 
@@ -475,6 +484,193 @@ describe("pay links", () => {
     const reminderUrl = payUrlsSent()[1];
     expect(hashOf(reminderUrl)).toBe(mem.read(`billingCharges/${CHARGE}`)?.tokenHash);
     for (const old of [invoiceUrl, resent]) expect(hashOf(old)).not.toBe(hashOf(reminderUrl));
+  });
+});
+
+describe("an invoice or reminder that cannot go out is reported, and never costs the working link", () => {
+  const hashOf = (url: string) => verifyChargeToken(url.split("/pay/charge/")[1])?.hash;
+  const DUE = new Date(2026, 9, 15, 12, 0);
+  const emailedWithDue = async () => {
+    spyBillingProvider("stripe");
+    await runUsageClose(NOW);
+    mem.seed(`billingCharges/${CHARGE}`, { ...mem.read(`billingCharges/${CHARGE}`)!, dueAt: DUE });
+    const invoiceUrl = payUrlsSent()[0];
+    mail.send.mockClear();
+    return invoiceUrl;
+  };
+
+  it("a reminder whose send fails leaves the invoice link verifying", async () => {
+    const invoiceUrl = await emailedWithDue();
+    const live = mem.read(`billingCharges/${CHARGE}`)?.tokenHash;
+    expect(hashOf(invoiceUrl)).toBe(live);
+    mail.send.mockRejectedValueOnce(new Error("smtp down"));
+    const out = await runUsageClose(new Date(2026, 9, 12, 5, 0));
+    expect(out.refusals).toEqual([expect.objectContaining({ reason: "the reminder email could not be sent" })]);
+    expect(mem.read(`billingCharges/${CHARGE}`)?.tokenHash).toBe(live);
+    expect(hashOf(invoiceUrl)).toBe(mem.read(`billingCharges/${CHARGE}`)?.tokenHash);
+    expect(mem.read(`billingCharges/${CHARGE}`)?.remindedAt).toEqual({});
+  });
+
+  it("a reminder with no sender stages nothing: the invoice link still verifies, and it is reported", async () => {
+    const invoiceUrl = await emailedWithDue();
+    mail.sender = null;
+    const out = await runUsageClose(new Date(2026, 9, 12, 5, 0));
+    expect(out).toMatchObject({ failed: 0, reminded: 0, refusals: [{ reason: "no email sender is configured for this workspace" }] });
+    expect(hashOf(invoiceUrl)).toBe(mem.read(`billingCharges/${CHARGE}`)?.tokenHash);
+    expect(mem.read(`billingCharges/${CHARGE}`)?.remindedAt).toEqual({});
+    mail.sender = { kind: "shared" };
+    expect((await runUsageClose(new Date(2026, 9, 13, 5, 0))).reminded).toBe(1);
+  });
+
+  it("a reminder that does go out makes its new link live and retires the old one", async () => {
+    const invoiceUrl = await emailedWithDue();
+    await runUsageClose(new Date(2026, 9, 12, 5, 0));
+    const reminderUrl = payUrlsSent()[0];
+    expect(hashOf(reminderUrl)).toBe(mem.read(`billingCharges/${CHARGE}`)?.tokenHash);
+    expect(hashOf(invoiceUrl)).not.toBe(hashOf(reminderUrl));
+  });
+
+  it("an invoice send that fails is reported, clears the attempt marker, and tries again tomorrow", async () => {
+    spyBillingProvider("stripe");
+    mail.send.mockRejectedValueOnce(new Error("smtp down"));
+    const out = await runUsageClose(NOW);
+    expect(out).toMatchObject({ failed: 0, refusals: [{ reason: "the invoice email could not be sent" }] });
+    const c = mem.read(`billingCharges/${CHARGE}`)!;
+    expect(c.emailedTo).toBeNull();
+    expect(c.emailAttemptedAt).toBeUndefined();
+    expect(c.tokenHash).toBeNull();
+    expect(queue()).toHaveLength(1);
+    expect((await runUsageClose(new Date(NOW.getTime() + 86_400_000))).refusals).toEqual([]);
+    expect(mem.read(`billingCharges/${CHARGE}`)?.emailedTo).toBe(EMAIL);
+  });
+
+  it("the attempt marker is on the charge BEFORE the invoice is handed to the mailer", async () => {
+    spyBillingProvider("stripe");
+    let during: unknown = "unset";
+    mail.send.mockImplementationOnce(async () => {
+      during = mem.read(`billingCharges/${CHARGE}`)?.emailAttemptedAt;
+      return {};
+    });
+    await runUsageClose(NOW);
+    expect(during).toBeDefined();
+    expect(during).not.toBe("unset");
+    // Kept after a successful send: it did go out.
+    expect(mem.read(`billingCharges/${CHARGE}`)?.emailAttemptedAt).toBeDefined();
+  });
+
+  it("an invoice with no sender is reported and stages no link", async () => {
+    spyBillingProvider("stripe");
+    mail.sender = null;
+    const out = await runUsageClose(NOW);
+    expect(out.refusals).toEqual([expect.objectContaining({ reason: "no email sender is configured for this workspace" })]);
+    expect(mem.read(`billingCharges/${CHARGE}`)?.tokenHash).toBeNull();
+    expect(queue()).toHaveLength(1);
+  });
+
+  describe("after 7 days with no invoice sent", () => {
+    const LATER = () => new Date(Date.now() + 8 * 86_400_000);
+
+    it("the charge is cancelled, the month withheld with a reason, an audit row written, and it is reported once", async () => {
+      spyBillingProvider("stripe");
+      mem.seed("subAccounts/sa1", { ...SUB, accountContact: null });
+      await runUsageClose(NOW);
+      expect(queue()).toHaveLength(1);
+
+      const out = await runUsageClose(LATER());
+      expect(out).toMatchObject({ failed: 0, refusals: [{ reason: expect.stringMatching(/^invoice could not be sent within 7 days/) }] });
+      expect(mem.read(`billingCharges/${CHARGE}`)).toMatchObject({ status: "canceled", tokenHash: null });
+      expect(frozen()).toMatchObject({ withheldReason: "invoice could not be sent" });
+      expect(frozen()?.withheldAt).toBeDefined();
+      expect(queue()).toHaveLength(0);
+      expect(await events("usage.withheld")).toEqual([
+        expect.objectContaining({ detail: expect.objectContaining({ reason: "invoice could not be sent", chargeCanceled: true }) }),
+      ]);
+      expect(await events("charge.canceled")).toHaveLength(1);
+      expect((await runUsageClose(LATER())).refusals).toEqual([]);
+    });
+
+    it("a send that was ATTEMPTED may have gone out: the charge stands and is not cancelled", async () => {
+      spyBillingProvider("stripe");
+      await runUsageClose(NOW);
+      mem.seed(`billingCharges/${CHARGE}`, {
+        ...mem.read(`billingCharges/${CHARGE}`)!, emailedTo: null, invoiceEmailClaimedAt: undefined,
+        emailAttemptedAt: new Date(),
+      });
+      mem.seed(`usagePendingCharges/${CHARGE}`, { subAccountId: "sa1", month: "2026-09" });
+      await runUsageClose(LATER());
+      expect(mem.read(`billingCharges/${CHARGE}`)?.status).toBe("pending");
+      expect(frozen()?.withheldAt).toBeUndefined();
+      expect(queue()).toHaveLength(0);
+    });
+  });
+});
+
+describe("a stale claim after a switch-off", () => {
+  const setup = async (patch: Record<string, unknown>) => {
+    spyBillingProvider("stripe");
+    await runUsageClose(NOW);
+    mem.seed(`billingCharges/${CHARGE}`, {
+      ...mem.read(`billingCharges/${CHARGE}`)!, emailedTo: null,
+      invoiceEmailClaimedAt: new Date(NOW.getTime() - 60 * 60_000), emailAttemptedAt: undefined, ...patch,
+    });
+    mem.seed(`usagePendingCharges/${CHARGE}`, { subAccountId: "sa1", month: "2026-09" });
+    mem.seed("subAccounts/sa1", { ...SUB, usageRebillingEnabled: false });
+    mail.send.mockClear();
+  };
+
+  it("a run that died AFTER stamping its send attempt may have emailed: the debt stands, nothing is cancelled", async () => {
+    await setup({ emailAttemptedAt: new Date(NOW.getTime() - 60 * 60_000) });
+    await runUsageClose(NOW);
+    expect(mem.read(`billingCharges/${CHARGE}`)?.status).toBe("pending");
+    expect(frozen()?.withheldAt).toBeUndefined();
+  });
+
+  it("a stale claim with no attempt marker never sent anything: the charge is cancelled", async () => {
+    await setup({});
+    await runUsageClose(NOW);
+    expect(mem.read(`billingCharges/${CHARGE}`)?.status).toBe("canceled");
+    expect(frozen()?.withheldAt).toBeDefined();
+  });
+});
+
+describe("a sub-account with no agency", () => {
+  it("is a refusal, not a daily failure, and builds no path from the empty id", async () => {
+    spyBillingProvider("stripe");
+    mem.seed("subAccounts/sa1", { ...SUB, agencyId: "" });
+    mem.seed("subAccounts/sa1/usage/2026-09", {
+      closed: { totalCents: 5000, currency: "zar", lineItems: [], chargeId: CHARGE, carryOutCents: 0 },
+    });
+    mem.seed(`usagePendingCharges/${CHARGE}`, { subAccountId: "sa1", month: "2026-09" });
+    const out = await runUsageClose(NOW);
+    expect(out).toMatchObject({ failed: 0, refusals: [{ subAccountId: "sa1", reason: "the sub-account has no agency" }] });
+    expect(charges()).toHaveLength(0);
+  });
+});
+
+describe("pay-link writes refuse a charge that is no longer payable", () => {
+  it("a re-send on a paid or cancelled charge throws and leaves the token alone", async () => {
+    spyBillingProvider("stripe");
+    await runUsageClose(NOW);
+    for (const status of ["paid", "canceled"]) {
+      mem.seed(`billingCharges/${CHARGE}`, { ...mem.read(`billingCharges/${CHARGE}`)!, status, tokenHash: null });
+      await expect(mintChargeCheckoutLink({ agencyId: "ag1", chargeId: CHARGE })).rejects.toMatchObject({ status: 400 });
+      expect(mem.read(`billingCharges/${CHARGE}`)?.tokenHash).toBeNull();
+    }
+  });
+
+  it("another agency's charge is not found", async () => {
+    spyBillingProvider("stripe");
+    await runUsageClose(NOW);
+    await expect(mintChargeCheckoutLink({ agencyId: "other", chargeId: CHARGE })).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("a link staged before the client paid is not made live afterwards", async () => {
+    spyBillingProvider("stripe");
+    await runUsageClose(NOW);
+    const staged = stageChargeLink(CHARGE);
+    mem.seed(`billingCharges/${CHARGE}`, { ...mem.read(`billingCharges/${CHARGE}`)!, status: "paid", tokenHash: null });
+    await expect(commitChargeLink(CHARGE, staged.hash)).rejects.toMatchObject({ status: 400 });
+    expect(mem.read(`billingCharges/${CHARGE}`)?.tokenHash).toBeNull();
   });
 });
 
@@ -713,6 +909,9 @@ describe("nobody to email", () => {
     mem.seed("subAccounts/sa1", { ...SUB, accountContact: null });
     const first = await runUsageClose(NOW);
     expect(first).toMatchObject({ charged: 1, failed: 0 });
+    expect(first.refusals).toEqual([
+      { subAccountId: "sa1", month: "2026-09", reason: expect.stringMatching(/no one to email the invoice to/) },
+    ]);
     expect(mail.send).not.toHaveBeenCalled();
     expect(queue()).toHaveLength(1);
     expect(mem.read(`billingCharges/${CHARGE}`)).toMatchObject({ emailedTo: null, tokenHash: null });

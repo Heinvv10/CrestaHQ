@@ -1026,8 +1026,8 @@ export function usageChargeId(subAccountId: string, month: string): string {
  * `payerEmail` is refused too.
  *
  * The charge is born with NO live pay link (`tokenHash: null`) and no stored
- * URL: the raw token exists only in the email it is sent in, minted when that
- * email goes out (`mintChargeCheckoutLink`), like any re-sent link.
+ * URL: the raw token exists only in the email it is sent in, staged before the
+ * send and made live after it (`stageChargeLink` / `commitChargeLink`).
  */
 export async function createUsageCharge(input: {
   agencyId: string;
@@ -1130,28 +1130,61 @@ async function getChargeInAgencyOrThrow(
   return { ref, data: { ...(snap.data() as BillingChargeDoc), id: snap.id } };
 }
 
+/**
+ * Make `hash` the charge's live token, in one transaction that refuses a charge
+ * that is no longer payable: a paid or cancelled charge must never get a live
+ * link back (paying clears it; a racing re-send must not resurrect it). With
+ * `agencyId`, also refuses a charge of another agency.
+ */
+async function setChargeTokenHash(
+  chargeId: string,
+  hash: string,
+  agencyId: string | null,
+): Promise<void> {
+  const db = getAdminDb();
+  const ref = chargesCollection().doc(chargeId);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists || (agencyId !== null && snap.data()?.agencyId !== agencyId)) {
+      throw new BillingError("Charge not found", 404);
+    }
+    const status = snap.data()?.status;
+    if (status !== "pending") {
+      throw new BillingError(
+        status === "paid"
+          ? "This charge is already paid."
+          : "This charge was canceled — create a new one instead.",
+      );
+    }
+    tx.update(ref, { tokenHash: hash, updatedAt: FieldValue.serverTimestamp() });
+  });
+}
+
 /** Rotate the charge's token and return a fresh /pay/charge URL. */
 export async function mintChargeCheckoutLink(input: {
   agencyId: string;
   chargeId: string;
 }): Promise<string> {
-  const { ref, data } = await getChargeInAgencyOrThrow(
-    input.agencyId,
-    input.chargeId,
-  );
-  if (data.status !== "pending") {
-    throw new BillingError(
-      data.status === "paid"
-        ? "This charge is already paid."
-        : "This charge was canceled — create a new one instead.",
-    );
-  }
   const { token, hash } = issueChargeToken(input.chargeId);
-  await ref.update({
-    tokenHash: hash,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  await setChargeTokenHash(input.chargeId, hash, input.agencyId);
   return buildChargeCheckoutUrl(token);
+}
+
+/**
+ * A fresh pay link that is NOT live yet: the charge's current link keeps
+ * working until `commitChargeLink`. For an email that must not kill the link
+ * already out there if it then fails to send.
+ */
+export function stageChargeLink(chargeId: string): { url: string; hash: string } {
+  const { token, hash } = issueChargeToken(chargeId);
+  const url = buildChargeCheckoutUrl(token);
+  if (!url) throw new BillingError("NEXT_PUBLIC_APP_URL isn't configured, so no pay link can be built.", 503);
+  return { url, hash };
+}
+
+/** Make a staged link live (once its email has gone out). Refuses a paid or cancelled charge. */
+export function commitChargeLink(chargeId: string, hash: string): Promise<void> {
+  return setChargeTokenHash(chargeId, hash, null);
 }
 
 /** Void a pending charge: kills the link; paid charges can't be canceled here. */

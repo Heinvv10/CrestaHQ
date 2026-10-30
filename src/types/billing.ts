@@ -304,6 +304,8 @@ export interface BillingChargeDoc {
   emailedTo?: string | null;
   /** Set while the invoice email is being sent, so overlapping runs send it once. */
   invoiceEmailClaimedAt?: Timestamp | FieldValue | null;
+  /** Stamped just before a send and cleared when it is known to have failed: a send may have gone out. */
+  emailAttemptedAt?: Timestamp | FieldValue | null;
   createdAt: Timestamp | FieldValue | Date | null;
   paidAt: Timestamp | FieldValue | Date | null;
   updatedAt: Timestamp | FieldValue | Date | null;

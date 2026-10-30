@@ -67,7 +67,16 @@ const JOBS: Array<[string, () => Promise<unknown>]> = [
       // job, which is right for those). A permanent refusal (Paystack with no
       // email, an amount over the ceiling) is logged and returned in
       // `refusals`: a retry cannot fix it, so a 500 would only repeat daily.
-      if (result.failed > 0) throw new Error(`usage_close_failed: ${result.failed} item(s)`);
+      if (result.failed > 0) {
+        const held = result.refusals
+          .slice(0, 3)
+          .map((r) => `${r.subAccountId}/${r.month}: ${r.reason}`)
+          .join("; ");
+        throw new Error(
+          `usage_close_failed: ${result.failed} item(s)` +
+            (result.refusals.length > 0 ? `; ${result.refusals.length} also held (${held})` : ""),
+        );
+      }
       return result;
     },
   ],

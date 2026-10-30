@@ -10,7 +10,8 @@ import {
 } from "@/lib/server/usage-meter";
 import { usageChargeId } from "@/lib/server/billing-service";
 import { recordBillingEvent } from "@/lib/server/billing-lifecycle";
-import { processPendingCharges, sendDueReminders } from "@/lib/server/usage-billing-dispatch";
+import { processPendingCharges } from "@/lib/server/usage-billing-dispatch";
+import { sendDueReminders } from "@/lib/server/usage-billing-reminders";
 import {
   inPool,
   PENDING_COLLECTION,

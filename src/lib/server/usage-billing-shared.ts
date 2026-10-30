@@ -28,6 +28,8 @@ export interface UsageClosedSnapshot {
   chargeId: string | null;
   /** A switch was off when the charge came to be minted, so none was. */
   withheldAt?: FieldValue;
+  /** Why: "rebilling_switched_off_before_invoice" or "invoice could not be sent". */
+  withheldReason?: string;
 }
 
 export interface PendingChargeDoc {
