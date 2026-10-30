@@ -62,6 +62,9 @@ describe("location types", () => {
     expect((await create({ location: { type: "in_person", value: "x".repeat(301) } })).status).toBe(400);
     expect((await create({ location: { type: "in_person", value: '1 Main"><img src=x onerror=alert(1)>' } })).status).toBe(400);
     expect((await create({ location: { type: "in_person", value: "1 Main Rd\nSandton" } })).status).toBe(400);
+    for (const sep of ["\u2028", "\u2029", "\u0085"]) {
+      expect((await create({ location: { type: "in_person", value: `1 Main Rd${sep}Sandton` } })).status).toBe(400);
+    }
     expect(stored()).toBeUndefined();
     expect((await create({ location: { type: "in_person", value: "  12 Main Rd, Sandton  " } })).status).toBe(200);
     expect(stored()).toMatchObject({ location: { type: "in_person", value: "12 Main Rd, Sandton" }, googleMeet: false });
@@ -120,6 +123,38 @@ describe("Google Meet", () => {
     const res = await update({ hosts: HOSTS, calendarType: "round_robin", location: MEET });
     expect(res.status).toBe(400);
     expect(stored()).toMatchObject({ location: null, googleMeet: false });
+  });
+
+  it("a live Meet page whose host disconnected since still saves and unpublishes, with a warning", async () => {
+    const live = { hosts: HOSTS, calendarType: "round_robin", location: MEET, status: "published" };
+    expect((await create(live)).status).toBe(200);
+    connect("b", "revoked");
+    const edited = await update({ ...live, description: "New words" });
+    expect(edited.status).toBe(200);
+    expect(((await edited.json()) as { warning?: string }).warning).toMatch(/^Saved, but .*Not connected: B\./);
+    expect(stored()).toMatchObject({ description: "New words", googleMeet: true });
+    expect((await update({ ...live, status: "draft" })).status).toBe(200);
+    expect(stored()).toMatchObject({ status: "draft" });
+  });
+
+  it("a draft Meet page going live is checked again: refused while a host is disconnected", async () => {
+    const draft = { hosts: HOSTS, calendarType: "round_robin", location: MEET, status: "draft" };
+    expect((await create(draft)).status).toBe(200);
+    connect("b", "revoked");
+    const res = await update({ ...draft, status: "published" });
+    expect(res.status).toBe(400);
+    expect(stored()).toMatchObject({ status: "draft" });
+  });
+
+  it("a page stored before `location` (only googleMeet: true) duplicates as a Meet page", async () => {
+    expect((await create({ hosts: HOSTS, calendarType: "round_robin" })).status).toBe(200);
+    const { location: _gone, ...legacy } = stored()!;
+    mem.seed("subAccounts/sa1/bookingPages/loc", { ...legacy, googleMeet: true });
+    const res = await DUPLICATE(req("POST", {}), { params: Promise.resolve({ id: "sa1", slug: "loc" }) });
+    const out = (await res.json()) as { slug: string; warning: string | null };
+    expect(res.status).toBe(200);
+    expect(out.warning).toBeNull();
+    expect(mem.read(`subAccounts/sa1/bookingPages/${out.slug}`)).toMatchObject({ location: MEET, googleMeet: true });
   });
 
   it("a duplicate whose hosts are no longer connected is copied without Meet, with a warning", async () => {

@@ -15,7 +15,8 @@ import { state } from "@/test/google-oauth-harness";
 import { PAGE, connect, event, resetGcal, seedEvent, setGate, stubProvider, type StubProvider } from "@/test/gcal-harness";
 import { GbpProviderError } from "@/lib/gbp/provider/types";
 import type { GcalEventInput } from "./provider/types";
-import { googleEventIdFor, pushBookingAndGetMeetUrl, pushBookingToGoogle } from "./push";
+import { flushAfterResponse } from "@/lib/server/after-response";
+import { googleEventIdFor, pushBookingAndGetMeetUrl, pushBookingAndGetMeetUrlWithin, pushBookingToGoogle } from "./push";
 
 let provider: StubProvider;
 const MEET_LINK = "https://meet.google.com/abc-defg-hij";
@@ -23,10 +24,17 @@ const gid = (uid: string) => googleEventIdFor("ev_1", uid);
 const sentTo = (uid: string) =>
   provider.putEvent.mock.calls.find(([token]) => token === `a-${uid}`)?.[2] as GcalEventInput | undefined;
 
-/** A booking on page "p", which offers Google Meet. */
-function seedMeetBooking(over: Record<string, unknown> = {}) {
+const FALLBACK = "https://zoom.example/fallback";
+
+/** A booking on page "p", which offers Google Meet (fallback link FALLBACK unless `pageFallback`). */
+function seedMeetBooking(over: Record<string, unknown> = {}, pageFallback: string | null = FALLBACK) {
   seedEvent({ meetingUrl: null, location: "Google Meet video call", ...over });
-  state.docs.set(PAGE, { ...state.docs.get(PAGE), location: { type: "google_meet", value: null }, googleMeet: true });
+  state.docs.set(PAGE, {
+    ...state.docs.get(PAGE),
+    location: { type: "google_meet", value: null },
+    googleMeet: true,
+    meetingUrl: pageFallback,
+  });
 }
 
 beforeEach(() => {
@@ -37,6 +45,7 @@ beforeEach(() => {
     meetUrl: input.conferenceData ? MEET_LINK : null,
   }));
   vi.spyOn(console, "error").mockImplementation(() => {});
+  vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => vi.restoreAllMocks());
 
@@ -79,9 +88,18 @@ describe("a Google Meet booking", () => {
     expect(event().meetingUrl).toBe("https://zoom.example/operator");
   });
 
+  it("an operator's link already on the event wins over a room just made, and is logged", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: "https://zoom.example/operator" });
+    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: null });
+    expect(sentTo("host_a")?.conferenceData).toBeDefined();
+    expect(event().meetingUrl).toBe("https://zoom.example/operator");
+    expect(console.warn).toHaveBeenCalledWith(expect.stringContaining("holds its own meeting link"));
+  });
+
   it("an operator's link edited while Google was making the room wins: it is not overwritten", async () => {
     connect("host_a");
-    seedMeetBooking({ meetingUrl: "https://zoom.example/fallback" });
+    seedMeetBooking({ meetingUrl: FALLBACK });
     provider.putEvent.mockImplementationOnce(async () => {
       state.docs.set("events/ev_1", { ...event(), meetingUrl: "https://zoom.example/operator" });
       return { created: true, meetUrl: MEET_LINK };
@@ -92,7 +110,7 @@ describe("a Google Meet booking", () => {
 
   it("an event whose link was cleared meanwhile still takes the room's link", async () => {
     connect("host_a");
-    seedMeetBooking({ meetingUrl: "https://zoom.example/fallback" });
+    seedMeetBooking({ meetingUrl: FALLBACK });
     provider.putEvent.mockImplementationOnce(async () => {
       state.docs.set("events/ev_1", { ...event(), meetingUrl: null });
       return { created: true, meetUrl: MEET_LINK };
@@ -103,7 +121,30 @@ describe("a Google Meet booking", () => {
 
   it("a room just made replaces the page's fallback link on the event", async () => {
     connect("host_a");
-    seedMeetBooking({ meetingUrl: "https://zoom.example/fallback" });
+    seedMeetBooking({ meetingUrl: FALLBACK });
+    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: MEET_LINK });
+    expect(event().meetingUrl).toBe(MEET_LINK);
+  });
+
+  it("a reassign keeps the room: the new host's copy carries the link, no new room is asked for", async () => {
+    connect("host_a");
+    connect("host_b");
+    seedMeetBooking({ meetingUrl: MEET_LINK, assignedToUid: "host_b", googleEventIds: { host_a: gid("host_a") } });
+    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: MEET_LINK });
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", gid("host_a"), expect.any(AbortSignal));
+    expect(sentTo("host_b")?.conferenceData).toBeUndefined();
+    expect(sentTo("host_b")?.location).toBe(MEET_LINK);
+    expect(event().meetingUrl).toBe(MEET_LINK);
+  });
+
+  it("a first push that timed out after Google made the room: the next push stores it over the fallback", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: FALLBACK });
+    provider.putEvent.mockRejectedValueOnce(new GbpProviderError("transient"));
+    expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: null });
+    expect(event().meetingUrl).toBe(FALLBACK);
+    // Google had made the event and its room: the insert now 409s into an overwrite that finds it.
+    provider.putEvent.mockResolvedValueOnce({ created: false, meetUrl: MEET_LINK });
     expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: MEET_LINK });
     expect(event().meetingUrl).toBe(MEET_LINK);
   });
@@ -145,5 +186,27 @@ describe("not a Google Meet booking", () => {
     seedMeetBooking({ bookingPageSlug: null });
     await pushBookingToGoogle("ev_1");
     expect(sentTo("host_a")?.conferenceData).toBeUndefined();
+  });
+});
+
+describe("pushBookingAndGetMeetUrlWithin", () => {
+  it("answers no link at the deadline while Google hangs; the push finishes detached and stores the room", async () => {
+    connect("host_a");
+    seedMeetBooking();
+    let release: (v: { created: boolean; meetUrl: string | null }) => void = () => {};
+    provider.putEvent.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    const started = Date.now();
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", 50)).toEqual({ meetUrl: null });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(event().meetingUrl).toBeNull();
+    release({ created: true, meetUrl: MEET_LINK });
+    await flushAfterResponse();
+    expect(event().meetingUrl).toBe(MEET_LINK);
+  });
+
+  it("returns the link when Google answers in time", async () => {
+    connect("host_a");
+    seedMeetBooking();
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", 5_000)).toEqual({ meetUrl: MEET_LINK });
   });
 });

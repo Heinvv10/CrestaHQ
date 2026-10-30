@@ -287,6 +287,9 @@ export type ActivityType =
   // Operator/host reassigned a team booking to a different host. Written by
   // /api/events/by-id/[id]/assign.
   | "booking_reassigned"
+  // A Google Meet booking's booker was told "the joining link will follow"
+  // and no host could be emailed about it. lib/booking/meet-link-missing.ts.
+  | "meet_link_missing"
   // Card payment through the sub-account's OWN Stripe (Payments v1). Written
   // by the order reconciler, NOT by any client. `order_paid` is distinct from
   // `quote_marked_paid` (manual, off-system) — this one means Stripe confirmed

@@ -14,7 +14,12 @@ const INJECT = [
   ["a lone CR", "+27 60\rATTENDEE:mailto:evil@example.com"],
   ["a lone LF", "+27 60\nATTENDEE:mailto:evil@example.com"],
   ["a vertical tab and NUL", "+27 60\u000b\u0000ATTENDEE:mailto:evil@example.com"],
+  ["a Unicode line separator", "+27 60\u2028ATTENDEE:mailto:evil@example.com"],
+  ["a Unicode paragraph separator", "+27 60\u2029ATTENDEE:mailto:evil@example.com"],
+  ["NEL", "+27 60\u0085ATTENDEE:mailto:evil@example.com"],
 ] as const;
+/** Anything a reader might take as a line break or control, bar the CRLF line endings. */
+const BREAKING = /[\u0000-\u001f\u007f-\u009f\u2028\u2029]/;
 
 const BASE = {
   uid: "e1",
@@ -35,7 +40,7 @@ describe.each(INJECT)("text with %s", (_label, text) => {
     expect(ics).not.toMatch(/[\r\n]ATTENDEE:/);
     expect(properties(ics).filter((p) => p === "ATTENDEE")).toHaveLength(1);
     // Every byte that is not the CRLF line ending is printable.
-    expect(ics.replace(/\r\n/g, "")).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(ics.replace(/\r\n/g, "")).not.toMatch(BREAKING);
   });
 
   it("stays inside its own property in the subscription feed", () => {
@@ -45,7 +50,7 @@ describe.each(INJECT)("text with %s", (_label, text) => {
       events: [{ uid: "e1", startAt: BASE.startAt, endAt: BASE.endAt, summary: text, location: text, status: "CONFIRMED" }],
     });
     expect(feed).not.toMatch(/[\r\n]ATTENDEE:/);
-    expect(feed.replace(/\r\n/g, "")).not.toMatch(/[\u0000-\u001f\u007f]/);
+    expect(feed.replace(/\r\n/g, "")).not.toMatch(BREAKING);
   });
 
   it("is never used as the booker's phone or address in the location text", () => {

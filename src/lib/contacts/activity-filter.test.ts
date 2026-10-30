@@ -55,6 +55,7 @@ const ALL_TYPES = [
   "booking_no_show",
   "booking_completed",
   "booking_reassigned",
+  "meet_link_missing",
   "order_paid",
   "order_refunded",
   "webinar_registered",

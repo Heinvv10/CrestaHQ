@@ -27,7 +27,7 @@ import {
 import { resolvePageAvailability } from "@/lib/booking/resolve-availability";
 import { loadGoogleBusyForPage } from "@/lib/google-calendar/busy";
 import {
-  pushBookingAndGetMeetUrl,
+  pushBookingAndGetMeetUrlWithin,
   pushBookingToGoogleAfterResponse,
 } from "@/lib/google-calendar/push";
 import {
@@ -35,7 +35,9 @@ import {
   effectiveBookingLocation,
   eventLocationText,
   isPlainLocationText,
+  meetLinkToFollow,
 } from "@/lib/booking/location";
+import { recordMeetLinkMissing } from "@/lib/booking/meet-link-missing";
 import { bookingRateLimitsDisabled } from "@/lib/booking/rate-limit-e2e";
 import {
   loadHostNotifyContact,
@@ -527,21 +529,23 @@ export async function POST(
       ?.toLowerCase() ?? "leadstack.dev";
 
   // Google Meet: the confirmation carries the booking's own Meet link, so the
-  // push runs BEFORE the email, not after the response. The booking is
-  // already committed — a push that fails or makes no room only means the
+  // push runs BEFORE the email, not after the response — within one overall
+  // deadline, past which it carries on detached. The booking is already
+  // committed: a push that fails, is slow or makes no room only means the
   // page's fallback link (or none) goes out. A paid hold confirms later
-  // (mark-paid), so its push stays after the response.
+  // (mark-paid, which does the same), so its push stays after the response.
   const meetPushNow = pageLocation?.type === "google_meet" && !paymentRequired;
   let meetingUrl = page.meetingUrl ?? null;
   if (meetPushNow) {
-    const pushed = await pushBookingAndGetMeetUrl(created.eventDocRef.id);
+    const pushed = await pushBookingAndGetMeetUrlWithin(created.eventDocRef.id);
     if (pushed.meetUrl) meetingUrl = pushed.meetUrl;
   }
   // No Meet room and no fallback link: say so instead of a bare "Google Meet".
   const meetLinkMissing = meetPushNow && !meetingUrl;
-  const bookerLocation = meetLinkMissing
-    ? `${locationText} (the joining link will follow)`
-    : locationText;
+  const bookerLocation = meetLinkMissing ? meetLinkToFollow(locationText) : locationText;
+  // Someone in the workspace must learn a link is owed: a host email below,
+  // or failing that a row on the contact's timeline.
+  let hostToldMeetMissing = false;
 
   // Confirmation / payment-pending email.
   if (emailIsConfigured(sub)) {
@@ -684,11 +688,20 @@ export async function POST(
             subAccount: sub,
             meter: { subAccountId: saId },
           });
+          if (meetLinkMissing) hostToldMeetMissing = true;
         }
       } catch (err) {
         console.warn("[booking/book] host notification send failed", err);
       }
     }
+  }
+  if (meetLinkMissing && !hostToldMeetMissing) {
+    await recordMeetLinkMissing({
+      contactId: created.contactId,
+      eventId: created.eventDocRef.id,
+      agencyId,
+      subAccountId: saId,
+    });
   }
 
   // Reminder schedule (no-op when payment is pending — gets scheduled

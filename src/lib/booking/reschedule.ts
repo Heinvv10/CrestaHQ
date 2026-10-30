@@ -155,6 +155,15 @@ export async function runRescheduleSideEffects(args: {
   const { event, page, newRawToken, publicEventUrl, startAt, endAt, actor } =
     args;
   await pushBookingToGoogle(event.id);
+  // The push may have just stored the booking's Google Meet link (a room
+  // made now, or found after an earlier push timed out): mail that one.
+  let meetingUrl = event.meetingUrl ?? null;
+  try {
+    const fresh = await db.collection("events").doc(event.id).get();
+    meetingUrl = (fresh.data() as CalendarEvent | undefined)?.meetingUrl ?? meetingUrl;
+  } catch (err) {
+    console.warn("[booking/reschedule] post-push read failed", err instanceof Error ? err.message : String(err));
+  }
 
   // Re-publish reminder callbacks with a fresh schedule nonce so the
   // QStash dedup key doesn't collapse onto the previous ones.
@@ -235,7 +244,7 @@ export async function runRescheduleSideEffects(args: {
       endAt,
       // The link and place the booking was made with (a Google Meet link
       // stays the same across a reschedule: the push only moves the event).
-      meetingUrl: event.meetingUrl ?? null,
+      meetingUrl,
       location: event.location || undefined,
       publicEventUrl,
     });
@@ -251,7 +260,7 @@ export async function runRescheduleSideEffects(args: {
       endAt,
       summary: event.title || page?.name || "Meeting",
       description: page?.confirmationMessage ?? "",
-      location: event.meetingUrl || event.location || "",
+      location: meetingUrl || event.location || "",
       method: "REQUEST",
       status: "CONFIRMED",
       sequence: event.icsSequence,

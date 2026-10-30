@@ -4,6 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { isDocId } from "@/lib/server/doc-id";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isCheckoutThemeId } from "@/lib/checkout/themes";
+import { effectiveBookingLocation } from "@/lib/booking/location";
 import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { canonical } from "@/lib/server/agent-proposals-encoding";
 import { prepareBookingPage, upcomingBookingCount } from "@/lib/server/booking-page-write";
@@ -32,14 +33,17 @@ async function plan(ctx: AiSuiteActionContext, args: Record<string, unknown>) {
   const { slug, ...fields } = args;
   const page = await tenantPage(ctx.subAccountId!, slug);
   const stored = formOf(page);
+  // A page saved before `location` existed (Meet ticked, or a meeting link)
+  // keeps what it derives to — sent without it, the validator would drop it.
+  if (stored.location === undefined) stored.location = effectiveBookingLocation(page);
   // A stored preset this build doesn't know (a retired id) is dropped, as the editor and the
   // duplicate route do: sent back through the validator it would refuse every edit of the page.
   if (!isCheckoutThemeId(stored.themePreset)) delete stored.themePreset;
-  const prepared = await prepareBookingPage(ctx.subAccountId!, { ...stored, ...fields, slug: page.id }, { storedType: page.calendarType });
+  const prepared = await prepareBookingPage(ctx.subAccountId!, { ...stored, ...fields, slug: page.id }, { storedType: page.calendarType, stored: page });
   if (!prepared.ok) throw new CapabilityUserError(prepared.error);
   if (typeof fields.name === "string") await assertPageName(ctx.subAccountId!, prepared.data.name, page.id);
   if (fields.defaultTerritoryId !== undefined) await assertPageTerritory(ctx.subAccountId!, prepared.data.defaultTerritoryId);
-  return { page, data: prepared.data };
+  return { page, data: prepared.data, warning: prepared.warning };
 }
 
 type QueryGet = (q: FirebaseFirestore.Query) => Promise<FirebaseFirestore.QuerySnapshot>;
@@ -78,7 +82,7 @@ export const BOOKING_PAGE_EDIT_CAPABILITIES: AiSuiteCapability[] = [
       return { contactId: null, territoryId: null, scoped: false };
     },
     preview: async (ctx, args) => {
-      const { page, data } = await plan(ctx, args);
+      const { page, data, warning } = await plan(ctx, args);
       const changed = pageRows(data, formOf(page));
       // Going public, or read by messages to booked customers: the whole
       // resulting page, since earlier direct edits of a draft were never reviewed.
@@ -91,6 +95,7 @@ export const BOOKING_PAGE_EDIT_CAPABILITIES: AiSuiteCapability[] = [
             : changed.length
               ? changed
               : [{ label: "Changes", value: "none (the page is saved as it is)" }]),
+          ...(warning ? [{ label: "Warning", value: warning }] : []),
         ],
         pinned: { slug: page.id, before: canonical(formOf(page)), after: canonical(data) },
       };

@@ -28,7 +28,7 @@ vi.mock("@/lib/booking/lifecycle", async () => (await h()).bookingMocks.lifecycl
 vi.mock("@/lib/booking/contact-reconcile", async () => (await h()).bookingMocks.reconcile());
 vi.mock("@/lib/google-calendar/busy", () => ({ loadGoogleBusyForPage: async () => [] }));
 vi.mock("@/lib/google-calendar/push", () => ({
-  pushBookingAndGetMeetUrl: async (id: string) => {
+  pushBookingAndGetMeetUrlWithin: async (id: string) => {
     m.order.push("push");
     return m.meet(id);
   },
@@ -86,6 +86,29 @@ describe("Google Meet pages", () => {
     expect(booker.text).toContain("Where: Google Meet video call (the joining link will follow)");
     const host = m.sent.find((s) => s.to === "ann@example.com")!;
     expect(host.text).toContain("No Google Meet link could be made");
+    // The host was told: no timeline row needed.
+    expect(mem.list("contacts/c1/activities")).toEqual([]);
+  });
+
+  it("no link and no host email possible: a row on the contact's timeline says a link is owed", async () => {
+    seedPage("p", { hosts: HOSTS, location: { type: "google_meet", value: null }, googleMeet: true });
+    // The host has no email to notify.
+    mem.seed(`subAccounts/${SA}/subAccountMembers/host_a`, { uid: "host_a", status: "active", displayName: "Ann" });
+    const res = await book();
+    expect(res.status).toBe(200);
+    const { eventId } = (await res.json()) as { eventId: string };
+    expect(m.sent.map((s) => s.to)).toEqual(["v@example.com"]);
+    expect(mem.list("contacts/c1/activities")).toEqual([
+      expect.objectContaining({ type: "meet_link_missing", createdBy: "booking", meta: { eventId } }),
+    ]);
+  });
+
+  it("a link made: no timeline row", async () => {
+    seedPage("p", { hosts: HOSTS, location: { type: "google_meet", value: null }, googleMeet: true });
+    mem.seed(`subAccounts/${SA}/subAccountMembers/host_a`, { uid: "host_a", status: "active", displayName: "Ann" });
+    m.meet.mockResolvedValueOnce({ meetUrl: "https://meet.google.com/abc-defg-hij" });
+    expect((await book()).status).toBe(200);
+    expect(mem.list("contacts/c1/activities")).toEqual([]);
   });
 
   it("push made no room: the page's fallback link goes out instead", async () => {

@@ -6,7 +6,8 @@ import { validateBookingPageFormData, validateCalendarTypeHosts } from "@/lib/bo
 import { resolveBookingHosts } from "@/lib/booking/hosts";
 import { readConnection } from "@/lib/google-calendar/connection";
 import { googleCalendarGateOn } from "@/lib/google-calendar/gate";
-import type { BookingHost, BookingLocation, BookingPageFormData, CalendarType } from "@/types/booking";
+import { effectiveBookingLocation } from "@/lib/booking/location";
+import type { BookingHost, BookingLocation, BookingPage, BookingPageFormData, CalendarType } from "@/types/booking";
 
 /**
  * Booking-page writes shared by the booking-page routes and the agent's
@@ -17,17 +18,26 @@ import type { BookingHost, BookingLocation, BookingPageFormData, CalendarType } 
 
 export type PageWriteFailure = { ok: false; status: number; error: string };
 
+/** What an edit needs of the stored page to judge a Google Meet change. */
+export type StoredMeetFields = Pick<BookingPage, "location" | "googleMeet" | "meetingUrl" | "status">;
+
 /**
  * Validate a create (no `edit`) or full-replace edit body (`edit`, with the
- * page's stored calendar type): the form
+ * page's stored calendar type and Meet fields): the form
  * validator, the sub-account (create), the payment rail when a deposit is
- * asked, and the hosts re-resolved against live membership.
+ * asked, the hosts re-resolved against live membership, and Google Meet's
+ * setup. Meet's setup is REFUSED only when Meet is being switched on (a
+ * create, a page becoming Meet, or a Meet page going live); any other save
+ * of a Meet page whose setup broke later — a host disconnected — goes
+ * through with `warning`, so it can still be edited or unpublished.
  */
 export async function prepareBookingPage(
   subAccountId: string,
   body: unknown,
-  edit?: { storedType: CalendarType | undefined },
-): Promise<{ ok: true; data: BookingPageFormData; agencyId: string | null } | PageWriteFailure> {
+  edit?: { storedType: CalendarType | undefined; stored?: StoredMeetFields },
+): Promise<
+  { ok: true; data: BookingPageFormData; agencyId: string | null; warning?: string } | PageWriteFailure
+> {
   const storedType = edit?.storedType;
   const validated = validateBookingPageFormData(body, storedType);
   if (!validated.ok) return { ok: false, status: 400, error: validated.error };
@@ -53,8 +63,16 @@ export async function prepareBookingPage(
   const hostsOk = validateCalendarTypeHosts(data.calendarType ?? storedType, hosts.length);
   if (!hostsOk.ok) return { ok: false, status: 400, error: hostsOk.error };
   const meet = await meetSetupError(subAccountId, data.location, hosts);
-  if (meet) return { ok: false, status: 400, error: meet };
-  return { ok: true, data: { ...data, hosts }, agencyId };
+  if (meet && meetSwitchingOn(data, edit?.stored)) return { ok: false, status: 400, error: meet };
+  return { ok: true, data: { ...data, hosts }, agencyId, ...(meet ? { warning: `Saved, but ${meet}` } : {}) };
+}
+
+/** A create, a page becoming Google Meet, or a Meet page going live. */
+function meetSwitchingOn(data: BookingPageFormData, stored: StoredMeetFields | undefined): boolean {
+  if (data.location?.type !== "google_meet") return false;
+  if (!stored) return true;
+  if (effectiveBookingLocation(stored)?.type !== "google_meet") return true;
+  return stored.status !== "published" && data.status === "published";
 }
 
 /**

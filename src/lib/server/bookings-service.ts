@@ -23,7 +23,9 @@ import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 import type { SubAccountDoc } from "@/types/tenancy";
-import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { pushBookingAndGetMeetUrlWithin, pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { effectiveBookingLocation, meetLinkToFollow } from "@/lib/booking/location";
+import { recordMeetLinkMissing } from "@/lib/booking/meet-link-missing";
 
 /**
  * Bookings service — the single server-side path that confirms a booking held
@@ -168,12 +170,12 @@ export async function markBookingPaidServerSide(input: {
   if ("ok" in confirmed) return confirmed;
   const { event: updatedEvent, token: newToken } = confirmed;
 
-  const withheld = await runMarkPaidSideEffects({
+  const { withheld, pushed } = await runMarkPaidSideEffects({
     event: updatedEvent,
     rawToken: newToken,
     expect: input.expect,
   });
-  await pushBookingToGoogle(input.eventId);
+  if (!pushed) await pushBookingToGoogle(input.eventId);
 
   return {
     ok: true,
@@ -183,12 +185,16 @@ export async function markBookingPaidServerSide(input: {
   };
 }
 
-/** True when `expect` withheld the confirmation and reminders (their recipient changed). */
+/**
+ * `withheld`: `expect` withheld the confirmation and reminders (their
+ * recipient changed). `pushed`: the Google push already ran here (a Google
+ * Meet page pushes before the confirmation, which carries the link).
+ */
 async function runMarkPaidSideEffects(args: {
   event: CalendarEvent;
   rawToken: string;
   expect?: BookingPaidExpect;
-}): Promise<boolean> {
+}): Promise<{ withheld: boolean; pushed: boolean }> {
   const { event, rawToken, expect } = args;
   const db = getAdminDb();
   const startAt = (
@@ -197,9 +203,9 @@ async function runMarkPaidSideEffects(args: {
   const endAt = (
     event.endAt as { toDate?: () => Date } | null
   )?.toDate?.();
-  if (!(startAt instanceof Date) || !(endAt instanceof Date)) return false;
+  if (!(startAt instanceof Date) || !(endAt instanceof Date)) return { withheld: false, pushed: false };
 
-  if (!event.contactId) return false;
+  if (!event.contactId) return { withheld: false, pushed: false };
   let page: BookingPage | null = null;
   let sub: SubAccountDoc | null = null;
   let contact: Contact | null = null;
@@ -221,6 +227,27 @@ async function runMarkPaidSideEffects(args: {
   } catch (err) {
     console.warn("[events/mark-paid] tenancy read failed", err);
   }
+
+  // Google Meet: the confirmation carries the booking's own link, so the
+  // push runs BEFORE it, within the same overall deadline as the book route
+  // (past it the push carries on detached and the mail says the link will
+  // follow). Someone in the workspace is told when no link exists.
+  const meetPage = !!page && effectiveBookingLocation(page)?.type === "google_meet";
+  let meetingUrl = event.meetingUrl ?? null;
+  if (meetPage) {
+    const got = await pushBookingAndGetMeetUrlWithin(event.id);
+    if (got.meetUrl) meetingUrl = got.meetUrl;
+    if (!meetingUrl) {
+      await recordMeetLinkMissing({
+        contactId: event.contactId,
+        eventId: event.id,
+        agencyId: event.agencyId,
+        subAccountId: event.subAccountId,
+      });
+    }
+  }
+  const where = meetPage && !meetingUrl ? meetLinkToFollow(event.location || "Google Meet video call") : event.location || "";
+  const done = (withheld: boolean) => ({ withheld, pushed: meetPage });
 
   // With `expect`: the address the confirmation would go to now, against
   // the one the approver reviewed. Changed: no confirmation and no reminders.
@@ -272,9 +299,9 @@ async function runMarkPaidSideEffects(args: {
     expect?.stepsFingerprints,
   );
 
-  if (withheld) return true;
-  if (!contact || !sub || !emailIsConfigured(sub)) return false;
-  if (!contact.email || contact.emailOptedOut) return false;
+  if (withheld) return done(true);
+  if (!contact || !sub || !emailIsConfigured(sub)) return done(false);
+  if (!contact.email || contact.emailOptedOut) return done(false);
 
   const publicEventUrl = buildEventPublicUrl(rawToken);
   const rendered = renderBookingConfirmationEmail({
@@ -289,10 +316,9 @@ async function runMarkPaidSideEffects(args: {
     },
     startAt,
     endAt,
-    // The link and place the booking was made with (a Google Meet link
-    // stays the same across a reschedule: the push only moves the event).
-    meetingUrl: event.meetingUrl ?? null,
-    location: event.location || undefined,
+    // The link and place the booking was made with.
+    meetingUrl,
+    location: where || undefined,
     publicEventUrl,
   });
   const appHost =
@@ -306,7 +332,7 @@ async function runMarkPaidSideEffects(args: {
     endAt,
     summary: event.title || page?.name || "Meeting",
     description: page?.confirmationMessage ?? "",
-    location: event.meetingUrl || event.location || "",
+    location: meetingUrl || where,
     method: "REQUEST",
     status: "CONFIRMED",
     sequence: event.icsSequence,
@@ -345,7 +371,7 @@ async function runMarkPaidSideEffects(args: {
         createdBy: "booking",
       })
     ) {
-      return false;
+      return done(false);
     }
     // Fall back to the standard wrapper without ICS so the visitor at
     // least gets the text confirmation.
@@ -365,5 +391,5 @@ async function runMarkPaidSideEffects(args: {
       console.warn("[events/mark-paid] confirmation send failed", err2);
     }
   }
-  return false;
+  return done(false);
 }

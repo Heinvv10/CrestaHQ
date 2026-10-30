@@ -12,6 +12,7 @@ import {
 } from "@/lib/booking/validation";
 import { resolveBookingHosts } from "@/lib/booking/hosts";
 import { meetSetupError } from "@/lib/server/booking-page-write";
+import { effectiveBookingLocation } from "@/lib/booking/location";
 import { isDocId } from "@/lib/server/doc-id";
 import { isCheckoutThemeId } from "@/lib/checkout/themes";
 import { GLOBAL_TERRITORY_ID } from "@/types";
@@ -149,7 +150,8 @@ export async function POST(
       ? source.themePreset
       : null,
     meetingUrl: source.meetingUrl ?? null,
-    location: source.location ?? null,
+    // Derived for a page saved before `location` existed (Meet ticked, or a link).
+    location: effectiveBookingLocation(source),
     confirmationMessage: source.confirmationMessage ?? "",
     redirectUrl: source.redirectUrl ?? null,
     redirectAppendParams: source.redirectAppendParams ?? true,

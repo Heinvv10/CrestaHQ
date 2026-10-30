@@ -32,11 +32,20 @@ export const LOCATION_ADDRESS_MAX = 300;
 /**
  * An address or phone number as stored and shown: plain text on one line.
  * It reaches emails, the .ics invite, reminders and Google, so no markup
- * characters and no control characters (a line break would start a new
- * .ics property in a client that unfolds badly).
+ * characters, no control characters (C0, DEL, C1 — NEL included) and no
+ * Unicode line / paragraph separators: anything a reader could take as a
+ * line break would start a new .ics property.
  */
 export function isPlainLocationText(v: string): boolean {
-  return !/[<>\u0000-\u001f\u007f]/.test(v);
+  return !/[<>\u0000-\u001f\u007f-\u009f\u2028\u2029]/.test(v);
+}
+
+/**
+ * The booker's "Where:" line when a Google Meet booking has no link to send
+ * (no room could be made in time, and the page has no fallback link).
+ */
+export function meetLinkToFollow(locationText: string): string {
+  return `${locationText} (the joining link will follow)`;
 }
 
 /** Types where the business types a value (address / phone number). */

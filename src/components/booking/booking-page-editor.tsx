@@ -347,13 +347,13 @@ export function BookingPageEditor({ mode, initial, initialType }: Props) {
         ok?: boolean;
         error?: string;
         slug?: string;
+        warning?: string;
       };
       if (!res.ok || !data.ok) {
         throw new Error(data.error ?? "Could not save.");
       }
-      toast.success(
-        mode === "new" ? "Booking page created." : "Saved.",
-      );
+      if (data.warning) toast.warning(data.warning);
+      else toast.success(mode === "new" ? "Booking page created." : "Saved.");
       if (mode === "new") {
         router.push(saPath(`/booking/${data.slug ?? form.slug}`));
       }
