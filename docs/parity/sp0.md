@@ -38,7 +38,9 @@ live on crm.crestahq.com instead of on GoHighLevel.
 3. **CI gets its env from GitHub Actions repository secrets.** Rotatable in one
    place, masked in logs, and visible to anyone reading the workflow.
    `ci.yml` already refuses fork PRs (`head.repo.full_name == github.repository`),
-   so no outside PR can reach them on the self-hosted runner.
+   so no outside PR can reach them. The full E2E set is only ever handed to the
+   E2E job on the self-hosted runner; the GitHub-hosted `ci` job gets just the
+   three `FIREBASE_ADMIN_*` secrets, for `pnpm test:rules`.
 
 4. **The E2E identity is an agency owner — of its own dedicated E2E agency.**
    Owner rights are needed for the sub-account-switch spec, which requires more

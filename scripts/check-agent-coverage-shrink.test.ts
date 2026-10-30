@@ -151,9 +151,9 @@ describe("check-agent-coverage-shrink CLI", () => {
     expect(ci).toContain(`group: ci-fast-${unique}`);
     expect(ci).toContain(`group: ci-secrets-${unique}`);
     expect(ci).toContain(`group: ci-e2e-${unique}`);
-    const draftHelper = ci.slice(ci.indexOf("  replace_pending_e2e_on_draft:"), ci.indexOf("\n  ci:"));
+    const draftHelper = ci.slice(ci.indexOf("\n  replace_pending_e2e_on_draft:"), ci.indexOf("\n  ci:"));
     expect(draftHelper).toMatch(/group: ci-e2e-.*\n\s+cancel-in-progress: false/);
-    const e2e = ci.slice(ci.indexOf("  e2e:"));
+    const e2e = ci.slice(ci.indexOf("\n  e2e:\n"));
     expect(e2e).toMatch(/group: ci-e2e-.*\n\s+cancel-in-progress: false/);
   });
 
@@ -161,10 +161,14 @@ describe("check-agent-coverage-shrink CLI", () => {
     const wf = (f: string) => fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", f), "utf8");
     const e2eLabel = "runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]";
     const ci = wf("ci.yml");
-    const e2e = ci.slice(ci.indexOf("  e2e:"));
+    const e2e = ci.slice(ci.indexOf("\n  e2e:\n"));
+    const hosted = ci.slice(ci.indexOf("\n  ci:\n"), ci.indexOf("\n  e2e:\n"));
     expect(e2e).toContain(e2eLabel);
-    expect(ci.slice(ci.indexOf("\n  ci:"), ci.indexOf("  e2e:")).match(/runs-on: ubuntu-latest/g)).toHaveLength(2);
-    expect(ci.slice(ci.indexOf("\n  ci:"), ci.indexOf("  e2e:"))).not.toContain("runs-on: [self-hosted");
+    expect(hosted.match(/runs-on: ubuntu-latest/g)).toHaveLength(2);
+    expect(hosted).not.toContain("runs-on: [self-hosted");
+    // The self-hosted runner has no sudo, so --with-deps (an apt step) must stay off these jobs.
+    expect(e2e).not.toMatch(/install --with-deps/);
+    expect(wf("e2e-smoke.yml")).not.toMatch(/install --with-deps/);
     expect(wf("e2e-smoke.yml")).toContain(e2eLabel);
     for (const f of ["wa-manager.yml", "wa-agent-bridge.yml", "agent-coverage-shrink.yml"]) {
       expect(wf(f)).toContain("runs-on: ubuntu-latest");
