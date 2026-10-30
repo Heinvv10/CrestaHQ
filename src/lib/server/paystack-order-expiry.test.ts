@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { flushAfterResponse } from "@/lib/server/after-response";
+import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 
 import {
   KEY,
@@ -133,14 +134,6 @@ describe("an abandoned buy", () => {
     expect(order(1)).toMatchObject({ status: "pending", attentionOpen: true });
   });
 
-  it("an attempt opened with a key the workspace no longer holds is not this sweep's to judge", async () => {
-    seedBuy(1);
-    seedSub(SA, OTHER_KEY);
-    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 0, expired: 0 });
-    expect(calls).toHaveLength(0);
-    expect(attempt(1)).toMatchObject({ state: "open" });
-  });
-
   it("is a no-op the second time", async () => {
     seedBuy(1);
     await expireStalePaystackOrders(NOW);
@@ -179,6 +172,95 @@ describe("a stuck attempt", () => {
     await expireStalePaystackOrders(NOW);
     expect(order(31)).toMatchObject({ status: "expired" });
     for (let i = 1; i <= 30; i += 1) expect(attempt(i)).toMatchObject({ state: "refused" });
+  });
+});
+
+describe("an attempt whose key is no longer the workspace's", () => {
+  const closedWithoutAsking = () => {
+    expect(calls).toHaveLength(0);
+    expect(attempt(1)).toMatchObject({ state: "refused" });
+  };
+
+  it("open and past 24 h after a key change: the order is expired and the attempt closed, Paystack never asked", async () => {
+    seedBuy(1);
+    seedSub(SA, OTHER_KEY);
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 0, expired: 1, retired: 1 });
+    expect(order(1)).toMatchObject({ status: "expired" });
+    closedWithoutAsking();
+    expect(attempt(1).reason).toMatch(/no longer connected/);
+  });
+
+  it("also after a disconnect", async () => {
+    seedBuy(1);
+    await mem.db.doc(`subAccounts/${SA}/private/paystackConnection`).delete();
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ expired: 1, retired: 1 });
+    expect(order(1)).toMatchObject({ status: "expired" });
+    closedWithoutAsking();
+  });
+
+  it("under 24 h it waits", async () => {
+    seedBuy(1, new Date(NOW.getTime() - 22 * HOUR));
+    seedSub(SA, OTHER_KEY);
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ expired: 0, retired: 0 });
+    expect(attempt(1)).toMatchObject({ state: "open" });
+  });
+
+  it("flagged by the key change and past 24 h: expired too, with the order's flag kept", async () => {
+    seedBuy(1, new Date(NOW.getTime() - 2 * HOUR));
+    seedSub(SA, OTHER_KEY);
+    await flagStaleAttempts(SA, paystackKeyFingerprint(OTHER_KEY));
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
+    expect(order(1)).toMatchObject({ attentionOpen: true });
+    const flag = order(1).attention;
+
+    expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 20 * HOUR))).toMatchObject({ retired: 0 });
+    expect(order(1)).toMatchObject({ status: "pending" });
+
+    expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 23 * HOUR))).toMatchObject({ expired: 1, retired: 1 });
+    expect(order(1)).toMatchObject({ status: "expired", attentionOpen: true, attention: flag });
+    closedWithoutAsking();
+    expect(attempt(1).reason).toContain("Closed after 24 h");
+    // The flagged note is kept on the attempt too.
+    expect(attempt(1).reason).toContain(String(flag));
+  });
+
+  it("a late payment on the expired order is still flagged for a refund", async () => {
+    seedBuy(1, new Date(NOW.getTime() - 2 * HOUR));
+    seedSub(SA, OTHER_KEY);
+    await flagStaleAttempts(SA, paystackKeyFingerprint(OTHER_KEY));
+    await expireStalePaystackOrders(new Date(NOW.getTime() + 23 * HOUR));
+    seedSub(SA, KEY);
+    const { reconcilePaystackCharge } = await import("@/lib/paystack/payment-link-reconciler");
+    verifyAnswer = (reference) => verified({ reference, status: "success", amount: 49_900 });
+    await reconcilePaystackCharge({ subAccountId: SA, secretKey: KEY, reference: "po-ord1" });
+    expect(order(1)).toMatchObject({ status: "expired", attentionOpen: true });
+    expect(order(1).attention).toMatch(/already expired/);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("a held order is never expired this way: money arrived for it", async () => {
+    seedBuy(1, OLD, { heldAt: new Date(), attention: "Held", attentionOpen: true });
+    mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Held" });
+    seedSub(SA, OTHER_KEY);
+    await expireStalePaystackOrders(NOW);
+    expect(order(1)).toMatchObject({ status: "pending" });
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
+  });
+
+  it("a flagged attempt still on the workspace's current key is left alone (a held mismatch, a late payment)", async () => {
+    seedBuy(1);
+    mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Mismatch" });
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ retired: 0, expired: 0 });
+    expect(order(1)).toMatchObject({ status: "pending" });
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
+  });
+
+  it("a flagged attempt beside a failed order is a recorded late payment: left alone", async () => {
+    seedBuy(1, OLD, { status: "failed", attention: "Paid, but failed", attentionOpen: true });
+    mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Paid, but failed" });
+    seedSub(SA, OTHER_KEY);
+    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ retired: 0 });
+    expect(attempt(1)).toMatchObject({ state: "flagged" });
   });
 });
 
@@ -233,13 +315,6 @@ describe("the run's summary", () => {
     seedBuy(2);
     expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 2, expired: 1 });
     expect(order(1)).toMatchObject({ status: "pending" });
-  });
-
-  it("counts attempts skipped for their key, apart from the Paystack calls", async () => {
-    seedBuy(1);
-    seedBuy(2);
-    seedSub(SA, OTHER_KEY);
-    expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 0, skipped: 2, errors: 0 });
   });
 
   it("some asks failing is reported, not thrown", async () => {

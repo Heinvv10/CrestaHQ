@@ -11,6 +11,7 @@ import { readPaystackConnectionSecret } from "@/lib/paystack/sub-account-client"
 import type { PaystackConnectionSecret } from "@/types/paystack-connection";
 import { isNotFound } from "@/lib/paystack/verify-answer";
 import { markOrderExpired } from "@/lib/server/product-link-orders";
+import { expireOrderKeepingFlag } from "@/lib/server/product-link-paystack-orders";
 import { toDate } from "@/lib/server/recurring-invoice-cycle";
 import type { PaymentAttempt } from "@/types/payment-attempts";
 
@@ -33,6 +34,9 @@ import type { PaymentAttempt } from "@/types/payment-attempts";
  *                                              the same way, so a stuck one
  *                                              cannot hold a place for ever;
  *   no answer                                → left for the next run.
+ * An attempt (open, or flagged by a connection change) whose key is no longer
+ * the workspace's can't be asked: past 24 h its order is expired and the
+ * attempt closed without calling Paystack, the order's attention note kept.
  * An expired order is terminal: a payment that still lands is flagged by the
  * reconciler, never dropped. Bounded: at most `EXPIRY_BATCH` Paystack calls and
  * `BUDGET_MS` per run; the oldest go first. An attempt skipped for its key or
@@ -66,14 +70,35 @@ export function isPastOrderLifetime(createdAt: unknown, now = Date.now(), lifeti
   return !!at && now - at.getTime() >= lifetimeMs;
 }
 
-/** Only ever open → refused: a payment may have settled the attempt meanwhile. */
-async function refuseAttempt(reference: string, reason: string): Promise<void> {
+/** Only ever open (or flagged, where the caller says so) → refused: a payment may have settled the attempt meanwhile. */
+async function refuseAttempt(reference: string, reason: string, from: PaymentAttempt["state"][] = ["open"]): Promise<void> {
   const db = getAdminDb();
   const ref = db.doc(`paymentAttempts/${reference}`);
   await db.runTransaction(async (t) => {
-    if (((await t.get(ref)).data() as PaymentAttempt | undefined)?.state !== "open") return;
+    const state = ((await t.get(ref)).data() as PaymentAttempt | undefined)?.state;
+    if (!state || !from.includes(state)) return;
     t.update(ref, { state: "refused", reason, updatedAt: FieldValue.serverTimestamp() });
   });
+}
+
+/**
+ * A buy-page attempt (open or flagged) past 24 h whose key is no longer the
+ * workspace's: Paystack can't be asked, so close it without asking. The
+ * order's attention note stays (see `expireOrderKeepingFlag`).
+ */
+async function retireOldKeyAttempt(attempt: PaymentAttempt, summary: PaystackOrderExpirySummary): Promise<void> {
+  if (!attempt.orderId) return;
+  const outcome = await expireOrderKeepingFlag(attempt.orderId);
+  // A flagged attempt next to an already-closed order is a recorded late
+  // payment: left as it is.
+  if (outcome === "keep" || (outcome === "closed" && attempt.state !== "open")) return;
+  if (outcome === "expired") summary.expired += 1;
+  summary.retired += 1;
+  await refuseAttempt(
+    attempt.id,
+    `${attempt.reason ? `${attempt.reason} ` : ""}Closed after 24 h: the key this checkout was opened with is no longer connected.`,
+    ["open", "flagged"],
+  );
 }
 
 export interface PaystackOrderExpirySummary {
@@ -86,8 +111,10 @@ export interface PaystackOrderExpirySummary {
   errors: number;
   /** Workspaces whose key Paystack rejected (401/403) this run: reported, not an error. */
   keyRejected: string[];
-  /** Skipped for a key the workspace no longer holds, or no connection. */
+  /** Skipped for a workspace's attempts that keep not resolving this run. */
   skipped: number;
+  /** Attempts closed without asking Paystack: opened with a key no longer connected. */
+  retired: number;
   /** Not started because the run's time budget was spent. */
   overBudget: number;
 }
@@ -110,6 +137,7 @@ export async function expireStalePaystackOrders(
     errors: 0,
     keyRejected: [],
     skipped: 0,
+    retired: 0,
     overBudget: 0,
   };
   // Oldest first, so one workspace's attempts that never resolve (a revoked
@@ -137,7 +165,12 @@ export async function expireStalePaystackOrders(
       if (!connections.has(sa)) connections.set(sa, await readPaystackConnectionSecret(sa));
       const conn = connections.get(sa);
       if (!conn || paystackKeyFingerprint(conn.secretKey) !== attempt.keyFingerprint) {
-        summary.skipped += 1;
+        try {
+          await retireOldKeyAttempt(attempt, summary);
+        } catch (err) {
+          summary.errors += 1;
+          console.error(`[paystack/order-expiry] ref=${attempt.id} not retired: ${err instanceof Error ? err.message : String(err)}`);
+        }
         continue;
       }
       if (Date.now() - startedAt >= budgetMs) {
@@ -176,6 +209,7 @@ export async function expireStalePaystackOrders(
     if (snap.size < PAGE) break;
     cursor = snap.docs[snap.docs.length - 1];
   }
+  await retireFlaggedOldKeyAttempts(now, connections, summary, startedAt, budgetMs);
   // A real Paystack outage: every ask failed (network, timeout, 5xx), across
   // more than one workspace. One workspace's trouble is reported, not thrown:
   // a 500 makes QStash retry ALL of daily-housekeeping.
@@ -183,6 +217,49 @@ export async function expireStalePaystackOrders(
     throw new Error(`paystack-order-expiry: all ${summary.checked} Paystack ask(s) failed across ${askedWorkspaces.size} workspaces`);
   }
   return summary;
+}
+
+/**
+ * The flagged side of `retireOldKeyAttempt`: attempts a connection change
+ * flagged ("may have paid, not recorded") whose order is still pending 24 h
+ * later. Same index as the open query. Asks Paystack nothing, so no quota.
+ */
+async function retireFlaggedOldKeyAttempts(
+  now: Date,
+  connections: Map<string, PaystackConnectionSecret | null>,
+  summary: PaystackOrderExpirySummary,
+  startedAt: number,
+  budgetMs: number,
+): Promise<void> {
+  const flagged = getAdminDb()
+    .collection("paymentAttempts")
+    .where("state", "==", "flagged")
+    .where("paymentLinkId", "==", "")
+    .where("createdAt", "<=", new Date(now.getTime() - PAYSTACK_ORDER_LIFETIME_MS))
+    .orderBy("createdAt");
+  let cursor: QueryDocumentSnapshot | null = null;
+  for (let page = 0; page < MAX_PAGES; page += 1) {
+    const snap = await (cursor ? flagged.startAfter(cursor) : flagged).limit(PAGE).get();
+    for (const doc of snap.docs) {
+      if (Date.now() - startedAt >= budgetMs) return;
+      const attempt = { ...doc.data(), id: doc.id } as PaymentAttempt;
+      if (!attempt.orderId) continue;
+      if (!connections.has(attempt.subAccountId)) {
+        connections.set(attempt.subAccountId, await readPaystackConnectionSecret(attempt.subAccountId));
+      }
+      const conn = connections.get(attempt.subAccountId);
+      // Still the workspace's key (a held mismatch, a late payment): not ours.
+      if (conn && paystackKeyFingerprint(conn.secretKey) === attempt.keyFingerprint) continue;
+      try {
+        await retireOldKeyAttempt(attempt, summary);
+      } catch (err) {
+        summary.errors += 1;
+        console.error(`[paystack/order-expiry] ref=${attempt.id} not retired: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (snap.size < PAGE) return;
+    cursor = snap.docs[snap.docs.length - 1];
+  }
 }
 
 /**

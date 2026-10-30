@@ -117,3 +117,26 @@ export async function recoverFlaggedOrder(
     tx.update(ref, { attention: `${order.attention}\n${note}`, updatedAt: FieldValue.serverTimestamp() });
   });
 }
+
+/**
+ * The key a buy-page attempt was opened with is gone and 24 h have passed, so
+ * Paystack can no longer be asked about it. Expire the order WITHOUT dropping
+ * its `attention` note (a flag from the connection change stays, and a payment
+ * that still lands is flagged for a refund by the reconciler). A held order is
+ * never touched: money arrived for it.
+ *  - "expired": it was pending and unheld, now expired;
+ *  - "closed": it was already expired or failed;
+ *  - "keep": anything else (held, paid, missing): leave it alone.
+ */
+export async function expireOrderKeepingFlag(orderId: string): Promise<"expired" | "closed" | "keep"> {
+  const db = getAdminDb();
+  const ref = db.doc(`orders/${orderId}`);
+  return db.runTransaction(async (tx) => {
+    const order = (await tx.get(ref)).data() as Partial<Order> | undefined;
+    if (!order || order.source !== "product_link" || order.heldAt) return "keep" as const;
+    if (order.status === "expired" || order.status === "failed") return "closed" as const;
+    if (order.status !== "pending") return "keep" as const;
+    tx.update(ref, { status: "expired", updatedAt: FieldValue.serverTimestamp() });
+    return "expired" as const;
+  });
+}
