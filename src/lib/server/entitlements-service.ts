@@ -3,7 +3,13 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { DeliveryError, deliverCommunity, deliverDownload } from "@/lib/server/entitlement-delivery";
+import {
+  DeliveryError,
+  DeliveryWithdrawn,
+  deliverCommunity,
+  deliverDownload,
+} from "@/lib/server/entitlement-delivery";
+import { orderDeliverable, orderDelivers } from "@/lib/products/order-delivery";
 import { confirmationDownloads } from "@/lib/server/order-confirmation-service";
 import type { Entitlement } from "@/types/entitlements";
 import type { Order, OrderDeliverySnapshot } from "@/types/orders";
@@ -27,27 +33,10 @@ const CLAIM_LEASE_MS = 2 * 60_000;
 
 type Delivery = OrderDeliverySnapshot["delivery"];
 
+export { orderDeliverable, orderDelivers };
+
 export function entitlementId(orderId: string, productId: string): string {
   return `${orderId}_${productId}`;
-}
-
-/** Only express buy links deliver; invoices, deposits and community orders carry their own effects. */
-export function orderDelivers(order: Pick<Order, "source">): boolean {
-  return order.source === "product_link";
-}
-
-/**
- * Whether the order, as it stands, is owed its delivery: paid (or only partly
- * refunded), not held, and not flagged for a person. A resolved flag
- * (`attentionOpen === false`) no longer blocks, so staff can re-send once they
- * have looked.
- */
-export function orderDeliverable(order: Order): boolean {
-  if (!orderDelivers(order)) return false;
-  if (order.status !== "paid" && order.status !== "partially_refunded") return false;
-  if (order.heldAt) return false;
-  if (order.attention && order.attentionOpen !== false) return false;
-  return true;
 }
 
 function reason(err: unknown): string {
@@ -91,6 +80,13 @@ export async function grantForOrder(
       ? new Set(confirmationDownloads(order).map((d) => d.productId))
       : new Set<string>();
   const errors: string[] = [];
+  // Asked right before anything is mailed: a refund, hold or flag can land
+  // between the claim and the send.
+  const stillOwed = async (): Promise<boolean> => {
+    const cur = await db.doc(`orders/${order.id}`).get();
+    const now = { id: cur.id, ...(cur.data() as Omit<Order, "id">) };
+    return orderDeliverable(now);
+  };
 
   for (const d of order.deliveries ?? []) {
     const productName =
@@ -115,6 +111,7 @@ export async function grantForOrder(
           email,
           productName,
           productId: d.productId,
+          stillOwed,
         });
         memberId = res.memberId;
         if (res.problem) throw new DeliveryError(res.problem);
@@ -126,6 +123,7 @@ export async function grantForOrder(
           email,
           productName,
           skipEmail: carried.has(d.productId),
+          stillOwed,
         });
       }
       await ref.update({
@@ -141,6 +139,11 @@ export async function grantForOrder(
         deliveredText(productName, d.delivery, email, carried.has(d.productId)),
       );
     } catch (err) {
+      if (err instanceof DeliveryWithdrawn) {
+        await withdraw(ref, order, productName, err.memberId ?? memberId);
+        summary.skipped += 1;
+        continue;
+      }
       const message =
         err instanceof DeliveryError
           ? err.message
@@ -232,6 +235,38 @@ async function claimDelivery(
     tx.update(ref, { fulfilment: { ...sending, memberId: f?.memberId ?? null } });
     return "claimed";
   });
+}
+
+/**
+ * The order stopped being payable between the claim and the email: nothing
+ * was mailed, so the entitlement is revoked and cannot be re-sent. Access
+ * already given stays until staff remove it (as for any refund).
+ */
+async function withdraw(
+  ref: FirebaseFirestore.DocumentReference,
+  order: Order,
+  productName: string,
+  memberId: string | null,
+): Promise<void> {
+  try {
+    await ref.update({
+      status: "revoked",
+      revokedAt: FieldValue.serverTimestamp(),
+      fulfilment: {
+        state: "failed",
+        error: "The order was refunded, held or flagged before the email went out.",
+        at: Date.now(),
+        memberId,
+      },
+    });
+  } catch (err) {
+    console.error(`[entitlements] withdraw write failed order=${order.id}: ${reason(err)}`);
+  }
+  await writeActivity(
+    order,
+    "delivery_revoked",
+    `${productName} was not delivered: the order was refunded, held or flagged before the email went out.`,
+  );
 }
 
 function deliveredText(

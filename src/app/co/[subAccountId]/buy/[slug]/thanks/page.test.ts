@@ -61,6 +61,36 @@ describe("with the order's own token", () => {
     expect(html).toContain(`href="${DOWNLOAD}"`);
   });
 
+  describe("community product", () => {
+    const COMMUNITY = [{ productId: "p1", delivery: { type: "community", communityGroupId: "g1", courseId: null } }];
+    beforeEach(() => {
+      mem.seed(`subAccounts/${SA}/communityGroups/g1`, { subAccountId: SA, agencyId: "ag1", name: "Fibre <Club>" });
+    });
+
+    it("paid: tells the buyer to check their email for a sign-in link to the community (escaped)", async () => {
+      mem.seed("orders/o1", { ...ORDER, deliveries: COMMUNITY });
+      const html = await render({ order: "o1", t: TOKEN });
+      expect(html).toContain("Check your email for a sign-in link to Fibre &lt;Club&gt;.");
+      expect(html).not.toContain("We&#x27;ll be in touch shortly");
+    });
+
+    it("says nothing about a sign-in link while pending, after a recorded failure, or without mail", async () => {
+      const line = "Check your email for a sign-in link";
+      mem.seed("orders/o1", { ...ORDER, deliveries: COMMUNITY, status: "pending" });
+      expect(await render({ order: "o1", t: TOKEN })).not.toContain(line);
+      mem.seed("orders/o1", { ...ORDER, deliveries: COMMUNITY, deliveryStatus: { state: "failed", error: "banned", at: 1 } });
+      expect(await render({ order: "o1", t: TOKEN })).not.toContain(line);
+      mem.seed("orders/o1", { ...ORDER, deliveries: COMMUNITY });
+      delete process.env.RESEND_API_KEY;
+      expect(await render({ order: "o1", t: TOKEN })).not.toContain(line);
+    });
+
+    it("a wrong token shows nothing of it", async () => {
+      mem.seed("orders/o1", { ...ORDER, deliveries: COMMUNITY });
+      expect(await render({ order: "o1", t: "B".repeat(43) })).not.toContain("sign-in link");
+    });
+  });
+
   it("pending: processing, no download even though the URL is right", async () => {
     mem.seed("orders/o1", { ...ORDER, status: "pending" });
     const html = await render({ order: "o1", t: TOKEN });

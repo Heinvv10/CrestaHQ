@@ -383,12 +383,22 @@ async function handleChargeRefunded(
   });
 
   // Only a full refund revokes; community access stays until staff remove it.
+  // A replay of this event finds the refund recorded and stops above, so a
+  // failed revoke is never retried: flag the order so staff see it.
   if (updated.status === "refunded" && orderDelivers(updated)) {
-    await revokeForOrder(updated).catch((err: unknown) =>
+    await revokeForOrder(updated).catch(async (err: unknown) => {
       console.error(
         `[order-reconciler] revoke failed order=${updated.id}: ${err instanceof Error ? err.message : String(err)}`,
-      ),
-    );
+      );
+      await flagOrderAttention(
+        updated,
+        "Refunded, but the buyer's delivery could not be marked revoked. Check the order's deliveries, and remove any community access by hand.",
+      ).catch((flagErr: unknown) =>
+        console.error(
+          `[order-reconciler] revoke-failure flag failed order=${updated.id}: ${flagErr instanceof Error ? flagErr.message : String(flagErr)}`,
+        ),
+      );
+    });
   }
 
   return { handled: true, detail: `order ${updated.id} ${updated.status}` };

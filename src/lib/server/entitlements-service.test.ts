@@ -145,23 +145,23 @@ describe("community grant", () => {
     expect(mail.subject).toBe("Your access to Fibre club");
     // The link is a real, group-scoped, 24-hour magic link for THIS buyer.
     const token = new URL(mail.text.match(/https:\/\/\S+/)![0]).searchParams.get("token")!;
-    expect(verifyMemberMagicLinkToken(token)).toEqual({
-      subAccountId: SA,
-      email: "buyer@example.com",
-      joinGroupId: "g1",
-    });
-    const { exp } = JSON.parse(Buffer.from(token.split(".")[0], "base64url").toString()) as { exp: number };
-    expect(exp - Date.now()).toBeGreaterThan(23 * 60 * 60 * 1000);
+    const verified = verifyMemberMagicLinkToken(token)!;
+    expect(verified).toMatchObject({ subAccountId: SA, email: "buyer@example.com", joinGroupId: "g1" });
+    expect(verified.exp - Date.now()).toBeGreaterThan(23 * 60 * 60 * 1000);
   });
 
-  it("the sign-in email is sent against the buyer's contact", async () => {
+  it("the delivery is recorded on the buyer's contact timeline", async () => {
     seedOrder({ contactId: "c1" });
     await grantForOrder(target);
-    expect(sendEmail.mock.calls[0][0]).toMatchObject({ contactId: "c1" });
     expect(entitlement()).toMatchObject({ contactId: "c1" });
     expect(mem.list("contacts/c1/activities")).toEqual([
       expect.objectContaining({ type: "product_delivered", meta: { orderId: "ord1" } }),
     ]);
+  });
+
+  it("the sign-in email is not archived to Conversations (its link is a live sign-in)", async () => {
+    await grantForOrder(target);
+    expect(sendEmail.mock.calls[0][0]).toMatchObject({ archive: false });
   });
 
   it("a replay produces one grant: one entitlement, one purchase, one member count, one email", async () => {
@@ -280,6 +280,63 @@ describe("no grant unless the order is owed one", () => {
     expect(mem.list("entitlements")).toHaveLength(0);
     expect(purchases()).toHaveLength(0);
     expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  // A refund can land after the claim, while the grant is half done. Whatever
+  // happens first after `when` fires, the order is refunded; nothing may be mailed.
+  function refundWhen(when: (path: string, n: number) => boolean) {
+    const real = mem.db.doc;
+    const reads = new Map<string, number>();
+    let flipped = false;
+    const spy = vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+      const n = (reads.get(path) ?? 0) + 1;
+      reads.set(path, n);
+      if (!flipped && when(path, n)) {
+        flipped = true;
+        mem.seed("orders/ord1", { ...order(), status: "refunded", refundedCents: 49_900 });
+      }
+      return real(path);
+    });
+    return { flipped: () => flipped, restore: () => spy.mockRestore() };
+  }
+
+  it("a refund that lands after the claim, before the community email: nothing mailed, entitlement revoked", async () => {
+    const race = refundWhen((p) => /\/memberships\//.test(p));
+    const summary = await grantForOrder(target);
+
+    expect(race.flipped()).toBe(true);
+    expect(summary).toEqual({ delivered: 0, failed: 0, skipped: 1 });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(entitlement()).toMatchObject({ status: "revoked", subAccountId: SA });
+    expect(order().deliveryStatus ?? null).toBeNull();
+    // A later re-send must not deliver it either.
+    race.restore();
+    seedOrder({ status: "paid" });
+    expect(await grantForOrder(target, { resend: true })).toEqual({ delivered: 0, failed: 0, skipped: 1 });
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("a refund that lands after the claim, before the download email: nothing mailed, entitlement revoked", async () => {
+    seedOrder({ deliveries: [{ productId: "p1", delivery: { type: "download", url: DOWNLOAD, label: "Get it" } }] });
+    // orders/ord1 is opened for the first read, the claim, then the pre-send check.
+    const race = refundWhen((p, n) => p === "orders/ord1" && n === 3);
+    const summary = await grantForOrder(target);
+
+    expect(race.flipped()).toBe(true);
+    expect(summary).toEqual({ delivered: 0, failed: 0, skipped: 1 });
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(entitlement()).toMatchObject({ status: "revoked" });
+  });
+
+  it("a hold or flag that lands before the email also stops it", async () => {
+    const real = mem.db.doc;
+    vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+      if (/\/memberships\//.test(path)) mem.seed("orders/ord1", { ...order(), attention: "Flagged.", attentionOpen: true });
+      return real(path);
+    });
+    await grantForOrder(target);
+    expect(sendEmail).not.toHaveBeenCalled();
+    expect(entitlement()).toMatchObject({ status: "revoked" });
   });
 
   it("another sub-account's id grants nothing", async () => {

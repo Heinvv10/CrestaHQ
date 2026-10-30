@@ -28,13 +28,22 @@ import type { SubAccountDoc } from "@/types/tenancy";
 export const PRODUCT_GRANTOR = "system:product-order";
 /**
  * Purchase emails are often opened hours later, so the link outlives the usual
- * 15 minutes. Links aren't single use, so keep this short.
+ * 15 minutes. It is still single use (the verify route records the sign-in
+ * until the link has expired), so a day is the longest a forwarded or leaked
+ * email stays live.
  */
 const DELIVERY_LINK_TTL_MS = 24 * 60 * 60 * 1000;
 
 type Delivery = OrderDeliverySnapshot["delivery"];
 
 export class DeliveryError extends Error {}
+
+/** The order stopped being owed its delivery just before the email: nothing is sent. */
+export class DeliveryWithdrawn extends Error {
+  constructor(readonly memberId: string | null = null) {
+    super("The order is no longer deliverable.");
+  }
+}
 
 function appUrl(): string {
   return (process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
@@ -47,6 +56,7 @@ export async function deliverCommunity(input: {
   email: string;
   productName: string;
   productId: string;
+  stillOwed: () => Promise<boolean>;
 }): Promise<{ memberId: string; problem?: string }> {
   const { order, sub, delivery, email, productName, productId } = input;
   const saId = order.subAccountId;
@@ -113,6 +123,8 @@ export async function deliverCommunity(input: {
     };
   }
 
+  if (!(await input.stillOwed())) throw new DeliveryWithdrawn(member.id);
+
   const token = signMemberMagicLinkToken(saId, email, group.id, DELIVERY_LINK_TTL_MS);
   const link = `${appUrl()}/api/community/${saId}/login/verify?token=${encodeURIComponent(token)}`;
   const mail = renderCommunityAccessEmail({
@@ -127,7 +139,9 @@ export async function deliverCommunity(input: {
     from: tenantFrom(sub),
     subAccount: sub,
     meter: { subAccountId: saId },
-    contactId: order.contactId ?? undefined,
+    // The link is a live sign-in as the buyer: never write it to the
+    // contact's Conversations thread, where any staff member could use it.
+    archive: false,
     ...mail,
   });
   return { memberId: member.id };
@@ -140,6 +154,7 @@ export async function deliverDownload(input: {
   email: string;
   productName: string;
   skipEmail: boolean;
+  stillOwed: () => Promise<boolean>;
 }): Promise<void> {
   const { order, sub, delivery, email, productName } = input;
   if (!isSafeSocialUrl(delivery.url)) {
@@ -151,6 +166,7 @@ export async function deliverDownload(input: {
       "Email isn't set up, so the link wasn't emailed. The buyer saw it on the thank-you page.",
     );
   }
+  if (!(await input.stillOwed())) throw new DeliveryWithdrawn();
   const mail = renderDownloadEmail({ productName, business: sub.name || "us", delivery });
   await sendEmail({
     to: email,

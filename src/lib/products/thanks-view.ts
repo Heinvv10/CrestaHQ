@@ -14,6 +14,8 @@ import type { Order } from "@/types/orders";
  *    order's own snapshot, public https only) shows unless the order is
  *    flagged.
  *  - `confirmationEmailed`: claim an email only when one can be sent.
+ *  - `communityGroupId`: a paid community product promises a sign-in email, so
+ *    only when one can be sent and the delivery hasn't recorded a failure.
  */
 
 export type ThanksState = "unknown" | "held" | "processing" | "expired" | "closed" | "paid";
@@ -23,6 +25,7 @@ export interface ThanksView {
   partiallyRefunded: boolean;
   download: { url: string; label: string } | null;
   confirmationEmailed: boolean;
+  communityGroupId: string | null;
 }
 
 export function thanksView(order: Order | null, emailConfigured: boolean): ThanksView {
@@ -53,6 +56,13 @@ export function thanksView(order: Order | null, emailConfigured: boolean): Thank
     state,
     partiallyRefunded: state === "paid" && order?.status === "partially_refunded",
     download,
+    communityGroupId:
+      state === "paid" &&
+      emailConfigured &&
+      delivery?.type === "community" &&
+      order?.deliveryStatus?.state !== "failed"
+        ? delivery.communityGroupId
+        : null,
     confirmationEmailed:
       state === "paid" && emailConfigured && order?.confirmationEmail?.state !== "failed",
   };

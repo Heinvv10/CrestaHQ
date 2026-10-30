@@ -34,7 +34,11 @@ interface EnsureMemberInput {
  * Idempotently get-or-create a member identity for `email` in this sub-account,
  * reconciling it to a CRM contact along the way (joining the community doubles
  * as lead capture). Called at magic-link VERIFY time — never at request time —
- * so a member doc only ever exists for an email whose owner clicked the link.
+ * so a login request alone never creates a member doc. The one other caller is
+ * the paid product-order delivery (`entitlements-service`), which creates a
+ * member from the email the BUYER typed at checkout, unverified: whoever pays
+ * can make a member for any address. That only grants what the payment bought;
+ * signing in still needs a magic link sent to that address.
  *
  * Contact reconciliation: reuse an existing contact matched by email within the
  * sub-account, otherwise create one (`source: "community"`) via the same

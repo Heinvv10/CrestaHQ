@@ -318,4 +318,22 @@ describe("delivery (entitlements)", () => {
     expect(mem.read("entitlements/o1_p1")).toMatchObject({ status: "revoked" });
     expect(mem.list(`subAccounts/${SA}/communityGroups/g1/memberships`)).toHaveLength(1);
   });
+
+  it("a revoke that fails is logged at error level and flags the order for staff (the refund is already recorded)", async () => {
+    communityOrder();
+    await deliver("checkout.session.completed", paid());
+    await flushAfterResponse();
+    const real = mem.db.doc;
+    vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+      if (path.startsWith("entitlements/")) throw new Error("firestore unavailable");
+      return real(path);
+    });
+    const res = await deliver("charge.refunded", { id: "ch_1", object: "charge", payment_intent: "pi_cs_o1", amount_refunded: 49_900, currency: "usd" }, "evt_r1");
+
+    expect(res.status).toBe(200);
+    expect(mem.read("orders/o1")).toMatchObject({ status: "refunded", attentionOpen: true });
+    expect(mem.read("orders/o1")!.attention).toMatch(/could not be marked revoked/);
+    expect(mem.read("entitlements/o1_p1")).toMatchObject({ status: "active" });
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("revoke failed order=o1: firestore unavailable"));
+  });
 });

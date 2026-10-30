@@ -298,6 +298,8 @@ export default function ReportsPage() {
             orders={orders}
             rangeCutoff={rangeCutoff}
             currency={currency}
+            subAccountId={subAccountId}
+            canManage={isAdmin}
           />
         </>
       ) : tab === "stages" ? (

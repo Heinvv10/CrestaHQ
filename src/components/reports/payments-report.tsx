@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 
 import { BarChart, DonutChart } from "@/components/reports/charts";
+import { OrderDeliveryCell } from "@/components/reports/order-delivery-cell";
 import { formatCurrency, toDate } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { Order, OrderSource, OrderStatus } from "@/types/orders";
@@ -70,8 +71,13 @@ export function PaymentsReport({
   orders,
   rangeCutoff,
   currency,
+  subAccountId,
+  canManage = false,
 }: {
   orders: Order[];
+  subAccountId: string;
+  /** Sub-account admins and the agency owner: shows "Re-send delivery". */
+  canManage?: boolean;
   /** Epoch ms; 0 = all time. Matches the Overview tab's range control,
    *  which passes a timestamp rather than a Date. */
   rangeCutoff: number;
@@ -394,6 +400,7 @@ export function PaymentsReport({
                             {o.attention}
                           </span>
                         )}
+                        <OrderDeliveryCell order={o} subAccountId={subAccountId} canManage={canManage} />
                       </td>
                       <td className="py-2.5 text-right whitespace-nowrap font-medium">
                         {formatCurrency(
