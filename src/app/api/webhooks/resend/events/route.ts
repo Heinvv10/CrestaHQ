@@ -38,9 +38,11 @@ const DELIVERY_MARKER_TTL_MS = 24 * 3_600_000;
  * Fails closed: 503 with no RESEND_WEBHOOK_SECRET, 413 over the cap (checked
  * before hashing), 401 on a missing, wrong or stale Svix signature; a
  * svix-id already processed is acknowledged 200 `{ignored: true}`. None of
- * these writes anything. A verified message
- * we could not process deletes its marker and answers 500, so Resend's retry
- * runs it again. Everything else answers 200, so Resend doesn't retry-storm.
+ * these writes anything, nor does a verified body that is not JSON or not a
+ * tracked event type (200 ignored). A verified event we could not process —
+ * including one for a row the step has not settled yet — deletes its marker
+ * and answers 500, so Resend's retry runs it again. Everything else answers
+ * 200, so Resend doesn't retry-storm.
  */
 export async function POST(request: Request) {
   const key = resendWebhookKey();
@@ -63,6 +65,17 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Invalid signature" }, { status: 401 });
   }
 
+  // Before the marker: an event we don't handle leaves nothing behind.
+  let event: { type?: unknown } | null;
+  try {
+    event = JSON.parse(rawBody) as { type?: unknown } | null;
+  } catch {
+    return NextResponse.json({ ok: true, ignored: "invalid-json" });
+  }
+  if (!isTrackedEmailEvent(event?.type)) {
+    return NextResponse.json({ ok: true, ignored: "event-type" });
+  }
+
   const marker = getAdminDb().collection(DELIVERIES).doc(svixId);
   try {
     await marker.create({
@@ -79,16 +92,6 @@ export async function POST(request: Request) {
       err instanceof Error ? err.message : String(err),
     );
     return NextResponse.json({ error: "Try again" }, { status: 500 });
-  }
-
-  let event: { type?: unknown } | null;
-  try {
-    event = JSON.parse(rawBody) as { type?: unknown } | null;
-  } catch {
-    return NextResponse.json({ ok: true, ignored: "invalid-json" });
-  }
-  if (!isTrackedEmailEvent(event?.type)) {
-    return NextResponse.json({ ok: true, ignored: "event-type" });
   }
 
   try {
