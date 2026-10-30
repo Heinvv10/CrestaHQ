@@ -72,6 +72,8 @@ export interface PaymentAttempt {
 
   state: PaymentAttemptState;
   reason: string | null;
+  /** When `state` became "flagged" (absent on attempts flagged before this existed). */
+  flaggedAt?: Timestamp | FieldValue;
   /** A card cycle's "still unconfirmed after 3 days" Task was raised (once). */
   staleAlertedAt?: Timestamp | FieldValue;
 

@@ -11,6 +11,8 @@ export const STUCK_ATTEMPT_LIFETIME_MS = 7 * 24 * 60 * 60 * 1000;
  * that was merely delayed still finds its order pending.
  */
 export const OLD_KEY_RETIRE_MS = 72 * 60 * 60 * 1000;
+/** After an attempt is flagged, the operator gets this long before it is retired. */
+export const FLAG_GRACE_MS = 24 * 60 * 60 * 1000;
 /** Rows per read; attempts skipped without asking Paystack do not count as calls. */
 export const EXPIRY_PAGE = 100;
 /** Pages read per run at most (a bound on reads, not on calls). */

@@ -175,6 +175,11 @@ describe("a stuck attempt", () => {
   });
 });
 
+/** Pin when attempt `n` was flagged (the real flagging stamps the wall clock). */
+function flaggedAt(n: number, at: Date) {
+  mem.seed(`paymentAttempts/po-ord${n}`, { ...attempt(n), flaggedAt: at });
+}
+
 describe("an attempt whose key is no longer the workspace's", () => {
   /** 73 h after the default buy was opened (OLD = 25 h before NOW). */
   const LATE = new Date(NOW.getTime() + 48 * HOUR);
@@ -217,6 +222,7 @@ describe("an attempt whose key is no longer the workspace's", () => {
     seedBuy(1, new Date(NOW.getTime() - 2 * HOUR));
     seedSub(SA, OTHER_KEY);
     await flagStaleAttempts(SA, paystackKeyFingerprint(OTHER_KEY));
+    flaggedAt(1, new Date(NOW.getTime() - 2 * HOUR));
     expect(attempt(1)).toMatchObject({ state: "flagged" });
     expect(order(1)).toMatchObject({ attentionOpen: true });
     const flag = order(1).attention;
@@ -227,7 +233,7 @@ describe("an attempt whose key is no longer the workspace's", () => {
     expect(await expireStalePaystackOrders(new Date(NOW.getTime() + 71 * HOUR))).toMatchObject({ expired: 1, retired: 1 });
     expect(order(1)).toMatchObject({ status: "expired", attentionOpen: true, attention: flag });
     closedWithoutAsking();
-    expect(attempt(1).reason).toContain("Closed after 24 h");
+    expect(attempt(1).reason).toContain("Closed after 72 h");
     // The flagged note is kept on the attempt too.
     expect(attempt(1).reason).toContain(String(flag));
   });
@@ -236,6 +242,7 @@ describe("an attempt whose key is no longer the workspace's", () => {
     seedBuy(1, new Date(NOW.getTime() - 2 * HOUR));
     seedSub(SA, OTHER_KEY);
     await flagStaleAttempts(SA, paystackKeyFingerprint(OTHER_KEY));
+    flaggedAt(1, new Date(NOW.getTime() - 2 * HOUR));
     await expireStalePaystackOrders(new Date(NOW.getTime() + 71 * HOUR));
     seedSub(SA, KEY);
     const { reconcilePaystackCharge } = await import("@/lib/paystack/payment-link-reconciler");
@@ -246,29 +253,69 @@ describe("an attempt whose key is no longer the workspace's", () => {
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
-  it("a PAID order with a leftover open old-key attempt is never expired", async () => {
+  it("a PAID order with a leftover open old-key attempt: the order is untouched, only the attempt is closed", async () => {
     seedBuy(1, OLD, { status: "paid", paidAt: new Date() });
     seedSub(SA, OTHER_KEY);
-    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ expired: 0, retired: 0 });
+    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ expired: 0, retired: 1 });
     expect(order(1)).toMatchObject({ status: "paid" });
-    expect(attempt(1)).toMatchObject({ state: "open" });
+    expect(attempt(1)).toMatchObject({ state: "refused" });
+    // Out of the read window for good.
+    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ retired: 0 });
   });
 
-  it("a held order is never expired this way: money arrived for it", async () => {
+  it("a held order: untouched (still held, still flagged); its old-key attempt is closed", async () => {
     seedBuy(1, OLD, { heldAt: new Date(), attention: "Held", attentionOpen: true });
     mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Held" });
     seedSub(SA, OTHER_KEY);
-    await expireStalePaystackOrders(LATE);
-    expect(order(1)).toMatchObject({ status: "pending" });
-    expect(attempt(1)).toMatchObject({ state: "flagged" });
+    const before = JSON.stringify(order(1));
+    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ expired: 0, retired: 1 });
+    expect(JSON.stringify(order(1))).toBe(before);
+    expect(attempt(1)).toMatchObject({ state: "refused" });
   });
 
-  it("a flagged attempt beside a failed order is a recorded late payment: left alone", async () => {
+  it("a failed order with a flagged old-key attempt: the order keeps its late-payment flag, the attempt is closed", async () => {
     seedBuy(1, OLD, { status: "failed", attention: "Paid, but failed", attentionOpen: true });
     mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Paid, but failed" });
     seedSub(SA, OTHER_KEY);
-    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ retired: 0 });
+    const before = JSON.stringify(order(1));
+    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ expired: 0, retired: 1 });
+    expect(JSON.stringify(order(1))).toBe(before);
+    expect(attempt(1)).toMatchObject({ state: "refused" });
+  });
+
+  it("a key change near hour 71 still gives the operator a day: flagged at 71 h, nothing retired at 73 h, retired at 96 h", async () => {
+    const openedAt = new Date(NOW.getTime() - 71 * HOUR);
+    seedBuy(1, openedAt);
+    seedSub(SA, OTHER_KEY);
+    await flagStaleAttempts(SA, paystackKeyFingerprint(OTHER_KEY));
+    flaggedAt(1, NOW);
+    const at = (hoursAfterOpen: number) => new Date(openedAt.getTime() + hoursAfterOpen * HOUR);
+
+    expect(await expireStalePaystackOrders(at(73))).toMatchObject({ expired: 0, retired: 0 });
+    expect(order(1)).toMatchObject({ status: "pending", attentionOpen: true });
     expect(attempt(1)).toMatchObject({ state: "flagged" });
+    expect(await expireStalePaystackOrders(at(94))).toMatchObject({ retired: 0 });
+    expect(await expireStalePaystackOrders(at(96))).toMatchObject({ expired: 1, retired: 1 });
+    expect(order(1)).toMatchObject({ status: "expired" });
+    expect(attempt(1)).toMatchObject({ state: "refused" });
+  });
+
+  it("flagging stamps flaggedAt (and only the first flag does)", async () => {
+    seedBuy(1, new Date(NOW.getTime() - 2 * HOUR));
+    seedSub(SA, OTHER_KEY);
+    await flagStaleAttempts(SA, paystackKeyFingerprint(OTHER_KEY));
+    const first = attempt(1).flaggedAt as Date;
+    expect(first).toBeInstanceOf(Date);
+    flaggedAt(1, new Date(NOW.getTime() - HOUR));
+    await flagStaleAttempts(SA, paystackKeyFingerprint(OTHER_KEY));
+    expect((attempt(1).flaggedAt as Date).getTime()).toBe(NOW.getTime() - HOUR);
+  });
+
+  it("an attempt flagged before flaggedAt existed falls back to its age alone", async () => {
+    seedBuy(1, OLD);
+    seedSub(SA, OTHER_KEY);
+    mem.seed("paymentAttempts/po-ord1", { ...attempt(1), state: "flagged", reason: "Old flag" });
+    expect(await expireStalePaystackOrders(LATE)).toMatchObject({ expired: 1, retired: 1 });
   });
 });
 

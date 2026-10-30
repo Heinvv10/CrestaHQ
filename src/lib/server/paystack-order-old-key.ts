@@ -3,8 +3,8 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
-import { isPastOrderLifetime, OLD_KEY_RETIRE_MS } from "@/lib/server/paystack-order-lifetime";
-import { expireOrderKeepingFlag } from "@/lib/server/product-link-paystack-orders";
+import { FLAG_GRACE_MS, isPastOrderLifetime, OLD_KEY_RETIRE_MS } from "@/lib/server/paystack-order-lifetime";
+import { expireOrderKeepingFlag, isOrderPendingUnheld } from "@/lib/server/product-link-paystack-orders";
 import type { PaymentAttempt } from "@/types/payment-attempts";
 
 /**
@@ -38,20 +38,25 @@ export async function refuseAttempt(reference: string, reason: string, from: Pay
 
 /**
  * Never throws: a failed write is counted in `writeErrors` and retried next
- * run. Only once the attempt is `OLD_KEY_RETIRE_MS` old.
+ * run. Only once the attempt is `OLD_KEY_RETIRE_MS` old, and (when its order is
+ * still pending and would be expired) `FLAG_GRACE_MS` after it was flagged, so a
+ * key change near hour 71 still gives the operator a day.
+ *  - order pending and unheld → expired (its attention note kept), attempt closed;
+ *  - any other order (paid, held, failed, expired, gone) → ONLY the attempt is
+ *    closed, the order untouched: the order carries the story, and the attempt
+ *    stops taking up the sweep's read window.
  */
 export async function retireOldKeyAttempt(attempt: PaymentAttempt, counts: RetireCounts, now: number): Promise<void> {
   if (!attempt.orderId || !isPastOrderLifetime(attempt.createdAt, now, OLD_KEY_RETIRE_MS)) return;
   try {
-    const outcome = await expireOrderKeepingFlag(attempt.orderId);
-    // A flagged attempt next to an already-closed order is a recorded late
-    // payment: left as it is.
-    if (outcome === "keep" || (outcome === "closed" && attempt.state !== "open")) return;
-    if (outcome === "expired") counts.expired += 1;
+    if (await isOrderPendingUnheld(attempt.orderId)) {
+      if (attempt.state === "flagged" && attempt.flaggedAt && !isPastOrderLifetime(attempt.flaggedAt, now, FLAG_GRACE_MS)) return;
+      if ((await expireOrderKeepingFlag(attempt.orderId)) === "expired") counts.expired += 1;
+    }
     counts.retired += 1;
     await refuseAttempt(
       attempt.id,
-      `${attempt.reason ? `${attempt.reason} ` : ""}Closed after 24 h: the key this checkout was opened with is no longer connected.`,
+      `${attempt.reason ? `${attempt.reason} ` : ""}Closed after 72 h: the key this checkout was opened with is no longer connected.`,
       ["open", "flagged"],
     );
   } catch (err) {

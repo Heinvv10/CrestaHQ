@@ -53,7 +53,7 @@ export async function flagPaymentAttempt(
     const linkRef = attempt.paymentLinkId ? db.doc(`paymentLinks/${attempt.paymentLinkId}`) : null;
     const link = linkRef ? ((await t.get(linkRef)).data() as PaymentLink | undefined) : undefined;
     const why = reason(attempt);
-    t.update(attemptRef, { state: "flagged", reason: why, updatedAt: FieldValue.serverTimestamp() });
+    t.update(attemptRef, { state: "flagged", reason: why, flaggedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
     if (linkRef && link) {
       t.update(linkRef, {
         attention: link.attention ? `${link.attention}\n${why}` : why,
