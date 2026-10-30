@@ -154,16 +154,24 @@ describe("check-agent-coverage-shrink CLI", () => {
     expect(ci).toContain(`group: ci-e2e-${unique}`);
     const draftHelper = ci.slice(ci.indexOf("\n  replace_pending_e2e_on_draft:"), ci.indexOf("\n  ci:"));
     expect(draftHelper).toMatch(/group: ci-e2e-.*\n\s+cancel-in-progress: false/);
-    const e2e = ci.slice(ci.indexOf("\n  e2e:\n"));
-    expect(e2e).toMatch(/group: ci-e2e-.*\n\s+cancel-in-progress: false/);
+    // The lock job carries E2E's group; the browser job is in none, so nothing cancels it.
+    const lock = ci.slice(ci.indexOf("\n  e2e-lock:\n"), ci.indexOf("\n  e2e:\n"));
+    expect(lock).toMatch(/group: ci-e2e-.*\n\s+cancel-in-progress: false/);
+    expect(ci.slice(ci.indexOf("\n  e2e:\n"))).not.toContain("concurrency:");
   });
 
   it("runs every job hosted, with E2E and the production smoke serialised by the fixture lock", () => {
     const wf = (f: string) => fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", f), "utf8");
     const ci = wf("ci.yml");
     const smoke = wf("e2e-smoke.yml");
-    const e2e = ci.slice(ci.indexOf("\n  e2e:\n"));
-    const hosted = ci.slice(ci.indexOf("\n  ci:\n"), ci.indexOf("\n  e2e:\n"));
+    const job = (src: string, id: string) => {
+      const start = src.indexOf(`\n  ${id}:\n`);
+      expect(start).toBeGreaterThan(-1);
+      const next = src.slice(start + 1).search(/\n  [a-z][\w-]*:\n/);
+      return next === -1 ? src.slice(start) : src.slice(start, start + 1 + next);
+    };
+    const e2e = job(ci, "e2e");
+    const hosted = ci.slice(ci.indexOf("\n  ci:\n"), ci.indexOf("\n  e2e-lock:\n"));
     for (const f of ["ci.yml", "e2e-smoke.yml", "wa-manager.yml", "wa-agent-bridge.yml", "agent-coverage-shrink.yml"]) {
       expect(wf(f)).toContain("runs-on: ubuntu-latest");
       expect(wf(f)).not.toMatch(/runs-on:.*self-hosted/);
@@ -177,41 +185,69 @@ describe("check-agent-coverage-shrink CLI", () => {
     expect(helpers.match(/runs-on: ubuntu-latest/g)).toHaveLength(3);
     const e2eHelper = helpers.slice(helpers.indexOf("\n  replace_pending_e2e_on_draft:"));
     expect(e2eHelper).toContain("github.event.pull_request.head.repo.full_name == github.repository");
-    expect(e2e).toContain(
-      "if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}",
-    );
-    for (const job of [e2e, smoke]) {
+    const guard =
+      "github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)";
+    expect(job(ci, "e2e-lock")).toContain(`if: \${{ ${guard} }}`);
+    // The required check must never be SKIPPED (a skip counts as passing): it
+    // runs whatever e2e-lock did, and its first step fails unless that succeeded.
+    expect(e2e).toContain(`if: \${{ !cancelled() && (${guard}) }}`);
+    expect(e2e).toContain("needs: [e2e-lock]");
+    const firstStep = e2e.slice(e2e.indexOf("\n    steps:\n"));
+    const gate = firstStep.slice(0, firstStep.indexOf("- uses:"));
+    expect(gate).toContain("if: ${{ needs.e2e-lock.result != 'success' }}");
+    expect(gate).toMatch(/\n\s+exit 1\n/);
+    expect(job(ci, "e2e-unlock")).toContain("if: ${{ always() && needs.e2e-lock.result != 'skipped' }}");
+    expect(job(smoke, "smoke-unlock")).toContain("if: ${{ always() }}");
+
+    for (const [src, lockId, suiteId, unlockId] of [
+      [ci, "e2e-lock", "e2e", "e2e-unlock"],
+      [smoke, "smoke-lock", "smoke", "smoke-unlock"],
+    ]) {
+      const lock = job(src, lockId);
+      const suite = job(src, suiteId);
+      const unlock = job(src, unlockId);
+      expect(suite).toContain(`needs: [${lockId}]`);
+      expect(unlock).toContain(`needs: [${lockId}, ${suiteId}]`);
+      // Only the lock jobs get a write token, and they run nothing but the
+      // lock script: no install, no secrets, no third-party action but checkout.
+      for (const j of [lock, unlock]) {
+        expect(j).toMatch(/permissions:\n\s+contents: write\n/);
+        expect(j).not.toMatch(/secrets\.|pnpm|npm |setup-node|action-setup/);
+        expect(j.match(/uses: /g)).toEqual(["uses: "]);
+        expect(j).toContain("uses: actions/checkout@");
+        expect(j).toContain("persist-credentials: false");
+        expect(j.match(/github\.token/g)).toHaveLength(1);
+      }
+      expect(lock).toContain("run: node scripts/ci/fixture-lock.mjs acquire");
+      expect(unlock).toContain("run: node scripts/ci/fixture-lock.mjs release");
+      // The suite job is read-only and checks it holds the lock before installing anything.
+      expect(suite).toMatch(/permissions:\n\s+contents: read\n\s+(timeout-minutes|#)/);
+      expect(suite).not.toContain("contents: write");
+      const held = suite.search(/run: node (\.fixture-lock\/)?scripts\/ci\/fixture-lock\.mjs held/);
+      expect(held).toBeGreaterThan(-1);
+      expect(held).toBeLessThan(suite.indexOf("pnpm install"));
+      expect(suite.indexOf("pnpm exec playwright test")).toBeGreaterThan(held);
+      expect(suite.match(/github\.token/g)).toHaveLength(1);
       // A fresh hosted VM needs Chromium's OS libraries, and pnpm the way `ci` sets it up.
-      expect(job).toMatch(/playwright install --with-deps chromium/);
-      expect(job).toContain("uses: pnpm/action-setup@");
-      expect(job).toContain("cache: pnpm");
-      expect(job).not.toContain("corepack enable");
-      // The fixture-touching step sits strictly between acquire and an always() release.
-      const acquire = job.indexOf("run: node scripts/ci/fixture-lock.mjs acquire");
-      const playwright = job.indexOf("pnpm exec playwright test");
-      const release = job.indexOf("run: node scripts/ci/fixture-lock.mjs release");
-      expect(acquire).toBeGreaterThan(-1);
-      expect(playwright).toBeGreaterThan(acquire);
-      expect(release).toBeGreaterThan(playwright);
-      expect(job.slice(job.lastIndexOf("- name:", release), release)).toContain("if: always()");
-      expect(job).toMatch(/permissions:\n\s+contents: write\n\s+actions: read/);
-      expect(job).toContain("persist-credentials: false");
-      // The Playwright step bounds how long the lock is held, inside its stale limit.
-      const step = job.slice(job.lastIndexOf("- name:", playwright), playwright);
-      expect(step).toMatch(/timeout-minutes: (\d+)/);
-      expect(Number(step.match(/timeout-minutes: (\d+)/)![1])).toBeLessThan(STALE_MS / 60_000);
-      // Lock wait + Playwright + ~20 min of setup must fit the job budget, or a
-      // job timeout would kill a run mid-Playwright.
-      const minutes = (name: string) =>
-        Number(job.slice(job.indexOf(`- name: ${name}`)).match(/timeout-minutes: (\d+)/)![1]);
-      const jobBudget = Number(job.match(/\n {4}timeout-minutes: (\d+)/)![1]);
-      expect(minutes("Acquire fixture lock") + minutes("Playwright") + 20).toBeLessThanOrEqual(jobBudget);
-      expect(jobBudget).toBeLessThanOrEqual(360);
-      // The write token reaches the two lock steps and nothing else.
-      expect(job.match(/github\.token/g)).toHaveLength(2);
+      expect(suite).toMatch(/playwright install --with-deps chromium/);
+      expect(suite).toContain("uses: pnpm/action-setup@");
+      expect(suite).toContain("cache: pnpm");
+      expect(suite).not.toContain("corepack enable");
+      expect(suite).toContain("persist-credentials: false");
+      // The lock is held for the whole suite job, so its budget (which also
+      // bounds the Playwright step) must stay under the stale limit.
+      const minutes = (j: string) => Number(j.match(/\n {4}timeout-minutes: (\d+)/)![1]);
+      const step = suite.slice(suite.lastIndexOf("- name:", suite.indexOf("pnpm exec playwright test")));
+      const playwright = Number(step.match(/timeout-minutes: (\d+)/)![1]);
+      expect(playwright + 15).toBeLessThanOrEqual(minutes(suite));
+      expect(minutes(suite)).toBeLessThan(STALE_MS / 60_000);
+      // The lock wait fits its own job budget.
+      const wait = Number(lock.slice(lock.indexOf("- name: Acquire fixture lock")).match(/timeout-minutes: (\d+)/)![1]);
+      expect(wait).toBeLessThan(minutes(lock));
+      expect(minutes(lock)).toBeLessThanOrEqual(360);
     }
-    expect(e2e).toContain("LOCK_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}");
-    expect(e2e).toMatch(/permissions:\n\s+contents: write\n\s+actions: read\n\s+pull-requests: read/);
+    expect(job(ci, "e2e-lock")).toContain("LOCK_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}");
+    expect(job(ci, "e2e-lock")).toMatch(/permissions:\n\s+contents: write\n\s+actions: read\n\s+pull-requests: read/);
   });
 });
 

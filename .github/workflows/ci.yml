@@ -253,36 +253,41 @@ jobs:
   #
   # GitHub-hosted: each job gets its own VM, so port 3100 is never shared.
   # The fixture sub-accounts in the production Firestore still ARE shared —
-  # every run seeds them and e2e/global-setup.ts purges them — so the
-  # Playwright step runs under scripts/ci/fixture-lock.mjs, a cross-run mutex
-  # held as a git ref (refs/ci-locks/e2e-fixtures). e2e-smoke.yml takes the
-  # same lock. It WAITS for the holder instead of cancelling anything, and a
-  # crashed holder (run completed without releasing, or held > 150 min) is
-  # taken over, so it cannot wedge the queue. Waiting is polled, not FIFO.
+  # every run seeds them and e2e/global-setup.ts purges them — so the E2E job
+  # runs under scripts/ci/fixture-lock.mjs, a cross-run mutex held as a git
+  # ref (refs/ci-locks/e2e-fixtures). e2e-smoke.yml takes the same lock. It
+  # WAITS for the holder instead of cancelling anything, and a crashed holder
+  # (run completed without releasing, or held > 150 min) is taken over, so it
+  # cannot wedge the queue. Waiting is polled, not FIFO.
+  #
+  # The lock lives in its own jobs (e2e-lock, e2e-unlock) because writing the
+  # ref needs `contents: write`, and the E2E job runs the PR's code, its
+  # dependencies and the suite. Those two jobs check out the repo and run the
+  # lock script with node built-ins only: no install, no secrets, no app code.
+  # The E2E job itself gets a read-only token.
   #
   # Not a concurrency group across PRs: GitHub keeps one pending run per
   # group and cancels the rest, which would cancel other PRs' required check.
-  # This job's concurrency group is per ref: it coalesces superseded pending
-  # heads of ONE PR, but never cancels an active browser run — cancellation
-  # before `finally` strands shared Firestore fixtures and makes later,
-  # unrelated runs fail. A hosted job starts at once and waits inside the
-  # acquire step, where the group cannot replace it, so the acquire step
-  # itself gives up (failing that superseded commit's check) once the PR has
-  # a newer head or is closed.
-  e2e:
-    name: E2E (Playwright)
+  # The lock job's concurrency group is per ref: it coalesces superseded
+  # pending heads of ONE PR. The E2E job is in no group, so nothing cancels an
+  # active browser run — cancellation before `finally` strands shared
+  # Firestore fixtures and makes later, unrelated runs fail. A lock job starts
+  # at once and waits inside the acquire step, where the group cannot replace
+  # it, so the acquire step itself gives up (failing that superseded commit's
+  # check) once the PR has a newer head or is closed.
+  e2e-lock:
+    name: E2E fixture lock
     # Do not spend ~11 minutes exercising a revision that already failed a
     # faster blocking gate. The fixture runner remains serialised exactly as
     # before; this only changes when it enters that queue.
     needs: [ci, secrets]
     runs-on: ubuntu-latest
-    # contents: write creates/deletes the lock ref; actions: read checks
-    # whether a lock holder's run is still alive; pull-requests: read sees a
-    # newer head. Accepted risk: this job runs the PR's own code, and a
-    # same-repo PR can edit this file, so passing the token only to the lock
-    # steps and not persisting it at checkout keeps it away from the suite
-    # and app by default, and is not a boundary against the PR's author
-    # (who already has write access; fork PRs never run this job).
+    # contents: write creates the lock ref; actions: read checks whether a
+    # lock holder's run is still alive; pull-requests: read sees a newer head.
+    # A same-repo PR can still edit this file or the lock script; this keeps
+    # the token from the suite and its dependencies, it is not a boundary
+    # against the PR's author (who already has write access; fork PRs never
+    # run this job).
     permissions:
       contents: write
       actions: read
@@ -290,17 +295,43 @@ jobs:
     concurrency:
       group: ci-e2e-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
       cancel-in-progress: false
-    # Wall clock includes waiting for the fixture lock behind other PRs'
-    # runs, so the job budget is generous and the real limits sit on the
-    # steps: the lock wait (220 min) and the Playwright run itself (90 min,
-    # which also bounds how long the lock can be held; the lock's stale
-    # limit is 150 min). On a hosted runner the 186 specs take ~55-60 min
-    # (18 min on velo-server; the Firestore-heavy specs are 2-4x slower), so
-    # a wait that runs out means ~4 runs were queued ahead, and fails this
-    # check. Setup (~15) + 220 + 90 leaves ~30 min under the job budget;
-    # 360 is the GitHub-hosted maximum.
-    timeout-minutes: 355
+    # The wait is the step's 220 min; a wait that runs out means ~4 runs were
+    # queued ahead, and fails the E2E check.
+    timeout-minutes: 230
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
+    steps:
+      # The lock commit records HEAD's tree, so a sparse checkout is enough.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      - name: Acquire fixture lock
+        timeout-minutes: 220
+        run: node scripts/ci/fixture-lock.mjs acquire
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LOCK_PR_NUMBER: ${{ github.event.pull_request.number }}
+          LOCK_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+  e2e:
+    name: E2E (Playwright)
+    needs: [e2e-lock]
+    runs-on: ubuntu-latest
+    # Read-only: the held-lock check below only reads the ref.
+    permissions:
+      contents: read
+    # The lock is held for this whole job, so its budget bounds how long a
+    # live holder holds it and must stay under the lock's 150-min stale limit.
+    # Setup (~15 min) + the Playwright step's 90 + margin. On a hosted runner
+    # the 186 specs take ~55-60 min (18 min on velo-server; the
+    # Firestore-heavy specs are 2-4x slower).
+    timeout-minutes: 120
+    # !cancelled(), not the default success(): this is the required check, and
+    # a SKIPPED required check counts as passing. When e2e-lock fails, is
+    # skipped (ci or secrets failed) or times out, this job still runs and its
+    # first step fails it.
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)) }}
     env:
       # The build bakes NEXT_PUBLIC_* in, so they must be present at build
       # time, not just at runtime — hence job-level env rather than step-level.
@@ -394,11 +425,22 @@ jobs:
       # app URL: instrumentation.ts.)
       GITPAGE_API_URL: http://127.0.0.1:9
     steps:
-      # persist-credentials: false — this job's token can write refs, and the
-      # suite and app below must not find it in .git/config.
+      - name: Require the fixture lock job
+        if: ${{ needs.e2e-lock.result != 'success' }}
+        run: |
+          echo "E2E fixture lock job result: ${{ needs.e2e-lock.result }}; not running E2E" >&2
+          exit 1
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
+
+      # A "re-run failed jobs" reruns this job but not e2e-lock, whose lock the
+      # first attempt's e2e-unlock already released: refuse to run unlocked.
+      - name: Check this run attempt holds the fixture lock
+        run: node scripts/ci/fixture-lock.mjs held
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
 
       # Same pnpm + node setup as the `ci` job (version from package.json
       # `packageManager`; must precede setup-node's `cache: pnpm`).
@@ -433,27 +475,9 @@ jobs:
           echo "::add-mask::$KEY"
           echo "GITPAGE_API_KEY=$KEY" >> "$GITHUB_ENV"
 
-      # Everything above is private to this VM; from here until the release
-      # step the run touches the shared fixture tenants.
-      - name: Acquire fixture lock
-        timeout-minutes: 220
-        run: node scripts/ci/fixture-lock.mjs acquire
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-          LOCK_PR_NUMBER: ${{ github.event.pull_request.number }}
-          LOCK_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-
       - name: Playwright
         timeout-minutes: 90
         run: pnpm exec playwright test
-
-      # always(): runs on failure, timeout and cancellation too. Deletes the
-      # ref only if its recorded holder is this run attempt; a no-op otherwise.
-      - name: Release fixture lock
-        if: always()
-        run: node scripts/ci/fixture-lock.mjs release
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
 
       # login.spec.ts opts its own trace/screenshot off, but Playwright still
       # writes an error-context.md aria snapshot on failure, and that snapshot
@@ -479,3 +503,26 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+  # always(): runs after a failure, timeout or cancellation of either job too.
+  # Deletes the ref only if its recorded holder is this run attempt; a no-op
+  # otherwise. Skipped only when e2e-lock was (draft, fork, failed gate), in
+  # which case this run never touched the lock.
+  e2e-unlock:
+    name: E2E fixture unlock
+    needs: [e2e-lock, e2e]
+    if: ${{ always() && needs.e2e-lock.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      - name: Release fixture lock
+        run: node scripts/ci/fixture-lock.mjs release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

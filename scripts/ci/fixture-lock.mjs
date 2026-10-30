@@ -2,11 +2,18 @@
 // CLI for the E2E fixture lock; the lock itself is in fixture-lock-core.mjs.
 //
 //   node scripts/ci/fixture-lock.mjs acquire   # waits; never cancels anyone
+//   node scripts/ci/fixture-lock.mjs held      # exit 1 unless this run attempt holds it
 //   node scripts/ci/fixture-lock.mjs release   # deletes the ref only if ours
 
 import { execFileSync } from "node:child_process";
 import { pathToFileURL } from "node:url";
-import { Superseded, acquire, check, release } from "./fixture-lock-core.mjs";
+import {
+  Superseded,
+  acquire,
+  check,
+  holds,
+  release,
+} from "./fixture-lock-core.mjs";
 
 /** One GitHub REST call. Returns { status, body }; never throws. */
 export function githubApi({ token, repo, apiUrl = "https://api.github.com" }) {
@@ -78,10 +85,27 @@ async function main() {
         }
       : undefined;
     await acquire(api, { tree, holder, sleep, superseded });
+  } else if (cmd === "held") {
+    let ours;
+    for (let attempt = 1; ours === undefined; attempt++) {
+      try {
+        ours = await holds(api, { holder });
+      } catch (err) {
+        if (!err.transient || attempt >= 5) throw err;
+        console.error(`GitHub API hiccup, will retry: ${err.message}`);
+        await sleep(10_000);
+      }
+    }
+    if (!ours) {
+      throw new Error(
+        `this run attempt (${holder.runId}#${holder.attempt}) does not hold the fixture lock; re-run ALL jobs, not just the failed ones`
+      );
+    }
+    console.error("fixture lock is held by this run attempt");
   } else if (cmd === "release") {
     await release(api, { holder, sleep });
   } else {
-    throw new Error("usage: fixture-lock.mjs acquire|release");
+    throw new Error("usage: fixture-lock.mjs acquire|held|release");
   }
 }
 

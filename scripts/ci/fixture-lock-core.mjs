@@ -16,8 +16,10 @@
 // both judge the same lock stale cannot both win: the second one's commit no
 // longer descends from the ref. Stale = the holder's run attempt has completed
 // (or is gone), or the lock is older than STALE_MS — longer than any holder
-// can live, because the Playwright step's own timeout bounds how long it is
-// held. Ownership is the holder recorded in the ref's commit, not a sha kept
+// can live: the lock is held from the end of the acquire job until the
+// release job, and the E2E job's own timeout (in between) bounds that. The
+// holder run stays in progress across those jobs, so it is never judged stale
+// early. Ownership is the holder recorded in the ref's commit, not a sha kept
 // by the job, so a lost API response or a cancel mid-acquire cannot leave
 // this run unable to recognise (and release) its own lock.
 //
@@ -188,6 +190,18 @@ export async function acquire(
     }
     await sleep(POLL_MS);
   }
+}
+
+/**
+ * Whether this run attempt holds the lock. Read-only (contents: read), so the
+ * job that runs the suite can refuse to start without the lock — e.g. after a
+ * "re-run failed jobs", which reruns it but not the job that acquired.
+ */
+export async function holds(api, { holder }) {
+  const current = await api("GET", `/git/ref/${LOCK_REF}`);
+  if (current.status === 404) return false;
+  const heldSha = check(current, [200], "read lock ref").body.object.sha;
+  return sameHolder((await readLock(api, heldSha)).holder, holder);
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Superseded, acquire, release } from "./fixture-lock-core.mjs";
+import { Superseded, acquire, holds, release } from "./fixture-lock-core.mjs";
 import { fakeGitHub, holder, noSleep, quiet } from "./fixture-lock.fake";
 
 describe("fixture lock: ownership and faults", () => {
@@ -25,6 +25,25 @@ describe("fixture lock: ownership and faults", () => {
       await release(gh.api, { holder: holder("1"), sleep: noSleep, log: quiet })
     ).toBe(false);
     expect(gh.ref()).toBe(other);
+  });
+
+  it("holds() is true only for the run attempt that holds the lock", async () => {
+    const clock = { t: 0 };
+    const gh = fakeGitHub(clock);
+    expect(await holds(gh.api, { holder: holder("1") })).toBe(false);
+    await acquire(gh.api, {
+      tree: "t",
+      holder: holder("1"),
+      now: () => clock.t,
+      sleep: noSleep,
+      log: quiet,
+    });
+    expect(await holds(gh.api, { holder: holder("1") })).toBe(true);
+    expect(await holds(gh.api, { holder: holder("2") })).toBe(false);
+    // A "re-run failed jobs" is the same run id with the next attempt.
+    expect(
+      await holds(gh.api, { holder: { ...holder("1"), attempt: "2" } })
+    ).toBe(false);
   });
 
   it("adopts its own lock when the create succeeded but the response was lost", async () => {

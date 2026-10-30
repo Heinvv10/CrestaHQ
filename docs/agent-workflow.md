@@ -101,8 +101,10 @@ Every E2E run (PR or production smoke) seeds and purges the same fixture
 sub-accounts in the production Firestore (`e2e/global-setup.ts`
 `purgeFixtureData` is global), so runs must never overlap. A GitHub concurrency
 group cannot do that without losing runs: it keeps only one *pending* run and
-cancels the older one when a third queues. Instead the Playwright step sits
-between two steps of `scripts/ci/fixture-lock.mjs`:
+cancels the older one when a third queues. Instead the suite job sits between
+two jobs that run `scripts/ci/fixture-lock.mjs` (`e2e-lock` → `E2E (Playwright)`
+→ `e2e-unlock` in `ci.yml`; `smoke-lock` → smoke → `smoke-unlock` in
+`e2e-smoke.yml`):
 
 - `acquire` creates the git ref `refs/ci-locks/e2e-fixtures` (create is atomic:
   422 if it exists) and otherwise **waits**, polling once a minute and logging
@@ -113,16 +115,25 @@ between two steps of `scripts/ci/fixture-lock.mjs`:
   superseded commit's check) once the PR has a newer head or is closed.
 - A lock whose holder run attempt has completed (or no longer exists), or that is
   older than 150 min, is taken over with a fast-forward-only ref update on top of
-  it, so two waiters cannot both take the same stale lock. The Playwright step's
-  own 90-min timeout keeps a live holder inside that limit.
-- `release` runs under `if: always()` and deletes the ref only if its recorded
-  holder is this run attempt.
+  it, so two waiters cannot both take the same stale lock. The lock is held for
+  the whole suite job (setup + Playwright), and that job's 120-min timeout keeps
+  a live holder inside the limit.
+- The suite job first runs `held` and fails unless this run attempt holds the
+  lock. **Re-run all jobs, not "re-run failed jobs"**: the latter reruns the
+  suite job but not the lock job, and the first attempt already released it.
+- `release` runs in its own job under `if: always()` and deletes the ref only if
+  its recorded holder is this run attempt.
 
-The jobs get `contents: write` (the ref), `actions: read` (holder check) and, for
-E2E, `pull-requests: read` (newer head). The token is passed only to the two lock
-steps and checkout does not persist it. That keeps it away from the suite and app
-by default; it is not a boundary against a same-repo PR's author, who can edit the
-workflow (fork PRs never run these jobs).
+Only the lock jobs get `contents: write` (the ref), plus `actions: read` (holder
+check) and, for E2E, `pull-requests: read` (newer head). They check out
+`scripts/ci` and run the script on node built-ins: no install, no secrets, no app
+code. The suite job, which installs dependencies and runs the PR's code with the
+fixture secrets, gets `contents: read`. That is not a boundary against a
+same-repo PR's author, who can edit the workflow (fork PRs never run these
+jobs). `E2E (Playwright)` is the required check and a skipped required check
+counts as passing, so it runs under `!cancelled()` and fails itself when
+`e2e-lock` did not succeed. Follow-up: the suite job still receives the fixture
+secrets while running PR code (unchanged from velo-server).
 
 **Local Playwright runs do not take the lock.** A local run against the fixture
 tenants can still collide with CI; check `gh run list --status in_progress` (or

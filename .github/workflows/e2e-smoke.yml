@@ -27,20 +27,42 @@ on:
         required: false
 
 jobs:
-  smoke:
-    name: Playwright vs crm.crestahq.com
-    # Same fixture sub-accounts as the ci.yml E2E job, so the Playwright step
-    # runs under the same fixture lock (scripts/ci/fixture-lock.mjs; see the
-    # note on ci.yml's e2e job for why this is not a concurrency group).
+  # Same fixture sub-accounts as the ci.yml E2E job, so the run holds the same
+  # fixture lock (scripts/ci/fixture-lock.mjs), split the same way: the lock
+  # jobs hold the ref-writing token and run node built-ins only; the job that
+  # installs dependencies and runs the suite gets a read-only token. See the
+  # note on ci.yml's e2e jobs for why this is not a concurrency group.
+  smoke-lock:
+    name: Smoke fixture lock
     runs-on: ubuntu-latest
-    # Lock ref write + holder-run check (see ci.yml's e2e job for the
-    # accepted risk); the token is given only to the lock steps.
+    # Lock ref write + holder-run check (see ci.yml's e2e-lock job).
     permissions:
       contents: write
       actions: read
-    # Includes waiting for the lock behind PR E2E runs; the steps carry the
-    # real limits.
-    timeout-minutes: 355
+    timeout-minutes: 230
+    steps:
+      # The lock script comes from this workflow's own commit, not the pinned
+      # sha: a rollback's older release may predate the script's commands.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      - name: Acquire fixture lock
+        timeout-minutes: 220
+        run: node scripts/ci/fixture-lock.mjs acquire
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+  smoke:
+    name: Playwright vs crm.crestahq.com
+    needs: [smoke-lock]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # The lock is held for this whole job, so this bounds how long it is held
+    # and must stay under the lock's 150-min stale limit.
+    timeout-minutes: 120
     env:
       # No build step: the target is already running. Only the values the
       # SUITE itself reads are needed — Firebase REST sign-in, the Admin SDK
@@ -64,6 +86,21 @@ jobs:
           ref: ${{ inputs.sha || github.sha }}
           persist-credentials: false
 
+      # From this workflow's own commit, like the lock jobs: the pinned sha's
+      # copy of the script may predate `held`.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: .fixture-lock
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      # A "re-run failed jobs" reruns this job but not smoke-lock, whose lock
+      # the first attempt's smoke-unlock already released.
+      - name: Check this run attempt holds the fixture lock
+        run: node .fixture-lock/scripts/ci/fixture-lock.mjs held
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
       - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -78,22 +115,10 @@ jobs:
       - name: Install Chromium
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Acquire fixture lock
-        timeout-minutes: 220
-        run: node scripts/ci/fixture-lock.mjs acquire
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-
       - name: Playwright
         timeout-minutes: 90
         # @not-on-prod: specs that write test records (mystery shops) the production app would act on.
         run: pnpm exec playwright test --grep-invert "@enrols-workflows|@not-on-prod"
-
-      - name: Release fixture lock
-        if: always()
-        run: node scripts/ci/fixture-lock.mjs release
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
 
       # See the same step in ci.yml: error-context.md records input VALUES
       # (including E2E_PASSWORD) regardless of the spec's own trace/screenshot
@@ -115,3 +140,26 @@ jobs:
           name: playwright-report-smoke
           path: playwright-report/
           retention-days: 7
+
+  # always(): after a failure, timeout or cancellation too. Deletes the ref
+  # only if its recorded holder is this run attempt; a no-op otherwise.
+  smoke-unlock:
+    name: Smoke fixture unlock
+    needs: [smoke-lock, smoke]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    steps:
+      # The lock script comes from this workflow's own commit, not the pinned
+      # sha: a rollback's older release may predate the script's commands.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      - name: Release fixture lock
+        run: node scripts/ci/fixture-lock.mjs release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
