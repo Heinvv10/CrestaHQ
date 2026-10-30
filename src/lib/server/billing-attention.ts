@@ -20,7 +20,8 @@ import type { AttentionItem } from "@/types/billing";
  * writer preserves.
  */
 
-export const FLAGGED_BILLING_EVENTS = ["payment.flagged", "subscription.flagged"];
+/** `usage.flagged`: a usage month that needs a person (usage-billing-flags.ts). */
+export const FLAGGED_BILLING_EVENTS = ["payment.flagged", "subscription.flagged", "usage.flagged"];
 
 interface Resolver {
   uid: string;

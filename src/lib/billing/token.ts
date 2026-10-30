@@ -145,6 +145,16 @@ export function verifyChargeToken(
   return { chargeId, hash: hashCheckoutToken(token) };
 }
 
+/** Whether charge tokens can be signed here (the secret is set and long enough). */
+export function chargeTokenSecretConfigured(): boolean {
+  try {
+    getSecret();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** Full shareable /pay/charge URL. Empty when NEXT_PUBLIC_APP_URL unset. */
 export function buildChargeCheckoutUrl(token: string): string {
   const base = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "");

@@ -59,7 +59,10 @@ export function recordBillingEvent(entry: {
     | "status.changed"
     | "charge.created"
     | "charge.paid"
-    | "charge.canceled";
+    | "charge.canceled"
+    | "usage.frozen"
+    | "usage.skipped"
+    | "usage.withheld";
   detail: Record<string, unknown>;
 }): void {
   runAfterResponse(() => getAdminDb()

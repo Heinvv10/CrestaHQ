@@ -7,6 +7,7 @@ import { applyFeatureGates } from "@/lib/server/feature-gates-service";
 import {
   buildChargeCheckoutUrl,
   buildCheckoutUrl,
+  chargeTokenSecretConfigured,
   issueChargeToken,
   issueCheckoutToken,
 } from "@/lib/billing/token";
@@ -20,6 +21,7 @@ import {
   type BillingPlanDoc,
   type BillingPlanResponse,
   type PlanGates,
+  type UsageChargeLine,
   type SubAccountBillingStatus,
 } from "@/types/billing";
 import { BillingError } from "@/lib/billing/errors";
@@ -35,6 +37,9 @@ import {
   SUB_ACCOUNT_PLAN_KIND,
 } from "@/lib/billing/kinds";
 import { runAfterResponse } from "@/lib/server/after-response";
+import { usageChargeId } from "@/lib/billing/usage";
+import { billingRecipient } from "@/lib/server/usage-billing-recipient";
+import type { SubAccountDoc } from "@/types";
 
 /**
  * Client Billing v1 service — the single write path for agency plans
@@ -60,7 +65,7 @@ export { SUB_ACCOUNT_CHARGE_KIND, SUB_ACCOUNT_PLAN_KIND };
 
 /** Stripe's practical floor for a recurring charge, in cents. */
 const MIN_PRICE_CENTS = 100;
-const MAX_PRICE_CENTS = 100_000_000;
+export const MAX_PRICE_CENTS = 100_000_000;
 
 /**
  * Whether Client Billing can talk to its payment provider. Named for Stripe
@@ -910,6 +915,9 @@ function serializeCharge(
         : "pending",
     createdAt: tsToIso(data.createdAt),
     paidAt: tsToIso(data.paidAt),
+    kind: data.kind === "usage" ? "usage" : "manual",
+    usageMonth: typeof data.usageMonth === "string" ? data.usageMonth : null,
+    dueAt: tsToIso(data.dueAt),
     extraPaymentCount: Array.isArray(data.extraPaymentRefs) ? data.extraPaymentRefs.length : 0,
   };
 }
@@ -1005,6 +1013,112 @@ export async function createOneTimeCharge(input: {
   };
 }
 
+export { usageChargeId };
+
+/**
+ * Create the month's usage charge at most once; a repeat returns
+ * `created: false`. The id is deterministic and the write is `create()`, so
+ * two overlapping runs cannot both mint it. The same amount/description/
+ * currency checks as a manual charge apply (including its ceiling): an
+ * out-of-range charge is refused here and writes nothing. Paystack opens a
+ * payment page only for an email, so a Paystack usage charge with no
+ * `payerEmail` is refused too.
+ *
+ * The charge is born with NO live pay link (`tokenHash: null`) and no stored
+ * URL: the raw token exists only in the email it is sent in, staged before the
+ * send and made live after it (`stageChargeLink` / `commitChargeLink`).
+ */
+export async function createUsageCharge(input: {
+  agencyId: string;
+  subAccountId: string;
+  month: string;
+  description: string;
+  amountCents: number;
+  currency: string;
+  lineItems: UsageChargeLine[];
+  dueAt: Date;
+  payerEmail: string | null;
+  /**
+   * The month's ledger doc. When given, the charge is written in a transaction
+   * that first reads it: a month already withheld (`closed.withheldAt`) is NOT
+   * minted, so a mint racing a withhold either sees the stamp or is seen by it.
+   */
+  ledgerPath?: string;
+}): Promise<{ created: boolean; chargeId: string; withheld?: boolean }> {
+  const provider = getBillingProvider();
+  if (!provider.isConfigured()) {
+    throw new BillingError(
+      "Client billing isn't configured on this deployment, so no usage charge can be created.",
+      503,
+    );
+  }
+  // Before anything is written: without it no pay link can ever be signed.
+  if (!chargeTokenSecretConfigured()) throw new BillingError(TOKEN_SECRET_MISSING, 503);
+  const valid = validateChargeInput(input.description, input.amountCents, input.currency);
+  if (provider.id === "paystack" && !input.payerEmail) {
+    throw new BillingError(
+      "Paystack needs an email to open a payment page — set this workspace's account contact first.",
+      422,
+    );
+  }
+  await getSubInAgencyOrThrow(input.agencyId, input.subAccountId);
+  const chargeId = usageChargeId(input.subAccountId, input.month);
+  const ref = chargesCollection().doc(chargeId);
+  const doc: Omit<BillingChargeDoc, "createdAt" | "paidAt" | "updatedAt"> = {
+    id: chargeId,
+    agencyId: input.agencyId,
+    subAccountId: input.subAccountId,
+    description: valid.description,
+    amountCents: valid.amountCents,
+    currency: valid.currency,
+    status: "pending",
+    tokenHash: null,
+    stripeCheckoutSessionId: null,
+    stripePaymentIntentId: null,
+    createdByUid: "system:usage-close",
+    kind: "usage",
+    usageMonth: input.month,
+    lineItems: input.lineItems,
+    dueAt: Timestamp.fromDate(input.dueAt),
+    remindedAt: {},
+    emailedTo: null,
+  };
+  const db = getAdminDb();
+  try {
+    const withheld = await db.runTransaction(async (tx) => {
+      if (input.ledgerPath) {
+        const ledger = (await tx.get(db.doc(input.ledgerPath))).data();
+        if (ledger?.closed?.withheldAt) return true;
+      }
+      tx.create(ref, {
+        ...doc,
+        createdAt: FieldValue.serverTimestamp(),
+        paidAt: null,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+      return false;
+    });
+    if (withheld) return { created: false, chargeId, withheld: true };
+  } catch (err) {
+    // gRPC ALREADY_EXISTS: an earlier run already minted it.
+    if ((err as { code?: number }).code === 6) return { created: false, chargeId };
+    throw err;
+  }
+  recordBillingEvent({
+    agencyId: input.agencyId,
+    subAccountId: input.subAccountId,
+    event: "charge.created",
+    detail: {
+      chargeId,
+      kind: "usage",
+      usageMonth: input.month,
+      amountCents: valid.amountCents,
+      currency: valid.currency,
+    },
+  });
+  return { created: true, chargeId };
+}
+
 export async function listChargesForSubAccount(
   agencyId: string,
   subAccountId: string,
@@ -1032,28 +1146,65 @@ async function getChargeInAgencyOrThrow(
   return { ref, data: { ...(snap.data() as BillingChargeDoc), id: snap.id } };
 }
 
+const TOKEN_SECRET_MISSING =
+  "token secret not configured: AUTOMATIONS_TOKEN_SECRET is unset or shorter than 16 characters, so no pay link can be signed.";
+
+/**
+ * Make `hash` the charge's live token, in one transaction that refuses a charge
+ * that is no longer payable: a paid or cancelled charge must never get a live
+ * link back (paying clears it; a racing re-send must not resurrect it). With
+ * `agencyId`, also refuses a charge of another agency.
+ */
+async function setChargeTokenHash(
+  chargeId: string,
+  hash: string,
+  agencyId: string | null,
+): Promise<void> {
+  const db = getAdminDb();
+  const ref = chargesCollection().doc(chargeId);
+  await db.runTransaction(async (tx) => {
+    const snap = await tx.get(ref);
+    if (!snap.exists || (agencyId !== null && snap.data()?.agencyId !== agencyId)) {
+      throw new BillingError("Charge not found", 404);
+    }
+    const status = snap.data()?.status;
+    if (status !== "pending") {
+      throw new BillingError(
+        status === "paid"
+          ? "This charge is already paid."
+          : "This charge was canceled — create a new one instead.",
+      );
+    }
+    tx.update(ref, { tokenHash: hash, updatedAt: FieldValue.serverTimestamp() });
+  });
+}
+
 /** Rotate the charge's token and return a fresh /pay/charge URL. */
 export async function mintChargeCheckoutLink(input: {
   agencyId: string;
   chargeId: string;
 }): Promise<string> {
-  const { ref, data } = await getChargeInAgencyOrThrow(
-    input.agencyId,
-    input.chargeId,
-  );
-  if (data.status !== "pending") {
-    throw new BillingError(
-      data.status === "paid"
-        ? "This charge is already paid."
-        : "This charge was canceled — create a new one instead.",
-    );
-  }
   const { token, hash } = issueChargeToken(input.chargeId);
-  await ref.update({
-    tokenHash: hash,
-    updatedAt: FieldValue.serverTimestamp(),
-  });
+  await setChargeTokenHash(input.chargeId, hash, input.agencyId);
   return buildChargeCheckoutUrl(token);
+}
+
+/**
+ * A fresh pay link that is NOT live yet: the charge's current link keeps
+ * working until `commitChargeLink`. For an email that must not kill the link
+ * already out there if it then fails to send.
+ */
+export function stageChargeLink(chargeId: string): { url: string; hash: string } {
+  if (!chargeTokenSecretConfigured()) throw new BillingError(TOKEN_SECRET_MISSING, 503);
+  const { token, hash } = issueChargeToken(chargeId);
+  const url = buildChargeCheckoutUrl(token);
+  if (!url) throw new BillingError("NEXT_PUBLIC_APP_URL isn't configured, so no pay link can be built.", 503);
+  return { url, hash };
+}
+
+/** Make a staged link live (once its email has gone out). Refuses a paid or cancelled charge. */
+export function commitChargeLink(chargeId: string, hash: string): Promise<void> {
+  return setChargeTokenHash(chargeId, hash, null);
 }
 
 /** Void a pending charge: kills the link; paid charges can't be canceled here. */
@@ -1123,11 +1274,19 @@ export async function createChargeCheckoutSession(input: {
         email?: string | null;
       } | null)
     : null;
+  // A manual charge keeps the account contact exactly as before. Only a usage
+  // charge on Paystack (the one provider that needs an email) falls back to
+  // the invoice recipient, so the link emailed there can be paid; Stripe never
+  // reaches the members lookup.
+  const payerEmail =
+    subSnap.exists && charge.kind === "usage" && getBillingProvider().id === "paystack"
+      ? await billingRecipient({ ...(subSnap.data() as SubAccountDoc), id: subSnap.id })
+      : (contact?.email ?? null);
 
   const { url, sessionId } = await getBillingProvider().createOneTimeCheckout({
     customerId: billing?.stripeCustomerId ?? null,
     // Only used by a provider that can't open a guest checkout (Paystack).
-    payerEmail: contact?.email ?? null,
+    payerEmail,
     currency: charge.currency,
     amountCents: charge.amountCents,
     productName: charge.description,

@@ -287,9 +287,37 @@ export interface BillingChargeDoc {
    *  refund the agency owes. Absent/empty on a normal charge. */
   extraPaymentRefs?: string[];
   createdByUid: string;
+  /** Absent = a manual charge. "usage" = the monthly usage close minted it. */
+  kind?: BillingChargeKind;
+  /** "YYYY-MM" the usage charge covers. */
+  usageMonth?: string;
+  /** Itemized breakdown shown in the invoice email. */
+  lineItems?: UsageChargeLine[];
+  dueAt?: Timestamp | FieldValue | Date | null;
+  /** Reminder stamps, one each per charge. */
+  remindedAt?: {
+    beforeDue?: Timestamp | FieldValue | null;
+    onDue?: Timestamp | FieldValue | null;
+    overdue?: Timestamp | FieldValue | null;
+  };
+  /** Where the invoice email went, or null when there was no recipient. */
+  emailedTo?: string | null;
+  /** Set while the invoice email is being sent, so overlapping runs send it once. */
+  invoiceEmailClaimedAt?: Timestamp | FieldValue | null;
+  /** Stamped just before a send and cleared when it is known to have failed: a send may have gone out. */
+  emailAttemptedAt?: Timestamp | FieldValue | null;
   createdAt: Timestamp | FieldValue | Date | null;
   paidAt: Timestamp | FieldValue | Date | null;
   updatedAt: Timestamp | FieldValue | Date | null;
+}
+
+export type BillingChargeKind = "manual" | "usage";
+
+export interface UsageChargeLine {
+  label: string;
+  amountCents: number;
+  /** e.g. "240 billable" or "12.5 billable min". */
+  detail?: string;
 }
 
 /** Wire shape returned by the charges API (timestamps → ISO strings). */
@@ -304,6 +332,10 @@ export interface BillingChargeResponse {
   paidAt: string | null;
   /** Times it was paid again after being paid (see `extraPaymentRefs`). */
   extraPaymentCount: number;
+  kind: BillingChargeKind;
+  /** "YYYY-MM" a usage charge covers. */
+  usageMonth: string | null;
+  dueAt: string | null;
 }
 
 /**

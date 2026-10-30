@@ -6,12 +6,13 @@ import { refreshModelCatalog } from "@/lib/comms/ai/model-catalog";
 import { sweepStaleStaged } from "@/lib/comms/whatsapp/staged-upload";
 import { runGbpRetentionSweep } from "@/lib/gbp/sync/sweep";
 import { collectHeartbeatStats, sendHeartbeat } from "@/lib/gitpage/heartbeat";
+import { runUsageClose } from "@/lib/server/usage-billing-service";
 import { runApiCleanup } from "../api-cleanup/route";
 
 /**
  * Daily housekeeping dispatcher (`leadstack-daily-housekeeping`, 03:00 UTC,
  * register-schedules.ts). The QStash plan caps a deployment at 10 schedules,
- * so the five daily housekeeping jobs share this ONE schedule instead of
+ * so the daily housekeeping jobs share this ONE schedule instead of
  * holding one each. Their own routes still exist and can be run by hand.
  *
  * Jobs run in sequence (in the order their old schedules fired), each in its
@@ -55,6 +56,30 @@ const JOBS: Array<[string, () => Promise<unknown>]> = [
   ],
   ["gbp-retention", () => runGbpRetentionSweep()],
   ["whatsapp-staging-cleanup", () => sweepStaleStaged()],
+  // Closes last month on the first run of a new month (server-local, SAST on
+  // velo), then reminds. Idempotent, so the other days only send reminders.
+  // Dark: only clients with usage rebilling on, under an agency with it on.
+  [
+    "usage-close",
+    async () => {
+      const result = await runUsageClose();
+      // Only unexpected or transient errors answer 500 (QStash retries the whole
+      // job, which is right for those). A permanent refusal (Paystack with no
+      // email, an amount over the ceiling) is logged and returned in
+      // `refusals`: a retry cannot fix it, so a 500 would only repeat daily.
+      if (result.failed > 0) {
+        const held = result.refusals
+          .slice(0, 3)
+          .map((r) => `${r.subAccountId}/${r.month}: ${r.reason}`)
+          .join("; ");
+        throw new Error(
+          `usage_close_failed: ${result.failed} item(s)` +
+            (result.refusals.length > 0 ? `; ${result.refusals.length} also held (${held})` : ""),
+        );
+      }
+      return result;
+    },
+  ],
 ];
 
 export async function POST(request: Request) {
