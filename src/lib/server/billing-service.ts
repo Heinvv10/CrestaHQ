@@ -1261,7 +1261,11 @@ export async function cancelOneTimeCharge(input: {
       "This charge is already paid — refund it from the Stripe dashboard instead.",
     );
   }
-  if (data.status === "canceled") return;
+  if (data.status === "canceled") {
+    // Already waived: still re-check, so a flag that got stuck can be cleared by waiving again.
+    if (data.kind === "usage") await refreshUsageOverdue(data.subAccountId);
+    return;
+  }
   await ref.update({
     status: "canceled" satisfies BillingChargeStatus,
     tokenHash: null,

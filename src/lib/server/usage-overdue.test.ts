@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { spyBillingProvider } from "@/test/billing-provider-spies";
 import { CHARGE, NOW, charges, mail, mem, setupUsageBillingTests } from "@/test/usage-billing-harness";
 
@@ -25,6 +25,8 @@ const { markSubAccountChargePaid } = await import("./billing-lifecycle");
 const { setClientUsageRebilling, setAgencyUsageRebilling, setAgencyUsagePaywall } = await import("./usage-rebilling");
 
 setupUsageBillingTests();
+// Tests wrap Firestore methods; put them back so a later test never wraps a wrapper.
+afterEach(() => vi.restoreAllMocks());
 
 /** The close ran on the 1st; the invoice is due 14 days later. */
 const DUE_DAY = new Date(2026, 9, 15, 5, 0);
@@ -64,6 +66,27 @@ describe("when the flag exists", () => {
     setCharge({ emailedTo: null });
     await refreshUsageOverdue("sa1", DAY_AFTER);
     expect(flag()).toBeFalsy();
+  });
+
+  it("a usage charge of nothing (or less) or with no amount is never flagged", async () => {
+    await emailedCharge();
+    for (const amountCents of [0, -500, undefined, "0"]) {
+      setCharge({ amountCents });
+      await refreshUsageOverdue("sa1", DAY_AFTER);
+      expect(flag()).toBeFalsy();
+    }
+    setCharge({ amountCents: 1 });
+    await refreshUsageOverdue("sa1", DAY_AFTER);
+    expect(flag()).toBeTruthy();
+  });
+
+  it("the close cannot mint a charge of nothing: usage inside the allowance creates no charge at all", async () => {
+    spyBillingProvider("stripe");
+    mem.seed("subAccounts/sa1/usage/2026-09", { emailsSent: 50 });
+    const out = await runUsageClose(NOW);
+    expect(out).toMatchObject({ closed: 1, charged: 0, failed: 0 });
+    expect(charges()).toHaveLength(0);
+    expect(mem.read("subAccounts/sa1/usage/2026-09")?.closed).toMatchObject({ totalCents: 0, chargeId: null });
   });
 
   it("a manual charge, a paid one and a waived one are not flagged", async () => {
@@ -186,6 +209,14 @@ describe("what clears it", () => {
     expect(toMs(mem.read("agencies/ag1")!.usagePaywallEnabledAt)).toBeGreaterThan(first);
   });
 
+  it("waiving an already-waived charge still re-checks, so a stuck flag can be cleared", async () => {
+    await emailedCharge();
+    await cancelOneTimeCharge({ agencyId: "ag1", chargeId: CHARGE });
+    sub({ usageOverdue: { chargeId: CHARGE, since: new Date(), amountCents: 5000, currency: "zar", usageMonth: "2026-09", paywall: true } });
+    await cancelOneTimeCharge({ agencyId: "ag1", chargeId: CHARGE });
+    expect(flag()).toBeNull();
+  });
+
   it("the daily sweep flags a charge that has just gone overdue and clears a stale flag", async () => {
     await emailedCharge();
     expect(await sweepUsageOverdue(DAY_AFTER)).toBe(1);
@@ -221,11 +252,33 @@ describe("fails open: a read error never walls", () => {
     expect(flag()).toBeNull();
   });
 
-  it("a failure of the whole sweep is swallowed", async () => {
-    vi.spyOn(mem.db, "collection").mockImplementationOnce(() => {
-      throw new Error("firestore unavailable");
-    });
-    await expect(sweepUsageOverdue(DAY_AFTER)).resolves.toBe(0);
+  it("the sweep retries a failed scan twice, then throws so the daily job can report it", async () => {
+    await emailedCharge();
+    const spy = vi.spyOn(mem.db, "collection");
+    spy.mockImplementationOnce(() => { throw new Error("firestore unavailable"); });
+    spy.mockImplementationOnce(() => { throw new Error("firestore unavailable"); });
+    expect(await sweepUsageOverdue(DAY_AFTER)).toBe(1);
+    expect(flag()).toBeTruthy();
+
+    for (let i = 0; i < 3; i++) spy.mockImplementationOnce(() => { throw new Error("firestore unavailable"); });
+    await expect(sweepUsageOverdue(DAY_AFTER)).rejects.toThrow("firestore unavailable");
+  });
+
+  it("the daily close counts a sweep that still fails as a failure, and keeps its other results", async () => {
+    await emailedCharge();
+    const real = mem.db.collection.bind(mem.db);
+    // Only the sweep's flagged-clients scan (`usageOverdue != null`) fails, every time.
+    vi.spyOn(mem.db, "collection").mockImplementation(((name: string) => {
+      const col = real(name);
+      const where = col.where.bind(col);
+      col.where = ((field: string, ...rest: unknown[]) =>
+        field === "usageOverdue"
+          ? { get: async () => { throw new Error("unavailable"); } }
+          : (where as (...a: unknown[]) => unknown)(field, ...rest)) as never;
+      return col;
+    }) as never);
+    const out = await runUsageClose(DAY_AFTER);
+    expect(out.failed).toBe(1);
   });
 });
 

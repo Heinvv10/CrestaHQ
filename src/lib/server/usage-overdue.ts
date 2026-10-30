@@ -53,7 +53,11 @@ export async function refreshUsageOverdue(
         .map((d) => ({ d, dueMs: toMillis(d.data().dueAt) }))
         .filter(
           (x): x is { d: typeof x.d; dueMs: number } =>
-            x.dueMs !== null && !!x.d.data().emailedTo && localDay(x.dueMs) < today,
+            x.dueMs !== null &&
+            !!x.d.data().emailedTo &&
+            // A charge of nothing owes nothing (the close never mints one; this is belt and braces).
+            Number(x.d.data().amountCents) > 0 &&
+            localDay(x.dueMs) < today,
         )
         .sort((a, b) => a.dueMs - b.dueMs)[0];
       const current = sub.usageOverdue as
@@ -127,25 +131,29 @@ export async function refreshAgencyUsageOverdue(
 /**
  * The daily sweep: every client with a pending usage charge (one that has just
  * gone overdue) plus every client already flagged (one a failed refresh left
- * behind, or whose switch went off). Never throws.
+ * behind, or whose switch went off). The scan is tried three times; if it
+ * still fails this THROWS, so the daily job reports it instead of leaving
+ * walls up unseen. Per-client refreshes never throw (they fail open).
  */
-export async function sweepUsageOverdue(now: Date = new Date()): Promise<number> {
-  try {
-    const db = getAdminDb();
-    const [pending, flagged] = await Promise.all([
-      db.collection("billingCharges").where("kind", "==", "usage").where("status", "==", "pending").get(),
-      db.collection("subAccounts").where("usageOverdue", "!=", null).get(),
-    ]);
-    const ids = new Set<string>();
-    for (const d of pending.docs) {
-      const id = d.data().subAccountId;
-      if (typeof id === "string" && id) ids.add(id);
+export async function sweepUsageOverdue(now: Date = new Date(), attempts = 3): Promise<number> {
+  const db = getAdminDb();
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const [pending, flagged] = await Promise.all([
+        db.collection("billingCharges").where("kind", "==", "usage").where("status", "==", "pending").get(),
+        db.collection("subAccounts").where("usageOverdue", "!=", null).get(),
+      ]);
+      const ids = new Set<string>();
+      for (const d of pending.docs) {
+        const id = d.data().subAccountId;
+        if (typeof id === "string" && id) ids.add(id);
+      }
+      for (const d of flagged.docs) ids.add(d.id);
+      await inPool([...ids], (id) => refreshUsageOverdue(id, now));
+      return ids.size;
+    } catch (err) {
+      console.warn(`[usage-overdue] sweep scan failed attempt=${attempt}/${attempts}: ${reason(err)}`);
+      if (attempt >= attempts) throw err;
     }
-    for (const d of flagged.docs) ids.add(d.id);
-    await inPool([...ids], (id) => refreshUsageOverdue(id, now));
-    return ids.size;
-  } catch (err) {
-    console.warn(`[usage-overdue] sweep failed: ${reason(err)}`);
-    return 0;
   }
 }

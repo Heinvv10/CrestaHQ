@@ -118,12 +118,18 @@ export async function runUsageClose(now: Date = new Date()): Promise<{
   const pending = await processPendingCharges(now);
   const reminders = await sendDueReminders(now);
   // After the reminders, so a charge that has just gone overdue is flagged the same day.
-  await sweepUsageOverdue(now);
+  // A scan that still fails after its retries counts as a failure: the job answers 500
+  // and QStash retries, rather than walls standing unseen.
+  let sweepFailed = 0;
+  await sweepUsageOverdue(now).catch((err) => {
+    sweepFailed = 1;
+    console.error(`[usage-close] overdue sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
   return {
     closed,
     charged: pending.charged,
     reminded: reminders.sent,
-    failed: freezes.failed + pending.failed + reminders.failed,
+    failed: freezes.failed + pending.failed + reminders.failed + sweepFailed,
     refusals: [...freezes.refusals, ...pending.refusals, ...reminders.refusals],
   };
 }
