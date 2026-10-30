@@ -101,11 +101,11 @@ describe("writeAiSms", () => {
     expect(await write()).toMatchObject({ ok: true, text: withLine(LINE), withoutAiLine: false, tokens: 240 });
     expect(calls).toHaveLength(2);
     expect(calls[1].messages.at(-2)).toEqual({ role: "assistant", content: "Call 082 123 4567 now!" });
-    expect(calls[1].messages.at(-1)?.content).toMatch(/^That line can't be used: it used characters other than letters/);
+    expect(calls[1].messages.at(-1)?.content).toMatch(/^That line can't be used: it used characters other than plain letters/);
   });
 
   it("sends the template without the line when both tries fail and that is allowed", async () => {
-    const { calls } = replies("Visit evil dot com", "Search VelocityDealsZA please");
+    const { calls } = replies("Visit evil dot com", "Find us on WhatsApp please");
     expect(await write()).toMatchObject({ ok: true, text: BARE, withoutAiLine: true });
     expect(calls).toHaveLength(2);
   });

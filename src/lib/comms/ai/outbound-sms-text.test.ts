@@ -30,72 +30,103 @@ describe("templateProblem", () => {
   });
 });
 
-describe("slotProblem", () => {
+describe("slotProblem (after normaliseSlot)", () => {
+  const problem = (raw: string) => slotProblem(normaliseSlot(raw));
+
+  // The breaker's 32 typical personalised lines: none may be refused.
   it.each([
-    "Fibre has just gone live on your street",
-    "Hope the new place is treating you well!",
-    "We'd love to help you stream without buffering, at home or at work.",
-    "Your neighbours in Sandton have already switched",
-    "It's a great time to get connected, isn't it?",
-    "Ons het goeie nuus oor vesel in jou area",
-    "Eish, load-shedding is tough, but fibre keeps you going",
-  ])("allows a plain personal phrase: %j", (slot) => {
-    expect(slotProblem(slot)).toBeNull();
+    "Hope your new home is settling in well!",
+    "Hope you're having a great week.",
+    "Saw you were looking at fibre for your home in Pretoria.",
+    "Hope load shedding isn't giving you grief",
+    "Thanks for your interest in our uncapped packages.",
+    "Great options for your family are available",
+    "Optical fibre is now live on your street",
+    "Fast, reliable fibre is now available in Centurion.",
+    "Happy Heritage Day to you and your family!",
+    "Congrats on the new baby, Thandi!",
+    "Is your signal giving you trouble?",
+    "We would love to get you connected",
+    "Our technician can come on site this week",
+    "Follow up on your enquiry about fibre",
+    "Thanks for your message about fibre",
+    "We tried to call you earlier about your enquiry",
+    "Fibre is now live in uMhlanga",
+    "Great news for homes in KwaZulu-Natal",
+    "Fibre is live in eThekwini",
+    "Work from home just got easier with fibre",
+    "Streaming DStv Stream and Netflix just got smoother",
+    "Goeie dag, ons het vesel in jou area",
+    "Sawubona, sine-fibre endaweni yakho",
+    "Hope you're well. We have fibre in your area now.",
+    "Your street is now covered \u2014 want faster internet?",
+    "Looking for the best uncapped option for your home?",
+    "Never worry about slow internet again",
+    "Perfect for working online from home",
+    "Mr. Botha, your street is now covered",
+    "Fibre from a local provider you can trust",
+    "Say goodbye to buffering",
+    "Hope you're enjoying the long weekend with the family :)",
+    "Fancy a coffee at the caf\u00e9 while we install?",
+    "Ask for VelocityDealsZA anywhere",
+    "One or two options might suit you",
+    "We adopted a stopwatch approach to installs",
+  ])("allows %j", (slot) => {
+    expect(problem(slot)).toBeNull();
   });
 
-  // The breaker's route cases, as the line itself.
-  it.each([
-    ["spelled digits", "Call oh eight two double one two three four now?"],
-    ["vanity number", "Call 0800 FIBRE for a quote?"],
-    ["split number", "Call 082 123 and then 4567 today?"],
-    ["handle after a colon", "Find us on Facebook: VelocityDealsZA for a quote?"],
-    ["handle after a dash", "DM us on Instagram - velocity_deals_za for a quote?"],
-    ["search term", "Search VelocityDealsZA on WhatsApp for a quote?"],
-    ["spelled point", "Visit evil point com for a quote?"],
-    ["spaced letters", "Visit evil d o t com for a quote?"],
-    ["spelled period", "See evil period com for a quote?"],
-    ["dott", "See evil dott com for a quote?"],
-    ["email spelled", "Email help AT evil DAWT com for a quote?"],
-    ["decimal ip", "Go to http://2130706433 for a quote?"],
-    ["short code", "Text YES to 38383 for a quote?"],
-    ["kiosk on level 2", "Ask for Mr Mokoena at the Sandton kiosk on level 2"],
-    ["fake opt-out END", "Reply END to quit"],
-    ["fake opt-out NO", "Text NO to cancel these messages"],
-    ["spaced STOP", "Reply S T O P to opt out"],
-    ["STOP-ALL", "Send STOP-ALL"],
-    ["stop as a word", "Stop overpaying for slow internet"],
-    ["letters spelled out one by one", "Your evil d o t friend"],
-    ["a handle with inner capitals", "Ask for VelocityDealsZA anywhere"],
-    ["shouted word", "Say YES and we sort it"],
-    ["unsubscribe", "Easy to unsubscribe whenever"],
-    ["opt in", "Opt in for a great deal"],
-    ["a domain", "Visit acme.co.za"],
-    ["a digit", "Get 2 months free"],
-    ["a url", "https"],
-    ["Cyrillic letters", "\u043F\u0440\u0438\u0432\u0435\u0442 there"],
-    ["an emoji", "Hello there \u{1F600}"],
-    ["mid punctuation", "Good news: fibre is here."],
-    ["two final marks", "Fibre is here!!"],
-    ["a word with no letters", "fibre is here - "],
-    ["too long", "a".repeat(AI_SLOT_MAX_CHARS + 1)],
-    ["empty", ""],
-  ])("refuses %s", (_label, slot) => {
-    expect(slotProblem(slot)).not.toBeNull();
+  it.each<[string, string, RegExp]>([
+    // The breaker's slot failures the rules are for.
+    ["spelled phone", "Zero eight two one two three four five six seven", /number words/],
+    ["spelled phone, commas", "On oh eight two, one two three, four five six seven", /number words/],
+    ["three number words", "oh one two", /number words/],
+    ["small caps STOP", "\uA731\u1D1B\u1D0F\u1D18", /characters other than/],
+    ["a digit", "Get 2 months free", /characters other than/],
+    ["an emoji", "Hello there \u{1F600}", /characters other than/],
+    ["Cyrillic", "\u043f\u0440\u0438\u0432\u0435\u0442 there", /characters other than/],
+    ["an accented stop", "send st\u00f3p to cancel", /opt-out word/],
+    ["accented reply stop", "r\u00ebply st\u00f3p", /opt-out word/],
+    ["accented whatsapp", "wh\u00e0tsapp us", /channel or a destination/],
+    ["remove me", "say remove me to be taken off our list", /opt-out word/],
+    ["quit", "send quit to cancel", /opt-out word/],
+    ["unsub", "just unsub whenever", /opt-out word/],
+    ["opt-out", "easy opt-out anytime", /opt-out word/],
+    ["optout", "optout anytime", /opt-out word/],
+    ["opt out as a phrase", "you can opt out anytime", /"opt out"/],
+    ["a route word", "find us on whatsapp", /channel or a destination/],
+    ["a route word inside a hyphenated word", "join our insta-friends", /channel or a destination/],
+    ["a hyphenated route word", "drop us an e-mail", /channel or a destination/],
+    ["co", "velocitydeals co", /channel or a destination/],
+    ["spelled url", "bit ly slash promo", /channel or a destination/],
+    ["dot", "evil dot org", /channel or a destination/],
+    ["punctuation inside a word", "great.news for you", /inside a word/],
+    ["a colon", "Good news: fibre is here", /":" or "\)"/],
+    ["a bracket", "fibre (finally) is here", /characters other than/],
+    ["three sentences", "Hi. Hello. Hey.", /more than two sentences/],
+    ["spaced letters", "Your evil d o t friend", /three single letters/],
+    ["too long", "a".repeat(AI_SLOT_MAX_CHARS + 1), /longer than/],
+    ["empty", "", /empty/],
+  ])("refuses %s", (_label, slot, reason) => {
+    expect(problem(slot)).toMatch(reason);
   });
 });
 
 describe("normaliseSlot", () => {
-  it("straightens apostrophes, drops format characters and wrapping quotes", () => {
-    expect(normaliseSlot('  "We\u2019ve got\u200B fibre near you"  ')).toBe("We've got fibre near you");
+  it("drops accents and format characters, straightens apostrophes and dashes, drops wrapping quotes", () => {
+    expect(normaliseSlot('  "We\u2019ve got\u200b fibre \u2014 caf\u00e9 too"  ')).toBe("We've got fibre - cafe too");
   });
 });
 
 describe("smsFirstName", () => {
   it.each([
     ["Thandi Mokoena", "Thandi"],
-    ["\u041E\u043B\u0435\u0433", "\u041E\u043B\u0435\u0433"],
+    ["Zo\u00eb", "Zoe"],
+    ["\u0418\u0432\u0430\u043d", null],
+    ["Jean-Luc", null],
+    ["Abcdefghijklmnopqrstu", null],
     ["T", null],
-    ["Whatsapp-VelocityDealsZA", null],
+    ["Whatsapp", null],
+    ["STOP", null],
     ["082123", null],
     ["", null],
   ])("%j -> %j", (name, expected) => {
@@ -112,6 +143,12 @@ describe("assembleAiSms", () => {
   it("without a line, closes the gap; without a first name, says 'there'", () => {
     expect(assembleAiSms({ template: TEMPLATE, slot: null, firstName: null, business: "Velocity Fibre" }))
       .toBe(`Hi there, it's Velocity Fibre. Shall we send a quote?${OPT_OUT_SUFFIX}`);
+  });
+
+  it("never reads what it put in as a placeholder: braces are dropped from the business name", () => {
+    const text = assembleAiSms({ template: TEMPLATE, slot: "Nice line", firstName: "Thandi", business: "Acme {{ai}} {{firstName}} $& $1" });
+    expect(text).toBe(`Hi Thandi, it's Acme ai firstName $& $1. Nice line Shall we send a quote?${OPT_OUT_SUFFIX}`);
+    expect(text).not.toContain("{{");
   });
 
   it("puts the operator's text through verbatim", () => {

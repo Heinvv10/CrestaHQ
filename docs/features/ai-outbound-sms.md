@@ -55,10 +55,20 @@ The step is in `AT_MOST_ONCE_NODES`, so a QStash redelivery never texts twice. T
 Template, slot and assembly live in [src/lib/comms/ai/outbound-sms-text.ts](../../src/lib/comms/ai/outbound-sms-text.ts) (pure; the node dialog uses it too).
 
 - **The template** (step config `template`) is the operator's message, sent verbatim. It has exactly one `{{ai}}` and may use `{{firstName}}` and `{{business}}`; any other `{{…}}` is refused. `templateProblem` refuses a missing, doubled or unknown placeholder, and a template whose fixed text alone (plus the opt-out line) can't fit two segments. It runs in the node dialog (Save disabled), when the workflow is saved (400 for a non-empty invalid template, even on a draft), at activation (`aiSmsActivationBlock`, an empty template included) and before every send.
-- **The AI's line** (`slotProblem`): at most 80 characters of Latin letters, spaces, apostrophes, hyphens and commas, with one optional `.` `!` or `?` at the end — no digits or other punctuation. No word without letters, no three single-letter words in a row, no capitals inside a word (handles), no word containing `stop`, `unsubscribe` or `opt`, and none of a short list of channel, site and action words (call, text, reply, visit, search, whatsapp, facebook, dot, com…). The model is told the template (with the slot marked), the instruction, the persona, the business name and the contact's first name — nothing else about the contact.
+- **The AI's line** (`normaliseSlot` then `slotProblem`). The model's reply is NFKD-normalised with accents dropped ("stóp" is "stop"), dashes made "-", format characters removed. The charset then does the heavy lifting: only ASCII letters, spaces and `' , . ! ? : ) -`, so no digit, symbol, small-caps or other-script trick fits. On top of it:
+  - at most 80 characters and two sentences; `:` and `)` only as `:)`; no `.` `!` `?` inside a word;
+  - no three single letters in a row ("d o t");
+  - fewer than three number words (zero–nine, oh, double, triple, hundred, thousand), so a phone number can't be spelled out;
+  - no opt-out word as a whole word — stop, quit, cancel, unsubscribe, unsub, optout, opt-out, remove — or "opt out" as a phrase ("option", "optical" and "adopt" pass);
+  - no channel or destination word — whatsapp, facebook, instagram, insta, telegram, tiktok, twitter, email, e-mail, dm, inbox, www, http, https, com, co, za, net, org, dot, slash, url, link, website — checked on the whole word and on its parts split at `-` and `'`. Verbs (call, text, visit…) are allowed: with digits and number words refused, no destination can follow them.
+  The model is told the template (with the slot marked), the instruction, the persona, the business name and the contact's first name — nothing else about the contact.
 - **One retry.** A line that breaks a rule, or makes the filled-in message longer than two segments, is asked for again once with the reason. If that fails too: with "send without the AI line if it fails" (`sendWithoutAiLine`, default on) the template goes without the line; otherwise nothing goes.
-- **Assembly**: the slot filled (or removed), `{{firstName}}` (letters only, 2–20; "there" otherwise), `{{business}}` (the agent's business name, else the workspace name), then " Reply STOP to opt out.". Segments are counted as the carrier bills them (UCS-2 in UTF-16 units); over two refuses the send.
+- **Assembly**, in one pass so nothing put in is read as a placeholder again: the slot filled (or removed), `{{firstName}}` (the contact's first word, normalised as above, Latin letters only, 2–20, and passing the line's word checks; "there" otherwise), `{{business}}` (the agent's business name, else the workspace name, braces dropped), then " Reply STOP to opt out.". Segments are counted as the carrier bills them (UCS-2 in UTF-16 units); over two refuses the send.
 - No booking block is put in the prompt. The shared contact context block (`context.ts`, used by the reply agents) runs every free-text field and deal title through `promptSafe`.
+
+## Accepted residual risk
+
+The line can still be phishing-style prose without any route: "your payment failed, please update your card details", "download our app and log in", "send us your id number", or a lowercase handle with nothing around it ("find velocitydealsza"). It can't carry a number, address, link or channel name. The operator owns the template and the instruction; the only free input is the contact's first name, which is held to the same rules. Accepted by the lead on the 1.0.54 port (J1).
 
 ## Metering
 

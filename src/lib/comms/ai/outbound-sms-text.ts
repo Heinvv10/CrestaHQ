@@ -43,72 +43,99 @@ export function templateProblem(template: string): string | null {
 }
 
 const CURLY_APOSTROPHE = new RegExp(`[${String.fromCharCode(0x2018, 0x2019, 0x02bc)}]`, "g");
+const DASHES = new RegExp(`[${String.fromCharCode(0x2013, 0x2014, 0x2212)}]`, "g");
 
-/** The model's reply as a slot candidate: NFKC, straight apostrophes, no
- *  format characters, one line, no wrapping quotes. */
+/** Text from the model (or a contact's name) as ASCII where it can be: NFKD
+ *  with the accents dropped ("stóp" is "stop"), straight apostrophes, dashes
+ *  as "-", no format characters, one line, no wrapping quotes. What can't be
+ *  made ASCII (small caps, other scripts, emoji) stays, and the charset check
+ *  refuses it. */
 export function normaliseSlot(raw: string): string {
   return raw
-    .normalize("NFKC")
+    .normalize("NFKD")
+    .replace(/\p{M}/gu, "")
     .replace(/\p{Cf}/gu, "")
     .replace(CURLY_APOSTROPHE, "'")
+    .replace(DASHES, "-")
     .replace(/\s+/g, " ")
     .trim()
     .replace(/^["']+|["']+$/g, "")
     .trim();
 }
 
-/** Words that steer the contact somewhere (a channel, a site, an action),
- *  or spell an address out. None belongs in a personal phrase. */
+const NUMBER_WORDS = new Set([
+  "zero", "oh", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine",
+  "double", "triple", "hundred", "thousand",
+]);
+const OPT_OUT_WORDS = new Set(["stop", "quit", "cancel", "unsubscribe", "unsub", "optout", "opt-out", "remove"]);
+/** Channels and destinations. Verbs (call, text, visit…) are not here: with
+ *  digits and number words refused, no destination can follow them. */
 const ROUTE_WORDS = new Set([
-  "call", "phone", "dial", "ring", "text", "sms", "reply", "respond", "message", "msg", "dm", "inbox",
-  "email", "mail", "whatsapp", "facebook", "instagram", "tiktok", "twitter", "telegram", "signal", "linkedin",
-  "visit", "search", "click", "tap", "follow", "subscribe", "website", "site", "online", "link",
-  "www", "http", "https", "com", "net", "org", "za", "dot", "point", "period", "dott", "dawt",
+  "whatsapp", "facebook", "instagram", "insta", "telegram", "tiktok", "twitter", "email", "e-mail", "dm", "inbox",
+  "www", "http", "https", "com", "co", "za", "net", "org", "dot", "slash", "url", "link", "website",
 ]);
 
-/** Why `slot` can't go out, or null. Latin letters, spaces, apostrophes,
- *  hyphens and commas, with one optional . ! or ? at the end — no digits or
- *  other punctuation — so no address, number or handle fits in it. */
+/**
+ * Why `slot` can't go out, or null. The charset does the heavy lifting:
+ * ASCII letters, spaces and ' , . ! ? : ) - only, so no digit, symbol,
+ * accent trick or other script fits. Then: at most two sentences, ":" and
+ * ")" only as ":)", no "." "!" or "?" inside a word, no three single letters
+ * in a row, fewer than three number words, no opt-out word and no channel or
+ * destination word. Words are whole words (split on "-" and "'" too), never
+ * substrings, so "option" and "adopt" pass.
+ */
 export function slotProblem(slot: string): string | null {
   if (!slot) return "it was empty";
   if (slot.length > AI_SLOT_MAX_CHARS) return `it was longer than ${AI_SLOT_MAX_CHARS} characters`;
-  if (!/^[\p{Script=Latin}' ,-]+[.!?]?$/u.test(slot)) {
-    return "it used characters other than letters, spaces, apostrophes, hyphens, commas and one final . ! or ?";
+  if (!/^[A-Za-z' ,.!?:)-]+$/.test(slot)) {
+    return "it used characters other than plain letters, spaces and ' , . ! ? : ) -";
   }
+  const plain = slot.replace(/:\)/g, " ");
+  if (/[:)]/.test(plain)) return 'it used ":" or ")" other than in ":)"';
+  if (/[.!?](?=[^\s.!?])/.test(plain)) return "it had . ! or ? inside a word";
+  if ((plain.match(/[.!?]+/g) ?? []).length > 2) return "it was more than two sentences";
+  const tokens = plain.toLowerCase().split(/[\s,.!?]+/).filter(Boolean);
   let singles = 0;
-  for (const word of slot.replace(/[.!?]$/, "").split(/[\s,]+/).filter(Boolean)) {
-    const letters = word.replace(/['-]/g, "");
-    if (letters.length === 0) return "it had a word with no letters";
-    singles = letters.length === 1 ? singles + 1 : 0;
+  let numbers = 0;
+  for (const token of tokens) {
+    const parts = token.split(/['-]+/).filter(Boolean);
+    const letters = parts.join("");
+    singles = letters.length === 1 ? singles + 1 : letters.length === 0 ? singles : 0;
     if (singles >= 3) return "it had three single letters in a row";
-    if (/\p{Lu}/u.test(letters.slice(1))) return `"${word}" has capitals inside it`;
-    if (/stop|unsubscribe|opt/i.test(letters)) return `"${word}" reads as an opt-out word`;
-    if (ROUTE_WORDS.has(letters.toLowerCase())) return `"${word}" names a channel, a site or an action`;
+    numbers += parts.filter((w) => NUMBER_WORDS.has(w)).length;
+    if (numbers >= 3) return "it had three or more number words";
+    if (OPT_OUT_WORDS.has(token) || parts.some((w) => OPT_OUT_WORDS.has(w))) return `"${token}" reads as an opt-out word`;
+    if (ROUTE_WORDS.has(token) || parts.some((w) => ROUTE_WORDS.has(w))) return `"${token}" names a channel or a destination`;
   }
+  if (/\bopt\s+out\b/.test(tokens.join(" "))) return '"opt out" reads as an opt-out instruction';
   return null;
 }
 
-/** A first name for `{{firstName}}`: letters only, 2-20 of them, or null. */
+/** A first name for `{{firstName}}`: Latin letters only after the same
+ *  normalisation, 2-20 of them, and nothing the slot rules would refuse
+ *  ("Stop", "Whatsapp"); otherwise null. */
 export function smsFirstName(name: string | null | undefined): string | null {
-  const first = (name ?? "").normalize("NFKC").trim().split(/\s+/)[0] ?? "";
-  return /^\p{L}{2,20}$/u.test(first) ? first : null;
+  const first = normaliseSlot(name ?? "").split(/\s+/)[0] ?? "";
+  if (!/^\p{Script=Latin}{2,20}$/u.test(first)) return null;
+  return slotProblem(first) ? null : first;
 }
 
 /** The text that goes out: the template with the slot (or nothing), the
  *  first name ("there" when there is none) and the business filled in, then
- *  the opt-out line. */
+ *  the opt-out line. One pass over the template, so nothing put in is read
+ *  as a placeholder again; braces are dropped from the business name. */
 export function assembleAiSms(input: {
   template: string;
   slot: string | null;
   firstName: string | null;
   business: string;
 }): string {
-  const withSlot = input.slot
-    ? input.template.replace(AI_SLOT, input.slot)
-    : input.template.replace(/[ \t]*\{\{ai\}\}[ \t]*/, " ");
-  const body = withSlot
-    .split("{{firstName}}").join(input.firstName ?? "there")
-    .split("{{business}}").join(input.business)
-    .trim();
+  const values: Record<string, string> = {
+    ai: input.slot ?? "",
+    firstName: input.firstName ?? "there",
+    business: input.business.replace(/[{}]/g, ""),
+  };
+  const template = input.slot ? input.template : input.template.replace(/[ \t]*\{\{ai\}\}[ \t]*/, " {{ai}}");
+  const body = template.replace(/\{\{(ai|firstName|business)\}\}/g, (_, key: string) => values[key]).trim();
   return `${body}${OPT_OUT_SUFFIX}`;
 }
