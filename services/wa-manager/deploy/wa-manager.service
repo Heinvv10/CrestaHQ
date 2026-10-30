@@ -1,0 +1,60 @@
+# The manager. It provisions and supervises one wa-agent-bridge instance per
+# WhatsApp number; it is NOT in the message path.
+#
+# Install as a USER unit, not a system one:
+#     ~/.config/systemd/user/wa-manager.service
+#
+# That is not a preference. The manager drives its bridges with
+# `systemctl --user` (see systemd/unit.go), so the templated bridge unit
+# wa-agent-bridge@.service must be a user unit too — and a system-level manager
+# would be talking to a different systemd instance than the one holding those
+# units. Run it as the same user that owns INSTANCE_ROOT, with lingering on
+# (`loginctl enable-linger <user>`) so the units survive logout and start at
+# boot.
+
+[Unit]
+Description=WhatsApp number manager (provisioner + operator view)
+# No network-online ordering. This is a USER unit (see the header and [Install]
+# below) and the user manager has no network-online.target, so the pair was a
+# silent no-op — exactly as it was on the bridge unit, where it was dropped for
+# the same reason. A boot-time race is absorbed by the bounded restart below.
+
+# Bound the restart loop. Every fatal exit here is a CONFIGURATION refusal — a
+# missing OPERATOR_TOKEN, a publicly routable LISTEN_ADDR, an unopenable store
+# — and none of those fix themselves by being retried. Five attempts in ten
+# minutes, then the unit enters `failed` and waits for the human who has to
+# edit the .env anyway. These keys belong in [Unit] on systemd >= 229.
+StartLimitBurst=5
+StartLimitIntervalSec=600
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wa-manager
+EnvironmentFile=/opt/wa-manager/.env
+ExecStart=/opt/wa-manager/bin/wa-manager
+Restart=on-failure
+RestartSec=15
+StandardOutput=append:/opt/wa-manager/manager.log
+StandardError=append:/opt/wa-manager/manager.log
+
+# SIGTERM is the clean path: the poll loop stops, then in-flight HTTP requests
+# drain. main.go's shutdownBudget bounds that drain at 15s, and the longest
+# request it covers is a pairing relay bounded by bridgeTimeout (5s).
+# TimeoutStopSec=30 leaves headroom before SIGKILL.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# This process holds the operator token and writes files containing every
+# tenant's bearer tokens. Nothing else on the box needs to read them.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# Both paths are required: its own directory for the registry and the log, and
+# INSTANCE_ROOT because provisioning writes each tenant's .env and session dir
+# there. Keep this in step with INSTANCE_ROOT — a mismatch makes every Create
+# fail with a read-only filesystem error that names no cause.
+ReadWritePaths=/opt/wa-manager /opt/wa-agent-bridge
+
+[Install]
+WantedBy=default.target

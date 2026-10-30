@@ -1,0 +1,39 @@
+name: Agent coverage FROZEN shrink
+
+# FROZEN (scripts/agent-coverage-frozen.json, routes grandfathered by the
+# agent coverage gate) only shrinks: a PR may delete keys, never add one.
+#
+# Its own workflow, not a step in ci.yml, because it needs `edited`: retargeting
+# a PR fires only that event, and the check must re-run then. `edited` also
+# fires on every title or body edit, and in ci.yml it would join ci.yml's
+# concurrency group, which is evaluated before any job `if`, so a body edit
+# would cancel an in-flight E2E run and leave its fixtures behind. Here a
+# re-run costs a checkout and a few seconds.
+#
+# No concurrency group and no job `if` on the event: a cancelled or skipped
+# run is the latest result for this check, and would hide an earlier failure.
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+
+jobs:
+  shrink:
+    name: Agent coverage FROZEN only shrinks
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Skips a fork's PR, as in ci.yml (see the reasoning there).
+    if: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version-file: .nvmrc
+
+      # Compared against main whatever the PR's base, so main is fetched here
+      # (the depth-1 checkout does not have it). The script fails closed on a
+      # pull_request event without it. It needs no install: node builtins only.
+      - name: FROZEN only shrinks
+        run: |
+          git fetch --no-tags --depth=1 origin "+refs/heads/main:refs/remotes/origin/main"
+          node scripts/check-agent-coverage-shrink.mjs

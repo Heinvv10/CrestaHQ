@@ -1,0 +1,232 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createMemoryFirestore } from "@/test/memory-firestore";
+
+/**
+ * PATCH saves the website wizard's draft. It must refuse while a build is in
+ * flight — a save then would change the config a running gitpage job was
+ * submitted with — and it never touches status, job id or live URL. Real
+ * route + real tenancy check over the in-memory Firestore.
+ */
+
+const mem = createMemoryFirestore();
+const claims: Record<string, Record<string, unknown>> = {
+  u_admin: { status: "active", agencyId: "ag1" },
+  u_member: { status: "active", agencyId: "ag1" },
+  u_outsider: { status: "active", agencyId: "ag9" },
+};
+vi.mock("@/lib/firebase/admin", () => ({
+  getAdminDb: () => mem.db,
+  getAdminAuth: () => ({ getUser: async (uid: string) => ({ customClaims: claims[uid] ?? {} }) }),
+}));
+
+const { PATCH, DELETE } = await import("./route");
+
+const SITE = "subAccounts/sa1/website/site1";
+
+function patch(body: unknown, opts: { uid?: string; siteId?: string; raw?: string } = {}) {
+  const uid = "uid" in opts ? opts.uid : "u_admin";
+  return PATCH(
+    new Request("https://app.test/api/sub-accounts/sa1/website/site1", {
+      method: "PATCH",
+      headers: { "content-type": "application/json", ...(uid ? { "x-user-uid": uid } : {}) },
+      body: opts.raw ?? JSON.stringify(body),
+    }),
+    { params: Promise.resolve({ id: "sa1", siteId: opts.siteId ?? "site1" }) },
+  );
+}
+
+const seedSite = (status: string) =>
+  mem.seed(SITE, {
+    id: "site1",
+    agencyId: "ag1",
+    subAccountId: "sa1",
+    status,
+    gitpageJobId: status === "draft" ? null : "build_abc",
+    liveUrl: status === "ready" ? "https://acme.gitlab.io/site" : null,
+    config: { heading: "Before" },
+    wizardStep: "start",
+  });
+
+beforeEach(() => {
+  mem.clear();
+  mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", websiteEnabledByAgency: true });
+  mem.seed("subAccounts/sa1/subAccountMembers/u_admin", { role: "admin", status: "active" });
+  mem.seed("subAccounts/sa1/subAccountMembers/u_member", { role: "member", status: "active" });
+});
+
+describe("PATCH /api/sub-accounts/[id]/website/[siteId] — draft save", () => {
+  it.each(["queued", "building"])("refuses with 409 while the build is %s, leaving the doc as it was", async (status) => {
+    seedSite(status);
+    const before = mem.read(SITE);
+    const res = await patch({ config: { heading: "After" }, wizardStep: "look" });
+    expect(res.status).toBe(409);
+    expect(mem.read(SITE)).toEqual(before);
+  });
+
+  it("R8: refuses with 409 on a failed site that still carries its job — a re-check could yet make that build the live site", async () => {
+    seedSite("failed");
+    const before = mem.read(SITE);
+    expect(before?.gitpageJobId).toBe("build_abc");
+    const res = await patch({ config: { heading: "After" }, wizardStep: "look" });
+    expect(res.status).toBe(409);
+    expect(mem.read(SITE)).toEqual(before);
+  });
+
+  it("saves on a failed site whose job is gone (nothing left to resume)", async () => {
+    seedSite("failed");
+    await mem.db.doc(SITE).update({ gitpageJobId: null });
+    expect((await patch({ config: { heading: "After" } })).status).toBe(200);
+    expect(mem.read(SITE)).toMatchObject({ config: { heading: "After" }, status: "failed" });
+  });
+
+  it("the check and the write are one step: a build that starts between them is not written over", async () => {
+    seedSite("draft");
+    // Let the save read the draft, then land a build submit before it commits.
+    const runTransaction = mem.db.runTransaction;
+    let raced = false;
+    const spy = vi.spyOn(mem.db, "runTransaction").mockImplementation((fn) =>
+      runTransaction(async (tx) => {
+        const out = await fn(tx);
+        if (!raced) {
+          raced = true;
+          await mem.db.doc(SITE).update({ status: "queued", gitpageJobId: "build_new", config: { heading: "Submitted" } });
+        }
+        return out;
+      }),
+    );
+    const res = await patch({ config: { heading: "After" }, wizardStep: "look" });
+    spy.mockRestore();
+    expect(raced).toBe(true);
+    expect(res.status).toBe(409);
+    expect(mem.read(SITE)).toMatchObject({ status: "queued", gitpageJobId: "build_new", config: { heading: "Submitted" } });
+  });
+
+  it.each(["draft", "ready"])("saves the draft and the step on a %s site without touching its build state", async (status) => {
+    seedSite(status);
+    const before = mem.read(SITE)!;
+    const res = await patch({ config: { heading: "After" }, wizardStep: "look" });
+    expect(res.status).toBe(200);
+    expect(mem.read(SITE)).toMatchObject({
+      config: { heading: "After" },
+      wizardStep: "look",
+      status,
+      gitpageJobId: before.gitpageJobId,
+      liveUrl: before.liveUrl,
+    });
+  });
+
+  it("keeps the system fields server-owned whatever the draft says", async () => {
+    seedSite("draft");
+    await patch({ config: { heading: "After", site_type: "Other", astra_theme: true } });
+    expect(mem.read(SITE)?.config).toEqual({ heading: "After", site_type: "LocalSite", astra_theme: false });
+  });
+
+  it("stores only a known wizard step", async () => {
+    seedSite("draft");
+    await patch({ config: { heading: "After" }, wizardStep: "../admin" });
+    expect(mem.read(SITE)?.wizardStep).toBeNull();
+  });
+
+  it("refuses a body with no config object, and one too large to be a draft", async () => {
+    seedSite("draft");
+    const before = mem.read(SITE);
+    expect((await patch({ wizardStep: "look" })).status).toBe(400);
+    expect((await patch({ config: ["not", "an", "object"] })).status).toBe(400);
+    expect((await patch(null, { raw: "{" })).status).toBe(400);
+    expect((await patch({ config: { heading: "x".repeat(100_001) } })).status).toBe(413);
+    expect(mem.read(SITE)).toEqual(before);
+  });
+
+  it("answers 404 for a site that does not exist in this sub-account", async () => {
+    seedSite("draft");
+    expect((await patch({ config: { heading: "After" } }, { siteId: "nope" })).status).toBe(404);
+  });
+
+  it.each([
+    ["switched off", { websiteEnabledByAgency: false }],
+    ["never set", {}],
+  ])("refuses with the builder's 403 when the agency gate is %s, saving nothing", async (_label, gate) => {
+    mem.seed("subAccounts/sa1", { agencyId: "ag1", name: "Acme", ...gate });
+    seedSite("draft");
+    const before = mem.read(SITE);
+    const res = await patch({ config: { heading: "After" }, wizardStep: "look" });
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: expect.stringContaining("website builder is disabled") });
+    expect(mem.read(SITE)).toEqual(before);
+  });
+
+  it("is admin-only: no session, a non-admin member and another agency's user are all refused", async () => {
+    seedSite("draft");
+    const before = mem.read(SITE);
+    expect((await patch({ config: { heading: "After" } }, { uid: undefined })).status).toBe(401);
+    expect((await patch({ config: { heading: "After" } }, { uid: "u_member" })).status).toBe(403);
+    expect((await patch({ config: { heading: "After" } }, { uid: "u_outsider" })).status).toBe(403);
+    expect(mem.read(SITE)).toEqual(before);
+  });
+});
+
+describe("DELETE /api/sub-accounts/[id]/website/[siteId]?reset=1 — removed", () => {
+  // A page loaded before WS-6 still shows the old Rebuild button, which
+  // sends this. It must be refused, never treated as a Remove.
+  it.each(["?reset=1", "?reset=0", "?reset"])("%s is refused with 400 and the site is left as it was", async (query) => {
+    seedSite("ready");
+    const before = mem.read(SITE);
+    const res = await DELETE(
+      new Request(`https://app.test/api/sub-accounts/sa1/website/site1${query}`, {
+        method: "DELETE",
+        headers: { "x-user-uid": "u_admin" },
+      }),
+      { params: Promise.resolve({ id: "sa1", siteId: "site1" }) },
+    );
+    expect(res.status).toBe(400);
+    expect(mem.read(SITE)).toEqual(before);
+  });
+});
+
+describe("a site id that is not a document id", () => {
+  // A failed assertion must not leave its spies on the shared db.
+  afterEach(() => vi.restoreAllMocks());
+
+  // "a/b" makes the doc path six segments (a doc in a nested collection);
+  // "a/b/c" makes it seven, which the real Admin SDK refuses to build at all.
+  const BAD_IDS = ["a/b", "a/b/c", "site1/private/x", "..", ".", "", "__site__"];
+  const call = (method: "PATCH" | "DELETE", siteId: string, query = "") => {
+    const init = {
+      method,
+      headers: { "content-type": "application/json", "x-user-uid": "u_admin" },
+      ...(method === "PATCH" ? { body: JSON.stringify({ config: { heading: "After" } }) } : {}),
+    };
+    const request = new Request(`https://app.test/api/sub-accounts/sa1/website/x${query}`, init);
+    const params = { params: Promise.resolve({ id: "sa1", siteId }) };
+    return method === "PATCH" ? PATCH(request, params) : DELETE(request, params);
+  };
+
+  it.each([
+    ["the draft save", "PATCH", ""],
+    ["Remove", "DELETE", ""],
+  ] as const)("%s answers 404 before anything touches Firestore", async (_label, method, query) => {
+    seedSite("draft");
+    mem.seed("subAccounts/sa1/website/a/b/c", { id: "c", subAccountId: "sa1", status: "draft" });
+    mem.seed("subAccounts/sa1/website/site1/private/x", { id: "x", subAccountId: "sa1", status: "draft" });
+    const before = mem.all();
+    const doc = vi.spyOn(mem.db, "doc");
+    const collection = vi.spyOn(mem.db, "collection");
+    const runTransaction = vi.spyOn(mem.db, "runTransaction");
+    for (const siteId of BAD_IDS) {
+      const res = await call(method, siteId, query);
+      expect(res.status, `site id ${JSON.stringify(siteId)}`).toBe(404);
+    }
+    expect(doc).not.toHaveBeenCalled();
+    expect(collection).not.toHaveBeenCalled();
+    expect(runTransaction).not.toHaveBeenCalled();
+    vi.restoreAllMocks();
+    expect(mem.all()).toEqual(before);
+  });
+
+  it("an ordinary id still reaches the doc", async () => {
+    seedSite("draft");
+    expect((await call("PATCH", "site1")).status).toBe(200);
+    expect((await call("DELETE", "site1")).status).toBe(200);
+    expect(mem.read(SITE)).toBeUndefined();
+  });
+});

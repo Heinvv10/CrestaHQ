@@ -1,0 +1,71 @@
+[Unit]
+Description=WhatsApp agent bridge (rails-guarded) — instance %i
+# This is a USER unit (see [Install] below) — the manager drives it with
+# `systemctl --user`, per the design spec §3.3 (velo has Linger=yes and no
+# passwordless sudo). The user manager has no network-online.target, so there
+# is nothing to order against here: a boot-time race is instead absorbed by the
+# bounded restart below, which is the same path a transient connect failure
+# takes.
+
+# Bound the restart loop. A failing initial WhatsApp connect exits the process,
+# and Restart=always with RestartSec=15 would otherwise retry forever at
+# ~4 attempts/minute — "retrying in a loop turns a soft flag into a harder
+# block", the exact behaviour the Go code refuses and this file would hand
+# back. RestartSec=15 never trips systemd's default 5-in-10s limit, so the
+# window has to be widened explicitly: 5 attempts in 10 minutes, then the unit
+# enters `failed` and waits for a human.
+#
+# These keys belong in [Unit], not [Service], on systemd >= 229.
+#
+# Do NOT "fix" this by deleting Restart= — that loses genuine crash recovery.
+# A LoggedOut does not exit the process (it sets the kill switch and keeps
+# serving), so it is unaffected by any of this; only the transient-connect
+# path is.
+StartLimitBurst=5
+StartLimitIntervalSec=600
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/wa-agent-bridge/%i
+EnvironmentFile=/opt/wa-agent-bridge/%i/.env
+ExecStart=/opt/wa-agent-bridge/bin/wa-agent-bridge
+# always, not on-failure. The only exit-0 path in main.go is SIGINT/SIGTERM,
+# and on-failure declines to restart after it: a stray TERM — a session
+# teardown, someone's kill, a scripted pkill — left the process gone, systemd
+# reporting Result=success, and a customer's number silently offline until a
+# human noticed. The manager would eventually mark it logged_out, which is a
+# lie: the session is intact, the process is merely stopped.
+#
+# This does NOT override an operator. systemd never restarts a unit stopped
+# with `systemctl stop`, whatever Restart= says, so the deliberate stop still
+# stops. always only adds back the case nobody asked for. Crash recovery is
+# unchanged: log.Fatal exits nonzero and on-failure already covered it, still
+# bounded by the StartLimit above.
+Restart=always
+RestartSec=15
+StandardOutput=append:/opt/wa-agent-bridge/%i/bridge.log
+StandardError=append:/opt/wa-agent-bridge/%i/bridge.log
+
+# SIGTERM is the clean path: the process stops accepting sends, closes the
+# WhatsApp socket, then drains in-flight webhook deliveries. Give it room.
+# main.go's shutdownBudget const bounds the first step (HTTP graceful drain,
+# which covers an in-flight send) at 35s — chosen to outlast QueueOpts.Timeout
+# (30s). Closing the WhatsApp socket then waits up to 5s for whatsmeow's handler
+# queue (client.go:715). The last step, fanout.Drain, cancels in-flight media
+# downloads and media POSTs (which alone could run 120s + 120s) so the messages
+# go out text-only, and is bounded by fanoutDrainBudget (25s). Worst case end to
+# end: 35s + 5s + 25s = 65s, so TimeoutStopSec must stay above that; 90s leaves
+# 25s of headroom before SIGKILL. Anything Drain abandons is logged as an ALERT.
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+# The bridge holds a WhatsApp session and a token file; nothing else on the box
+# needs to read them.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wa-agent-bridge/%i
+
+[Install]
+WantedBy=default.target

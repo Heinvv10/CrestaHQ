@@ -1,0 +1,26 @@
+{
+  "trees": {
+    "api/hooks": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Fixture: inbound provider webhooks."
+      }
+    },
+    "api/things": {
+      "scope": true
+    }
+  },
+  "routes": {
+    "api/things:GET": {
+      "tools": [
+        "find_things"
+      ]
+    },
+    "api/things:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Fixture: a person's act."
+      }
+    }
+  }
+}

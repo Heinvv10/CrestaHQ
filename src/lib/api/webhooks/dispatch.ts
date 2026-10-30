@@ -1,0 +1,176 @@
+import "server-only";
+
+import { publishCallback } from "@/lib/automations/qstash";
+import {
+  createDelivery,
+  createEvent,
+  updateDelivery,
+} from "@/lib/firestore/webhook-events";
+import { findMatchingSubscriptions } from "@/lib/firestore/webhook-subscriptions";
+import { dispatchPushForWebhookEvent } from "@/lib/push/events";
+import { dispatchSlackForWebhookEvent } from "@/lib/slack/events";
+import type { WebhookEventType } from "@/types/webhooks";
+import { runAfterResponse } from "@/lib/server/after-response";
+
+/**
+ * Emit a webhook event from anywhere in the codebase. Fire-and-forget —
+ * never block the originating write on dispatch (Firestore writes for
+ * events + deliveries are best-effort).
+ *
+ * Wiring contract for slices 4-6:
+ *   After every successful resource write (contact create, deal move,
+ *   etc.) the route calls
+ *
+ *     void emitWebhookEvent({
+ *       subAccountId: ctx.subAccountId,
+ *       agencyId: ctx.agencyId,
+ *       mode: ctx.mode,
+ *       type: "contact.created",
+ *       payload: { contact: serializeContactForApi(c) },
+ *     });
+ *
+ * Why fire-and-forget:
+ *   - The originating API request should return as soon as the resource
+ *     is written. Webhook delivery is async by design.
+ *   - Subscriber endpoints can be slow, down, or untrusted — we never
+ *     want them in the critical path of an LeadStack write.
+ *   - Failures are logged + recoverable via the manual replay endpoint.
+ */
+
+const DELIVERY_DISPATCH_PATH = "/api/webhooks-out/step";
+
+export interface EmitWebhookEventInput {
+  subAccountId: string;
+  agencyId: string;
+  mode: "live" | "test";
+  type: WebhookEventType;
+  /**
+   * The wire payload. Pass the already-serialized resource (e.g.
+   * `{ contact: serializeContactForApi(c) }`). Whatever you pass is what
+   * subscribers receive — there is no further transformation in the
+   * dispatcher.
+   */
+  payload: unknown;
+  /**
+   * An API agent made the write. Subscribers get the same payload (a
+   * tenant's own webhooks are its integration, as on the human path); only
+   * the staff push copy changes, so an agent can't put its text on phones.
+   */
+  byAgent?: boolean;
+  /**
+   * Who made the write (`createdByUid` / `byUid` of the write path):
+   * `apikey:<prefix>` for a public-API key or an agent, a uid for a person.
+   * Subscribers never see it; the Slack consumer posts fixed copy for an
+   * `apikey:` actor, so no key-chosen text reaches the team channel.
+   */
+  actorUid?: string;
+}
+
+export async function emitWebhookEvent(
+  input: EmitWebhookEventInput,
+): Promise<void> {
+  try {
+    // Internal push consumer (PWA v1) — rides the same event stream as
+    // external webhooks, but BEFORE the no-subscriptions early return
+    // below (most deployments have zero API webhook subscribers; push
+    // must still fire). Self-guarded fire-and-forget: it filters to the
+    // four speed-to-lead events, no-ops without VAPID keys, and swallows
+    // its own errors. Test-mode events never notify a phone. Slack rides
+    // the same way: its own task, never throws, so a Slack failure or a
+    // slow hook can't touch the deliveries below.
+    if (input.mode === "live") {
+      runAfterResponse(() => dispatchPushForWebhookEvent(input));
+      runAfterResponse(() => dispatchSlackForWebhookEvent(input));
+    }
+
+    const subscriptions = await findMatchingSubscriptions(
+      input.subAccountId,
+      input.mode,
+      input.type,
+    );
+
+    if (subscriptions.length === 0) {
+      // No subscribers care about this event. Don't write an event archive
+      // row either — the row's only purpose is to back manual replay, and
+      // there's nothing to replay against.
+      return;
+    }
+
+    const event = await createEvent({
+      subAccountId: input.subAccountId,
+      agencyId: input.agencyId,
+      mode: input.mode,
+      type: input.type,
+      payload: input.payload,
+      subscriptionIds: subscriptions.map((s) => s.id),
+    });
+
+    // One delivery per matched subscription, scheduled immediately (delay
+    // 0). Subsequent retries reschedule with backoff inside the worker.
+    await Promise.all(
+      subscriptions.map(async (sub) => {
+        const delivery = await createDelivery({
+          subAccountId: input.subAccountId,
+          agencyId: input.agencyId,
+          eventId: event.id,
+          subscriptionId: sub.id,
+          attempt: 1,
+          url: sub.url,
+          scheduledAt: new Date(),
+        });
+        await scheduleDeliveryRetry({
+          subAccountId: input.subAccountId,
+          eventId: event.id,
+          deliveryId: delivery.id,
+          delaySeconds: 0,
+        });
+      }),
+    );
+  } catch (err) {
+    // Caught at the top so emitWebhookEvent is safe to `void` from any
+    // write path. Real production deployments observe via QStash failure
+    // logs + the delivery log viewer in slice 8.
+    console.warn("[webhooks/dispatch] emitWebhookEvent failed", err);
+  }
+}
+
+/**
+ * Schedule the next attempt for a failed delivery. Caller decides the
+ * delay via the backoff table. Uses a nonce in the QStash dedup id so
+ * the retry actually lands (without one, the dedup id collides with
+ * attempt 1's message).
+ *
+ * publishCallback never throws: null = not queued (e.g. the daily cap).
+ * Nothing would ever run the pending row, so mark it failed with the
+ * reason — the delivery log shows it and Redeliver replays it. Returns
+ * whether the delivery was queued.
+ */
+export async function scheduleDeliveryRetry(opts: {
+  subAccountId: string;
+  eventId: string;
+  deliveryId: string;
+  delaySeconds: number;
+}): Promise<boolean> {
+  const queued = await publishCallback({
+    pathname: DELIVERY_DISPATCH_PATH,
+    body: {
+      subAccountId: opts.subAccountId,
+      eventId: opts.eventId,
+      deliveryId: opts.deliveryId,
+    },
+    delaySeconds: opts.delaySeconds,
+    // `retry_<attempt-or-timestamp>` nonce — the worker generates a fresh
+    // delivery row per retry so each scheduled callback has a unique
+    // delivery id baked into the dedup key.
+    deduplicationId: `${opts.eventId}_${opts.deliveryId}`,
+  });
+  if (queued) return true;
+  console.error(
+    `[webhooks/dispatch] delivery not queued sa=${opts.subAccountId} event=${opts.eventId} delivery=${opts.deliveryId}`,
+  );
+  await updateDelivery(opts.subAccountId, opts.eventId, opts.deliveryId, {
+    status: "failed",
+    errorMessage: "Could not schedule this delivery (queue publish failed). Redeliver to retry.",
+  });
+  return false;
+}

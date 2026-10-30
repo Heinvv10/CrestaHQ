@@ -1,0 +1,89 @@
+name: wa-agent-bridge
+
+# push is main-only, as in ci.yml. With push on every branch, one commit to a
+# PR branch queued two full Go runs, and a concurrency group cannot fold them:
+# github.ref is refs/heads/<branch> on push and refs/pull/<N>/merge on
+# pull_request, so the two runs never share a group.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'services/wa-agent-bridge/**'
+      - '.github/workflows/wa-agent-bridge.yml'
+  pull_request:
+    paths:
+      - 'services/wa-agent-bridge/**'
+      - '.github/workflows/wa-agent-bridge.yml'
+
+concurrency:
+  group: wa-agent-bridge-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/wa-agent-bridge
+    env:
+      # go-sqlite3 is a cgo package. Set explicitly rather than relying on the
+      # default, because the default is 1 only when a C toolchain is present —
+      # and because `-race` forces cgo on, which is how a cgo-less build stayed
+      # broken here without CI noticing.
+      CGO_ENABLED: 1
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5.6.0
+        with:
+          # Bumped from 1.26.0 when govulncheck was added below: it reported
+          # eight STANDARD LIBRARY advisories with call paths this service
+          # actually reaches — net/http, crypto/tls, crypto/x509,
+          # net/textproto, net/url, encoding/asn1 — all fixed by 1.26.6. A
+          # vulnerability gate pinned to a toolchain that cannot pass it is
+          # not a gate. go.mod carries the same floor, for builds that never
+          # go through CI.
+          go-version-file: services/wa-agent-bridge/go.mod
+          cache-dependency-path: services/wa-agent-bridge/go.sum
+      # README.md calls gofmt a gate, so it has to actually be one. A gate
+      # believed to run and not running is worse than no gate.
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt -l reported unformatted files:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - run: go vet ./...
+      # CGO_ENABLED=0 must FAIL to build. Without the guard in
+      # store/requires_cgo.go it exits 0 and produces a binary that dies only at
+      # runtime, on first store open, with go-sqlite3's "This is a stub" — and
+      # CGO_ENABLED=0 is the default for cross-compiles and scratch/distroless
+      # images. This step is what makes that guard a gate rather than a comment.
+      - name: cgo guard - a cgo-less build must be rejected loudly
+        run: |
+          if CGO_ENABLED=0 go build ./... 2>/dev/null; then
+            echo "::error::CGO_ENABLED=0 built cleanly. The cgo guard in store/requires_cgo.go has regressed; the resulting binary cannot open its SQLite store."
+            exit 1
+          fi
+          echo "cgo guard holds: CGO_ENABLED=0 fails the build."
+      - run: go test ./... -race
+      - run: go build ./...
+      # A known-vulnerable dependency is the one class of defect no reviewer
+      # and no test on this branch can find: it is correct code calling
+      # something that was correct when it was written. govulncheck reports
+      # only advisories on code paths this module actually REACHES, so it is
+      # not a noise generator and is a blocking step like everything else here
+      # — nothing in this workflow is continue-on-error, and nothing should
+      # become so.
+      #
+      # Pinned to v1.7.0 rather than @latest: an unpinned `go run` of
+      # third-party code is a supply-chain path into a job that holds this
+      # repo's token, and @latest also means CI can turn red with no code
+      # change here. The
+      # trade-off is real and deliberate: a pinned scanner will not pick up
+      # newly published advisories until this pin is bumped. Bump it on
+      # purpose; do not "fix" it back to @latest.
+      - name: govulncheck
+        run: |
+          go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...

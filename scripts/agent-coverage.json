@@ -1,0 +1,1073 @@
+{
+  "trees": {
+    "api/admin": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Platform-operator console for the template seller (instance fleet, buyer reminder blast); no sub-account data and no agency key reaches it."
+      }
+    },
+    "api/affiliate": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The affiliate portal's own login, logout and payout settings, plus the public referral-click tracker (track); an affiliate's session or an anonymous visitor, never an agency."
+      }
+    },
+    "api/agency": {
+      "scope": true
+    },
+    "api/agents": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed watchdog sweep worker; no caller but the queue."
+      }
+    },
+    "api/ai-suite": {
+      "exclude": {
+        "category": "chat-only",
+        "reason": "The in-app AI Suite chat transport itself (chat, confirm, thread, usage); agents use /api/mcp and /api/v1/tools."
+      }
+    },
+    "api/auth": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Signup, password reset and session claim refresh for a signed-in person."
+      }
+    },
+    "api/automations": {
+      "scope": true
+    },
+    "api/booking": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Public booking-page availability and booking for visitors, with no session."
+      }
+    },
+    "api/brand": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Uploaded agency and sub-account logos served to any browser or email client (branding bytes only)."
+      }
+    },
+    "api/broadcasts": {
+      "scope": true
+    },
+    "api/checkout": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "The marketing site's founders checkout for template buyers."
+      }
+    },
+    "api/co": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "A visitor's checkout session: on a published checkout page, or a product's express buy link."
+      }
+    },
+    "api/comms": {
+      "scope": true
+    },
+    "api/community": {
+      "scope": true
+    },
+    "api/companies": {
+      "scope": true
+    },
+    "api/contacts": {
+      "scope": true
+    },
+    "api/cron": {
+      "exclude": {
+        "category": "internal",
+        "reason": "Scheduled jobs authenticated by the cron / QStash signature; no caller but the scheduler."
+      }
+    },
+    "api/deals": {
+      "scope": true
+    },
+    "api/dev-only": {
+      "exclude": {
+        "category": "internal",
+        "reason": "Development-only seed and wipe routes, refused in production."
+      }
+    },
+    "api/events": {
+      "scope": true
+    },
+    "api/forms": {
+      "scope": true
+    },
+    "api/github": {
+      "exclude": {
+        "category": "internal",
+        "reason": "A disabled stub that answers 410 to every call."
+      }
+    },
+    "api/gitpage-reminder": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed step worker of the operator's Gitpage reminder blast."
+      }
+    },
+    "api/google": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Google OAuth callback; completing a consent screen is a person's act."
+      }
+    },
+    "api/import": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed step worker of the GHL import; the import itself starts under api/sub-accounts."
+      }
+    },
+    "api/landing": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "The marketing landing page's heartbeat, metrics and recent-purchase ticker."
+      }
+    },
+    "api/mcp": {
+      "exclude": {
+        "category": "internal",
+        "reason": "The agent MCP transport itself; it is how tools are reached, not a route a tool wraps."
+      }
+    },
+    "api/meta": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Meta OAuth callback; completing a consent screen is a person's act."
+      }
+    },
+    "api/public": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Public, unauthenticated feeds and share links (GBP feed, shared report, snapshot share)."
+      }
+    },
+    "api/push": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "A browser's own Web Push subscription; bound to a person's device."
+      }
+    },
+    "api/pwa": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "PWA icons served to any browser."
+      }
+    },
+    "api/quotes": {
+      "scope": true
+    },
+    "api/reviews": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "The public review-feedback form a customer fills in."
+      }
+    },
+    "api/scheduled-messages": {
+      "scope": true
+    },
+    "api/social": {
+      "scope": true
+    },
+    "api/sub-accounts": {
+      "scope": true
+    },
+    "api/tasks": {
+      "scope": true
+    },
+    "api/u": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Unsubscribe links in sent messages, authenticated by their token."
+      }
+    },
+    "api/v1": {
+      "exclude": {
+        "category": "internal",
+        "reason": "The key-authenticated REST API itself (resources plus /api/v1/tools); agents call it directly, no tool wraps it."
+      }
+    },
+    "api/web-chat": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "The embeddable web-chat widget's visitor endpoints."
+      }
+    },
+    "api/webhooks": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Inbound provider webhooks (ElevenLabs, gitpage, Meta, Stripe, Paystack, Twilio, Vapi, Webinar1, WhatsApp), authenticated by provider signatures or per-sub-account path secrets."
+      }
+    },
+    "api/webhooks-out": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed outbound-webhook delivery step worker."
+      }
+    },
+    "api/workflows": {
+      "scope": true
+    },
+    "l": {
+      "scope": true
+    },
+    "manifest.webmanifest": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "The PWA web manifest, served to any browser."
+      }
+    },
+    "pay": {
+      "scope": true
+    },
+    "report": {
+      "scope": true
+    },
+    "rr": {
+      "scope": true
+    },
+    "t": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Broadcast email open pixel and click redirect, loaded by the recipient's mail client and authenticated only by the HMAC token in the URL; the recipient acts, never an agent key."
+      }
+    }
+  },
+  "routes": {
+    "api/agency/agent-proposals:GET": {
+      "exclude": {
+        "category": "queue-itself",
+        "reason": "The agency approvals queue itself: agency keys create proposals through tools, only the agency owner lists and decides them."
+      }
+    },
+    "api/agency/agent-proposals/[proposalId]:POST": {
+      "exclude": {
+        "category": "queue-itself",
+        "reason": "The agency approvals queue itself: agency keys create proposals through tools, only the agency owner lists and decides them."
+      }
+    },
+    "api/agency/api-keys/[keyId]:DELETE": {
+      "exclude": {
+        "category": "key-management",
+        "reason": "Mints, lists and revokes the agency API keys agents authenticate with; a key never manages keys."
+      }
+    },
+    "api/agency/api-keys:GET": {
+      "exclude": {
+        "category": "key-management",
+        "reason": "Mints, lists and revokes the agency API keys agents authenticate with; a key never manages keys."
+      }
+    },
+    "api/agency/api-keys:POST": {
+      "exclude": {
+        "category": "key-management",
+        "reason": "Mints, lists and revokes the agency API keys agents authenticate with; a key never manages keys."
+      }
+    },
+    "api/agency/logo:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Logo upload and removal from the Branding settings card; the bytes come from the browser canvas resize (lib/brand/render-logo-client.ts), and a pasted logo URL goes through the branding fields instead."
+      }
+    },
+    "api/agency/logo:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Logo upload and removal from the Branding settings card; the bytes come from the browser canvas resize (lib/brand/render-logo-client.ts), and a pasted logo URL goes through the branding fields instead."
+      }
+    },
+    "api/agency/plans:GET": {
+      "tools": [
+        "list_billing_plans"
+      ]
+    },
+    "api/agency/plans:POST": {
+      "tools": [
+        "create_billing_plan"
+      ]
+    },
+    "api/agency/snapshots:GET": {
+      "tools": [
+        "list_snapshots"
+      ]
+    },
+    "api/agency/sub-accounts/[id]/billing/charges:POST": {
+      "tools": [
+        "create_one_time_charge"
+      ]
+    },
+    "api/agency/sub-accounts/[id]/apply-snapshot:POST": {
+      "tools": [
+        "apply_snapshot"
+      ]
+    },
+    "api/agency:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Agency settings including the Agency Assistant switch (and, from A2, the agent kill switch); a key never flips its own switch."
+      }
+    },
+    "api/automations/prospecting/announce-sweep:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/automations/prospecting/apexgeo:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/automations/prospecting/mystery-shop:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/automations/prospecting/mystery-shop-form:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/automations/prospecting/report:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/broadcasts/email/fanout:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/broadcasts/email/send:POST": {
+      "tools": [
+        "create_broadcast"
+      ]
+    },
+    "api/broadcasts/email/step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/comms/email/send:POST": {
+      "tools": [
+        "send_message"
+      ]
+    },
+    "api/comms/meta/send:POST": {
+      "tools": [
+        "send_message"
+      ]
+    },
+    "api/comms/quiet-hours/release:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/comms/review-request/send:POST": {
+      "tools": [
+        "send_review_request"
+      ]
+    },
+    "api/comms/sms/send:POST": {
+      "tools": [
+        "send_message"
+      ]
+    },
+    "api/comms/voice/call:POST": {
+      "tools": [
+        "start_voice_call"
+      ]
+    },
+    "api/comms/voice/campaign/fanout:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/comms/voice/campaign/step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/comms/whatsapp/send:POST": {
+      "tools": [
+        "send_message"
+      ]
+    },
+    "api/comms/whatsapp/send-template:POST": {
+      "tools": [
+        "send_whatsapp_template"
+      ]
+    },
+    "api/companies/[id]:DELETE": {
+      "tools": [
+        "delete_company"
+      ]
+    },
+    "api/contacts:POST": {
+      "tools": [
+        "create_contact"
+      ]
+    },
+    "api/contacts/[id]:GET": {
+      "tools": [
+        "get_contact"
+      ]
+    },
+    "api/contacts/[id]:PATCH": {
+      "tools": [
+        "update_contact",
+        "add_tags",
+        "remove_tags",
+        "update_contact_channels"
+      ]
+    },
+    "api/contacts/[id]:DELETE": {
+      "tools": [
+        "delete_contact"
+      ]
+    },
+    "api/deals:POST": {
+      "tools": [
+        "create_deal"
+      ]
+    },
+    "api/deals/[id]:PATCH": {
+      "tools": [
+        "update_deal",
+        "move_deal_stage",
+        "mark_deal_completed"
+      ]
+    },
+    "api/deals/[id]:DELETE": {
+      "tools": [
+        "delete_deal"
+      ]
+    },
+    "api/events:POST": {
+      "tools": [
+        "create_event"
+      ]
+    },
+    "api/events/[token]/cancel:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/events/[token]/pay:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/events/[token]/reschedule:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/events/by-id/[id]/mark-paid:POST": {
+      "tools": [
+        "mark_booking_paid"
+      ]
+    },
+    "api/events/by-id/[id]/mark-status:POST": {
+      "tools": [
+        "set_event_status"
+      ]
+    },
+    "api/events/payment/expire-step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/events/reminder/step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/forms/[id]/submit:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Public form submission from a visitor's browser, guarded by the spam guard; no session or key."
+      }
+    },
+    "api/quotes/[token]/pay:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/quotes/[token]/pdf:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/quotes/[token]/respond:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/scheduled-messages/fire:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/social/publish/step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/sub-accounts/[id]/agent-proposals:GET": {
+      "exclude": {
+        "category": "queue-itself",
+        "reason": "The approvals queue itself: agents create proposals through tools, only a person lists and decides them."
+      }
+    },
+    "api/sub-accounts/[id]/agent-proposals/[proposalId]:POST": {
+      "exclude": {
+        "category": "queue-itself",
+        "reason": "The approvals queue itself: agents create proposals through tools, only a person lists and decides them."
+      }
+    },
+    "api/sub-accounts/[id]/agents/stale-deals:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The Stale deals monitor's config card on AI Agents → Monitors (on/off, threshold, pipeline and stage filters, quiet hours, recent runs); a sub-account admin's act, behind the Agent monitors gate. Assistant tools are a separate unit (T3)."
+      }
+    },
+    "api/sub-accounts/[id]/agents/stale-deals:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The Stale deals monitor's config card on AI Agents → Monitors (on/off, threshold, pipeline and stage filters, quiet hours, recent runs); a sub-account admin's act, behind the Agent monitors gate. Assistant tools are a separate unit (T3)."
+      }
+    },
+    "api/sub-accounts/[id]/agents/watchdog:GET": {
+      "tools": [
+        "watchdog_status"
+      ]
+    },
+    "api/sub-accounts/[id]/api-keys:GET": {
+      "exclude": {
+        "category": "key-management",
+        "reason": "Mints, lists and revokes the API keys agents authenticate with; a key never manages keys."
+      }
+    },
+    "api/sub-accounts/[id]/api-keys:POST": {
+      "exclude": {
+        "category": "key-management",
+        "reason": "Mints, lists and revokes the API keys agents authenticate with; a key never manages keys."
+      }
+    },
+    "api/sub-accounts/[id]/api-keys/[keyId]:DELETE": {
+      "exclude": {
+        "category": "key-management",
+        "reason": "Mints, lists and revokes the API keys agents authenticate with; a key never manages keys."
+      }
+    },
+    "api/sub-accounts/[id]/booking-pages:GET": {
+      "tools": [
+        "list_booking_pages"
+      ]
+    },
+    "api/sub-accounts/[id]/booking-pages:POST": {
+      "tools": [
+        "create_booking_page"
+      ]
+    },
+    "api/sub-accounts/[id]/booking-pages/[slug]:GET": {
+      "tools": [
+        "get_booking_page"
+      ]
+    },
+    "api/sub-accounts/[id]/booking-pages/[slug]:PATCH": {
+      "tools": [
+        "update_booking_page"
+      ]
+    },
+    "api/sub-accounts/[id]/booking-pages/[slug]:DELETE": {
+      "tools": [
+        "delete_booking_page"
+      ]
+    },
+    "api/sub-accounts/[id]/custom-field-folders:POST": {
+      "tools": [
+        "create_custom_field_folder"
+      ]
+    },
+    "api/sub-accounts/[id]/custom-field-folders/[folderId]:PATCH": {
+      "tools": [
+        "update_custom_field_folder"
+      ]
+    },
+    "api/sub-accounts/[id]/custom-field-folders/[folderId]:DELETE": {
+      "tools": [
+        "delete_custom_field_folder"
+      ]
+    },
+    "api/sub-accounts/[id]/custom-field-folders/reorder:PUT": {
+      "tools": [
+        "reorder_custom_field_folders"
+      ]
+    },
+    "api/sub-accounts/[id]/custom-fields:GET": {
+      "tools": [
+        "list_custom_fields"
+      ]
+    },
+    "api/sub-accounts/[id]/custom-fields:POST": {
+      "tools": [
+        "create_custom_field"
+      ]
+    },
+    "api/sub-accounts/[id]/custom-fields/[fieldId]:PATCH": {
+      "tools": [
+        "update_custom_field"
+      ]
+    },
+    "api/sub-accounts/[id]/custom-fields/[fieldId]:DELETE": {
+      "tools": [
+        "delete_custom_field"
+      ]
+    },
+    "api/sub-accounts/[id]/gbp/reviews:GET": {
+      "tools": [
+        "list_reviews"
+      ]
+    },
+    "api/sub-accounts/[id]/invite:POST": {
+      "tools": [
+        "invite_member"
+      ]
+    },
+    "api/sub-accounts/[id]/logo:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Logo upload and removal from the Branding settings card; the bytes come from the browser canvas resize (lib/brand/render-logo-client.ts), and a pasted logo URL goes through the branding fields instead."
+      }
+    },
+    "api/sub-accounts/[id]/logo:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Logo upload and removal from the Branding settings card; the bytes come from the browser canvas resize (lib/brand/render-logo-client.ts), and a pasted logo URL goes through the branding fields instead."
+      }
+    },
+    "api/sub-accounts/[id]/members:GET": {
+      "tools": [
+        "list_members"
+      ]
+    },
+    "api/sub-accounts/[id]/pipelines:GET": {
+      "tools": [
+        "list_pipelines"
+      ]
+    },
+    "api/sub-accounts/[id]/pipelines:POST": {
+      "tools": [
+        "create_pipeline"
+      ]
+    },
+    "api/sub-accounts/[id]/pipelines/[pipelineId]:PATCH": {
+      "tools": [
+        "update_pipeline"
+      ]
+    },
+    "api/sub-accounts/[id]/pipelines/[pipelineId]:DELETE": {
+      "tools": [
+        "delete_pipeline"
+      ]
+    },
+    "api/sub-accounts/[id]/products:POST": {
+      "tools": [
+        "create_product"
+      ]
+    },
+    "api/sub-accounts/[id]/products/[productId]:PATCH": {
+      "tools": [
+        "update_product"
+      ]
+    },
+    "api/sub-accounts/[id]/products/[productId]:DELETE": {
+      "tools": [
+        "delete_product"
+      ]
+    },
+    "api/sub-accounts/[id]/prospecting/mystery-shop:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Feeds that confirm dialog (allowed recipients, rendered enquiry); read only by the Reports card. Agent access is a separate decision with the send."
+      }
+    },
+    "api/sub-accounts/[id]/prospecting/mystery-shop:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "A mystery shop sends a real enquiry to a third-party business; every send is a person's act through a confirm dialog that names the exact recipient. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/prospecting/mystery-shop/[shopId]/confirm-missed:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Confirming a missed mystery shop publishes a claim about a third-party business; a person checks the inbox, Junk folder and call log first."
+      }
+    },
+    "api/sub-accounts/[id]/prospecting/mystery-shop/settings:PUT": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The mystery-shop enquiry wording and job values sit with the per-send confirmation; sub-account admins set them on the Prospecting page."
+      }
+    },
+    "api/sub-accounts/[id]/quotes:POST": {
+      "tools": [
+        "create_quote"
+      ]
+    },
+    "api/sub-accounts/[id]/quotes/[quoteId]/mark-paid:POST": {
+      "tools": [
+        "mark_quote_paid"
+      ]
+    },
+    "api/sub-accounts/[id]/quotes/[quoteId]/send:POST": {
+      "tools": [
+        "send_quote"
+      ]
+    },
+    "api/sub-accounts/[id]/recurring-invoices:GET": {
+      "tools": [
+        "list_recurring_schedules"
+      ]
+    },
+    "api/sub-accounts/[id]/recurring-invoices:POST": {
+      "tools": [
+        "create_recurring_schedule"
+      ]
+    },
+    "api/sub-accounts/[id]/recurring-invoices/[recurringId]:PATCH": {
+      "tools": [
+        "update_recurring_schedule",
+        "pause_recurring_schedule",
+        "resume_recurring_schedule",
+        "cancel_recurring_schedule"
+      ]
+    },
+    "api/sub-accounts/[id]/reputation/overview:GET": {
+      "tools": [
+        "reputation_overview"
+      ]
+    },
+    "api/sub-accounts/[id]/scheduled-messages:GET": {
+      "tools": [
+        "list_scheduled_messages"
+      ]
+    },
+    "api/sub-accounts/[id]/scheduled-messages:POST": {
+      "tools": [
+        "schedule_message"
+      ]
+    },
+    "api/sub-accounts/[id]/scheduled-messages/[msgId]:DELETE": {
+      "tools": [
+        "cancel_scheduled_message"
+      ]
+    },
+    "api/sub-accounts/[id]/snippets:GET": {
+      "tools": [
+        "list_snippets"
+      ]
+    },
+    "api/sub-accounts/[id]/snippets:POST": {
+      "tools": [
+        "create_snippet"
+      ]
+    },
+    "api/sub-accounts/[id]/snippets/[snippetId]:PATCH": {
+      "tools": [
+        "update_snippet"
+      ]
+    },
+    "api/sub-accounts/[id]/snippets/[snippetId]:DELETE": {
+      "tools": [
+        "delete_snippet"
+      ]
+    },
+    "api/sub-accounts/[id]/social/posts:GET": {
+      "tools": [
+        "list_social_posts"
+      ]
+    },
+    "api/sub-accounts/[id]/social/posts:POST": {
+      "tools": [
+        "create_social_post",
+        "schedule_social_post"
+      ]
+    },
+    "api/sub-accounts/[id]/social/posts/[postId]:DELETE": {
+      "tools": [
+        "delete_social_post"
+      ]
+    },
+    "api/sub-accounts/[id]/webhook-subscriptions:GET": {
+      "tools": [
+        "list_webhooks"
+      ]
+    },
+    "api/sub-accounts/[id]/website/[siteId]:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The website wizard's per-step draft save (the config and the step to resume on): form state for a person filling it in. The website tools are chat-only, and create_website builds in one call."
+      }
+    },
+    "api/sub-accounts/[id]/website/[siteId]/domain:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Takes a live site's custom domain back off the Web Chat allow-list: the other half of the custom-domain dialog, a step in the operator's own DNS setup at GitLab or GitHub. The website tools are chat-only."
+      }
+    },
+    "api/sub-accounts/[id]/website/[siteId]/domain:PUT": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Records the custom domain a live site is served on and allow-lists it for Web Chat, after the operator has set it up in GitLab or GitHub (the custom-domain dialog). Widens where the chat widget may run, so it stays with a person. The website tools are chat-only."
+      }
+    },
+    "api/sub-accounts/[id]/website/[siteId]/template:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Stops a live site being one of the agency's gitpage templates (the site card's Save as template dialog). Changes what every client of the agency may build from, so it stays with a person. The website tools are chat-only."
+      }
+    },
+    "api/sub-accounts/[id]/website/[siteId]/template:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Saves or renames a live site as a gitpage template (the site card's Save as template dialog). An agency-scope save offers the site's design to every client of the agency, so it stays with a person. The website tools are chat-only."
+      }
+    },
+    "api/sub-accounts/[id]/website/concepts:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Feeds the website builder's concept picker: a member-authed proxy over gitpage's design directions. The website tools are chat-only; an assistant tool for it is unit WS-7 of UPSTREAM_PORT_PLAN.md."
+      }
+    },
+    "api/sub-accounts/[id]/website/sync:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Fired by the Websites page when it opens: imports the copies the client made in gitpage (Duplicate) into the list. Housekeeping for the page a person is looking at, not an action. The website tools are chat-only."
+      }
+    },
+    "api/sub-accounts/[id]/website/templates:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Feeds the website wizard's template picker and the site cards' Save as template: an admin-only proxy over the agency's gitpage templates. The website tools are chat-only."
+      }
+    },
+    "api/sub-accounts/[id]/whatsapp-templates:GET": {
+      "tools": [
+        "list_whatsapp_templates"
+      ]
+    },
+    "api/sub-accounts/[id]/whatsapp-templates:POST": {
+      "tools": [
+        "create_whatsapp_template"
+      ]
+    },
+    "api/sub-accounts/[id]/whatsapp-templates/[templateId]/submit:POST": {
+      "tools": [
+        "submit_whatsapp_template"
+      ]
+    },
+    "api/sub-accounts/[id]/workflows:GET": {
+      "tools": [
+        "list_workflows"
+      ]
+    },
+    "api/sub-accounts/[id]/workflows:POST": {
+      "tools": [
+        "create_workflow"
+      ]
+    },
+    "api/sub-accounts/[id]/workflows/[workflowId]:GET": {
+      "tools": [
+        "get_workflow"
+      ]
+    },
+    "api/sub-accounts/[id]/workflows/[workflowId]:PATCH": {
+      "tools": [
+        "update_workflow",
+        "set_workflow_status"
+      ]
+    },
+    "api/sub-accounts/[id]/workflows/[workflowId]:DELETE": {
+      "tools": [
+        "delete_workflow"
+      ]
+    },
+    "api/sub-accounts/[id]/workflows/[workflowId]/runs:GET": {
+      "tools": [
+        "list_workflow_runs"
+      ]
+    },
+    "api/tasks:POST": {
+      "tools": [
+        "create_task"
+      ]
+    },
+    "api/tasks/[id]/complete:POST": {
+      "tools": [
+        "complete_task"
+      ]
+    },
+    "api/workflows/step:POST": {
+      "exclude": {
+        "category": "internal",
+        "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "l/[token]:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "pay/[token]:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "pay/charge/[token]:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "pay/link/[token]:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "pay/link/[token]:POST": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "report/[shareId]/opengraph-image:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "report/[shareId]/pdf:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "rr/[token]:GET": {
+      "exclude": {
+        "category": "public-unauth",
+        "reason": "Customer-facing link authenticated only by the token / share id in its URL (pay, accept, reschedule, track, view); the recipient acts, never an agent key."
+      }
+    },
+    "api/comms/dialer/token:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Mints a Twilio Voice token for a signed-in person's browser to place a live phone call; an agent cannot hold a voice call, and placing calls for agents is start_voice_call."
+      }
+    },
+    "api/sub-accounts/[id]/dialer:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Provisions the browser dialer on the client's own Twilio account (mints an API key and TwiML App, toggles call recording, tears them down); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/dialer:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Provisions the browser dialer on the client's own Twilio account (mints an API key and TwiML App, toggles call recording, tears them down); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/dialer:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Provisions the browser dialer on the client's own Twilio account (mints an API key and TwiML App, toggles call recording, tears them down); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/web-voice:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's own ElevenLabs key for Web Voice (probes and stores the key, provisions and re-syncs the voice agent on the client's ElevenLabs account, disconnects); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/web-voice:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's own ElevenLabs key for Web Voice (probes and stores the key, provisions and re-syncs the voice agent on the client's ElevenLabs account, disconnects); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/web-voice:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's own ElevenLabs key for Web Voice (probes and stores the key, provisions and re-syncs the voice agent on the client's ElevenLabs account, disconnects); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/web-voice:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's own ElevenLabs key for Web Voice (probes and stores the key, provisions and re-syncs the voice agent on the client's ElevenLabs account, disconnects); a sub-account admin's act in Settings. Agent access is a separate decision."
+      }
+    },
+    "api/sub-accounts/[id]/google-calendar/import:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Google Calendar import consent: a member chooses to show their OWN Google calendar (times only, or with titles) to the workspace, and a sub-account admin allows it. Consent to share a person's calendar is that person's act; an agent key acts for no member."
+      }
+    },
+    "api/sub-accounts/[id]/slack:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+      }
+    },
+    "api/sub-accounts/[id]/slack:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+      }
+    },
+    "api/sub-accounts/[id]/slack:PATCH": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+      }
+    },
+    "api/sub-accounts/[id]/slack:DELETE": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+      }
+    },
+    "api/sub-accounts/[id]/slack/test:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Connects the sub-account's Slack Incoming Webhook (validates and test-posts the URL, stores it as a secret, picks the events that post, sends a test, disconnects); a sub-account admin's act in Settings. Assistant tools are a separate unit (T2)."
+      }
+    }
+  }
+}

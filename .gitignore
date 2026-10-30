@@ -1,0 +1,84 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# playwright: the E2E session cookie, its HTML report, and per-run artifacts
+e2e/.auth/
+playwright-report/
+test-results/
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+!.env.example
+
+# firebase: per-developer project alias. Run `firebase use <project-id>`
+# after cloning, or copy .firebaserc.example to .firebaserc and edit it.
+.firebaserc
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# internal release notes + release script — never publish to any remote
+PUBLISH.md
+publish.ps1
+test-published.ps1
+back-to-main.ps1
+
+# internal owner-only marketing/stats script — reads the private purchases
+# collection; never ships to a buyer's repo
+scripts/buyer-stats.mjs
+
+# internal planning / scoping docs — kept local, not published
+docs/plans/
+
+# temporary worktree used by publish.ps1 — lives one dir above the repo,
+# so it's normally invisible to git status; entry kept for intent.
+leadstack-pub-tmp/
+PAYMENTS_V1_PLAN.md
+
+# services/qcontact-import run state (seen case ids)
+.qcontact-import-state.json
+
+# Claude Code per-machine permissions: whatever this machine has clicked
+# "always allow" on. It can hold absolute local paths and must never ship to
+# a buyer.
+.claude/settings.local.json
+
+# client/customer data exports (e.g. QContact case packs) must never be
+# committed: POPIA. Root-level only, so tracked fixtures such as
+# public/contacts-template.csv are unaffected. Store such files outside the
+# repo in a restricted folder instead.
+/*.zip
+/*.csv

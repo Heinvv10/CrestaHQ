@@ -1,0 +1,226 @@
+import type { CustomFieldValue } from "@/types/custom-fields";
+
+/**
+ * Merge-tag resolution for automation templates.
+ *
+ * Tags are resolved at send-time against the contact, sub-account, and
+ * agency-owner snapshots loaded by the executor. Unknown tags resolve to
+ * an empty string (don't leak `{{...}}` placeholders into outbound copy).
+ *
+ * SUBSTITUTED VALUES ARE UNTRUSTED. A contact's name, or a custom field set
+ * over the public API, is attacker-controllable free text; interpolating it
+ * into an HTML email body unescaped lets a key holder deliver raw markup — a
+ * phishing anchor, say — from the tenant's own verified sender. Callers
+ * building HTML MUST therefore pass `{ escape: "html" }`. Plain-text bodies
+ * and subject lines must NOT (escaping those would put `&amp;` in front of
+ * a customer). The escape is applied per substituted VALUE, never to the
+ * finished string, so markup the operator wrote in their own template body
+ * still renders.
+ *
+ * Supported tags:
+ *   {{contact.firstName}}, {{contact.lastName}}, {{contact.email}}, {{contact.phone}}
+ *   {{owner.firstName}},   {{owner.email}}
+ *   {{workspace.name}}
+ *   {{bookingLink}}        — sub-account's configured Calendly / Cal.com /
+ *                            TidyCal URL. Empty string when not set.
+ *   {{unsubscribeLink}}    — required in email bodies.
+ *   {{contact.customFields.<key>}}
+ *                          — any operator-defined contact custom field, by
+ *                            its stable `key`. Values were already validated
+ *                            against the sub-account's field definitions on
+ *                            write (lib/custom-fields/validation), so nothing
+ *                            is re-checked here; an unset or unknown key
+ *                            resolves to empty string like any other tag.
+ *   {{prospecting.headline}}, {{prospecting.reportUrl}}
+ *                          — the contact's latest ready prospect report:
+ *                            its headline and share link, stamped on the
+ *                            contact by the report worker. Empty otherwise.
+ *
+ * Per-type slugged booking tags ({{bookingLink:30min}}) are reserved for a
+ * future multi-link booking integration.
+ */
+
+export interface MergeTagSubject {
+  contact: {
+    name: string;
+    email: string;
+    phone: string;
+    /**
+     * The contact's stored custom-field value map, surfaced as
+     * {{contact.customFields.<key>}}. Optional so callers with no contact
+     * doc in hand (previews) keep compiling; absent → every custom-field
+     * tag resolves to empty string.
+     */
+    customFields?: Record<string, CustomFieldValue> | null;
+  };
+  owner: {
+    displayName: string;
+    email: string;
+  };
+  workspace: {
+    name: string;
+  };
+  /**
+   * Sub-account's booking-page URL, surfaced via {{bookingLink}}. Empty
+   * string when the sub-account hasn't set one — tag resolves to empty
+   * rather than leaking the raw `{{bookingLink}}` placeholder.
+   */
+  bookingLink: string;
+  /** Pre-built fully-qualified unsubscribe URL. Empty string for SMS templates. */
+  unsubscribeLink: string;
+  /** The contact's latest ready prospect report. Optional: absent → empty. */
+  prospecting?: { headline: string; reportUrl: string } | null;
+}
+
+const TAG_RE = /\{\{\s*([a-zA-Z0-9_.:-]+)\s*\}\}/g;
+
+const CUSTOM_FIELD_PREFIX = "contact.customFields.";
+
+/**
+ * Render one stored custom-field value as template text. Multiselect
+ * arrays join with ", "; null / undefined / an empty array render empty so
+ * a blank field never leaks "undefined" or the raw tag into outbound copy.
+ */
+function customFieldText(v: CustomFieldValue | undefined): string {
+  if (v === null || v === undefined) return "";
+  if (Array.isArray(v)) return v.join(", ");
+  return String(v);
+}
+
+function firstWord(s: string | null | undefined): string {
+  if (!s) return "";
+  const trimmed = s.trim();
+  const space = trimmed.indexOf(" ");
+  return space === -1 ? trimmed : trimmed.slice(0, space);
+}
+
+function lastWord(s: string | null | undefined): string {
+  if (!s) return "";
+  const trimmed = s.trim();
+  const space = trimmed.lastIndexOf(" ");
+  return space === -1 ? "" : trimmed.slice(space + 1);
+}
+
+export interface ResolveMergeTagOptions {
+  /**
+   * Escape each substituted value for interpolation into HTML. Omit for
+   * plain text and subject lines.
+   */
+  escape?: "html";
+  /**
+   * Tags whose value is deliberate markup WE supply rather than anything a
+   * contact can influence — exempt from escaping. In practice just
+   * `unsubscribeLink`, which the email executor fills with a real anchor and
+   * which is legally required to render as a link. Only read under
+   * `escape: "html"`.
+   */
+  safeTags?: readonly string[];
+}
+
+/** Minimal HTML-attribute-safe escape for substituted values. */
+function escapeHtml(s: string): string {
+  return s
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+export function resolveMergeTags(
+  body: string,
+  subject: MergeTagSubject,
+  options?: ResolveMergeTagOptions,
+): string {
+  const escapeValues = options?.escape === "html";
+  const safeTags = new Set(options?.safeTags ?? []);
+  return body.replace(TAG_RE, (_match, tag: string) => {
+    const value = resolveTag(tag, subject);
+    return escapeValues && !safeTags.has(tag) ? escapeHtml(value) : value;
+  });
+}
+
+function resolveTag(tag: string, subject: MergeTagSubject): string {
+  switch (tag) {
+    case "contact.firstName":
+      return firstWord(subject.contact.name);
+    case "contact.lastName":
+      return lastWord(subject.contact.name);
+    case "contact.email":
+      return subject.contact.email ?? "";
+    case "contact.phone":
+      return subject.contact.phone ?? "";
+    case "owner.firstName":
+      return firstWord(subject.owner.displayName);
+    case "owner.email":
+      return subject.owner.email ?? "";
+    case "workspace.name":
+      return subject.workspace.name ?? "";
+    case "bookingLink":
+      return subject.bookingLink ?? "";
+    case "unsubscribeLink":
+      return subject.unsubscribeLink ?? "";
+    case "prospecting.headline":
+      return subject.prospecting?.headline ?? "";
+    case "prospecting.reportUrl":
+      return subject.prospecting?.reportUrl ?? "";
+    default:
+      if (tag.startsWith(CUSTOM_FIELD_PREFIX)) {
+        const key = tag.slice(CUSTOM_FIELD_PREFIX.length);
+        return customFieldText(subject.contact.customFields?.[key]);
+      }
+      // Unknown / deferred tags (e.g. per-type slugged booking links like
+      // bookingLink:30min). Surface as empty rather than leak the raw
+      // token into outbound copy.
+      return "";
+  }
+}
+
+/**
+ * The list of tags surfaced in the template editor's "Insert" picker. v2 will
+ * extend this when booking links land.
+ */
+export const SUPPORTED_TAGS_EMAIL: ReadonlyArray<{ tag: string; description: string }> = [
+  { tag: "contact.firstName", description: "Contact's first name" },
+  { tag: "contact.lastName", description: "Contact's last name" },
+  { tag: "contact.email", description: "Contact's email address" },
+  { tag: "contact.phone", description: "Contact's phone number" },
+  { tag: "owner.firstName", description: "Agency owner's first name" },
+  { tag: "owner.email", description: "Agency owner's email" },
+  { tag: "workspace.name", description: "Sub-account name" },
+  { tag: "bookingLink", description: "Booking page URL (set under Booking → Default booking link)" },
+  { tag: "unsubscribeLink", description: "Per-contact unsubscribe URL (required in email)" },
+];
+
+export const SUPPORTED_TAGS_SMS: ReadonlyArray<{ tag: string; description: string }> = [
+  { tag: "contact.firstName", description: "Contact's first name" },
+  { tag: "contact.lastName", description: "Contact's last name" },
+  { tag: "owner.firstName", description: "Agency owner's first name" },
+  { tag: "workspace.name", description: "Sub-account name" },
+  { tag: "bookingLink", description: "Booking page URL (set under Booking → Default booking link)" },
+];
+
+/**
+ * Validate an email-template body. Returns null if valid, an error string
+ * otherwise. Required: must contain {{unsubscribeLink}} somewhere.
+ */
+export function validateEmailBody(body: string): string | null {
+  if (!body.includes("{{unsubscribeLink}}")) {
+    return "Email body must include {{unsubscribeLink}} somewhere.";
+  }
+  return null;
+}
+
+/**
+ * Reject per-type slugged booking tags ({{bookingLink:30min}}) — the bare
+ * {{bookingLink}} is now supported (resolves to the sub-account's URL),
+ * but slug variants are reserved for a future multi-link integration.
+ * Surfaces a clear error rather than silently resolving the tag to empty.
+ */
+export function validateNoBookingTags(body: string): string | null {
+  const matches = body.match(/\{\{\s*bookingLink:[a-z0-9-]+\s*\}\}/g);
+  if (matches && matches.length > 0) {
+    return `Slugged booking tags aren't supported yet: ${matches.join(", ")}. Use {{bookingLink}} for the sub-account's default booking URL.`;
+  }
+  return null;
+}

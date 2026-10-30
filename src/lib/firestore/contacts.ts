@@ -1,0 +1,251 @@
+import {
+  collection,
+  doc,
+  addDoc,
+  updateDoc,
+  getDoc,
+  getDocs,
+  limit,
+  onSnapshot,
+  serverTimestamp,
+  query,
+  orderBy,
+  where,
+  type QueryConstraint,
+  type Unsubscribe,
+} from "firebase/firestore";
+import { getFirebaseDb } from "@/lib/firebase/client";
+import {
+  NOOP_UNSUB,
+  territoryQueryPlan,
+} from "@/lib/firestore/territory-query";
+import type { Contact, ContactFormData, Note } from "@/types/contacts";
+import { GLOBAL_TERRITORY_ID, type TenantScope } from "@/types";
+
+const CONTACTS = "contacts";
+
+export interface ContactQueryOptions {
+  /**
+   * Restrict the listener to contacts whose `territoryId` is in the
+   * given list. See deals.ts::DealQueryOptions for the full contract.
+   * `null` (the default) = no extra clause.
+   */
+  territoryFilter?: string[] | null;
+  /** Only contacts linked to this `companies/{id}` doc (company detail page). */
+  companyId?: string;
+  /**
+   * Hold the callback until the server has answered. Without it the first
+   * snapshot can come from the in-memory cache and hold only the docs a
+   * concurrent query loaded (the contacts page's newest-page preview) — a
+   * partial list shown as complete.
+   */
+  waitForServer?: boolean;
+}
+
+export function subscribeToContacts(
+  scope: TenantScope,
+  callback: (contacts: Contact[]) => void,
+  onError?: (err: Error) => void,
+): Unsubscribe;
+export function subscribeToContacts(
+  scope: TenantScope,
+  opts: ContactQueryOptions,
+  callback: (contacts: Contact[]) => void,
+  onError?: (err: Error) => void,
+): Unsubscribe;
+export function subscribeToContacts(
+  scope: TenantScope,
+  callbackOrOpts:
+    | ((contacts: Contact[]) => void)
+    | ContactQueryOptions,
+  callbackOrError?:
+    | ((contacts: Contact[]) => void)
+    | ((err: Error) => void),
+  onErrorMaybe?: (err: Error) => void,
+): Unsubscribe {
+  const opts: ContactQueryOptions =
+    typeof callbackOrOpts === "function" ? {} : callbackOrOpts;
+  const callback: (contacts: Contact[]) => void =
+    typeof callbackOrOpts === "function"
+      ? callbackOrOpts
+      : (callbackOrError as (contacts: Contact[]) => void);
+  const onError: ((err: Error) => void) | undefined =
+    typeof callbackOrOpts === "function"
+      ? (callbackOrError as ((err: Error) => void) | undefined)
+      : onErrorMaybe;
+
+  // Filter by subAccountId so security rules accept the listener and the
+  // data is scoped to the active sub-account. Sort client-side to avoid the
+  // subAccountId+createdAt composite index.
+  const plan = territoryQueryPlan(opts.territoryFilter);
+  if (plan.mode === "empty") {
+    callback([]);
+    return NOOP_UNSUB;
+  }
+  const constraints: QueryConstraint[] = [
+    where("subAccountId", "==", scope.subAccountId),
+  ];
+  if (plan.mode === "in") constraints.push(plan.constraint);
+  if (opts.companyId) constraints.push(where("companyId", "==", opts.companyId));
+  const q = query(collection(getFirebaseDb(), CONTACTS), ...constraints);
+  let serverAnswered = false;
+  return onSnapshot(
+    q,
+    // When the cache already holds the full result (the page revisited in the
+    // same session), the server's confirmation changes no docs — it is
+    // metadata-only and, without this, would never fire.
+    { includeMetadataChanges: opts.waitForServer === true },
+    (snap) => {
+      if (opts.waitForServer) {
+        if (snap.metadata.fromCache && !serverAnswered) return;
+        // Once loaded, a metadata-only event (e.g. a write's server ack)
+        // carries no new data — skip the re-sort the default mode never did.
+        if (serverAnswered && snap.docChanges().length === 0) return;
+        serverAnswered = true;
+      }
+      const contacts = snap.docs.map(
+        (d) => ({ id: d.id, ...(d.data() as Omit<Contact, "id">) }),
+      );
+      contacts.sort((a, b) => toMillis(b.createdAt) - toMillis(a.createdAt));
+      callback(contacts);
+    },
+    (err) => onError?.(err),
+  );
+}
+
+/**
+ * The newest `count` contacts in a sub-account, one-shot. Lets the contacts
+ * page paint its first rows before the full list (which search, filters and
+ * select-all need) finishes downloading. Needs the (subAccountId, createdAt
+ * desc) index; without it this rejects and callers show no preview. A doc
+ * with no `createdAt` is left out (every create path sets it).
+ */
+export async function fetchNewestContacts(
+  scope: TenantScope,
+  count: number,
+): Promise<Contact[]> {
+  const snap = await getDocs(
+    query(
+      collection(getFirebaseDb(), CONTACTS),
+      where("subAccountId", "==", scope.subAccountId),
+      orderBy("createdAt", "desc"),
+      limit(count),
+    ),
+  );
+  return snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Contact, "id">) }));
+}
+
+function toMillis(v: unknown): number {
+  if (!v) return 0;
+  if (v instanceof Date) return v.getTime();
+  const maybe = v as { toDate?: () => Date; seconds?: number };
+  if (typeof maybe.toDate === "function") return maybe.toDate().getTime();
+  if (typeof maybe.seconds === "number") return maybe.seconds * 1000;
+  return 0;
+}
+
+export async function getContact(id: string): Promise<Contact | null> {
+  const snap = await getDoc(doc(getFirebaseDb(), CONTACTS, id));
+  if (!snap.exists()) return null;
+  return { id: snap.id, ...(snap.data() as Omit<Contact, "id">) };
+}
+
+export function subscribeToContact(
+  id: string,
+  callback: (contact: Contact | null) => void,
+  onError?: (err: Error) => void,
+): Unsubscribe {
+  return onSnapshot(
+    doc(getFirebaseDb(), CONTACTS, id),
+    (snap) => {
+      if (!snap.exists()) {
+        callback(null);
+        return;
+      }
+      callback({ id: snap.id, ...(snap.data() as Omit<Contact, "id">) });
+    },
+    (err) => onError?.(err),
+  );
+}
+
+export async function createContact(
+  scope: TenantScope,
+  createdByUid: string,
+  data: ContactFormData,
+): Promise<string> {
+  const ref = await addDoc(collection(getFirebaseDb(), CONTACTS), {
+    ...data,
+    agencyId: scope.agencyId,
+    subAccountId: scope.subAccountId,
+    createdByUid,
+    pipelineStage: null,
+    attribution: null,
+    emailOptedOut: false,
+    smsOptedOut: false,
+    // Default to Global when no territory was picked (rep auto-default
+    // covers single-territory reps; admins/inbound land in Global).
+    territoryId: data.territoryId ?? GLOBAL_TERRITORY_ID,
+    // Stamp as live data so the public API (v1+) which filters strictly
+    // on `mode` picks up dashboard-created contacts. Test-mode docs are
+    // only created via the API (`mode: "test"`). Legacy contacts created
+    // before this field shipped have no `mode` value and remain invisible
+    // to the API — operators backfill with a one-off script if needed.
+    mode: "live",
+    createdAt: serverTimestamp(),
+    updatedAt: serverTimestamp(),
+  });
+  return ref.id;
+}
+
+export async function updateContact(
+  id: string,
+  data: Partial<ContactFormData>,
+): Promise<void> {
+  await updateDoc(doc(getFirebaseDb(), CONTACTS, id), {
+    ...data,
+    updatedAt: serverTimestamp(),
+  });
+}
+
+export async function addNote(
+  contactId: string,
+  content: string,
+  userId: string,
+  source?: Note["source"],
+  mentionedUids: string[] = [],
+): Promise<string> {
+  const ref = await addDoc(
+    collection(getFirebaseDb(), CONTACTS, contactId, "notes"),
+    {
+      content,
+      createdBy: userId,
+      createdAt: serverTimestamp(),
+      ...(source ? { source } : {}),
+      ...(mentionedUids.length ? { mentionedUids } : {}),
+    },
+  );
+  return ref.id;
+}
+
+export function subscribeToNotes(
+  contactId: string,
+  callback: (notes: Note[]) => void,
+  onError?: (err: Error) => void,
+): Unsubscribe {
+  // Capped like activities — the timeline re-reads this subcollection on
+  // every profile open.
+  const q = query(
+    collection(getFirebaseDb(), CONTACTS, contactId, "notes"),
+    orderBy("createdAt", "desc"),
+    limit(50),
+  );
+  return onSnapshot(
+    q,
+    (snap) => {
+      callback(
+        snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<Note, "id">) })),
+      );
+    },
+    (err) => onError?.(err),
+  );
+}

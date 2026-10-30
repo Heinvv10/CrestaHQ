@@ -1,0 +1,95 @@
+# gitleaks config. Extends the default ruleset rather than replacing it.
+[extend]
+useDefault = true
+
+# Allowlist DOCUMENTATION PLACEHOLDERS only.
+#
+# These match the literal placeholder text, so a real credential on the same
+# line, in the same file, under the same rule is still caught. Deliberately not
+# a `paths` exclusion and not a rule-id exclusion — silencing a whole file or a
+# whole rule is how a scanner quietly stops scanning while still reporting
+# green.
+#
+# Verified in both directions when added: with these entries the repo scans
+# clean, and a planted `sk_live_...` Stripe key is still detected.
+[allowlist]
+description = "Documentation placeholders, not credentials"
+# Anchored to the EXACT placeholder values gitleaks captures as the secret
+# (allowlist regexes match the captured secret, not the surrounding line), so
+# these cannot widen to match a real token that merely sits nearby.
+regexes = [
+  # Setup instructions in the QStash cron route's header comment.
+  '''^YOUR_QSTASH_TOKEN$''',
+  # Public API docs page showing buyers the Bearer format.
+  '''^lsk_live_\.\.\.$''',
+  # Retired wa-manager test fixture: only exists in commit 36549d2's diff
+  # (services/wa-manager/config/config_test.go line 11 at that point in
+  # history). Never a credential — a >=32-char OPERATOR_TOKEN test value.
+  # Replaced at the tip by a low-entropy fixture; this anchor exists only
+  # so the retired commit's diff stops tripping the history scan.
+  '''^op-secret-0123456789abcdef012345$''',
+  # GBP token-lifecycle test fixtures (src/lib/gbp/tokens.test.ts): made-up
+  # refresh tokens given Google's "1//0g" prefix so the refresh/rotation paths
+  # see realistic values. generic-api-key flags them by entropy. Never
+  # credentials — each is an English phrase, and each anchor matches only
+  # that exact value.
+  # Agent API key-mint route test fixture
+  # (src/app/api/sub-accounts/[id]/api-keys/route.test.ts): a made-up key in
+  # the lsk_ format so the mint response shape is realistic. Never a
+  # credential; the anchor matches only this exact value.
+  '''^lsk_live_abc123_secret$''',
+  '''^1//0gMineButStale$''',
+  '''^1//0gTheirRotation$''',
+  '''^1//0gNewerGrant$''',
+  '''^1//0gThirdGrant$''',
+  '''^1//0gOurRotation$''',
+  # Calendar-feed route test fixture: only exists in commit 6fb9615's diff
+  # (src/app/api/sub-accounts/[id]/calendar.ics/route.test.ts line 12 at that
+  # point in history), as the HMAC secret the test signs its own feed token
+  # with. Never a credential. Replaced at the tip by a low-entropy fixture;
+  # this anchor exists only so that commit's diff stops tripping the scan.
+  '''^ics-route-test-secret-0123456789$''',
+  # Rules-test fixture: only exists in commit 592a3ed0's diff
+  # (src/lib/paystack/payments.firestore-rules.test.ts line 134 at that point
+  # in history) as a paymentAttempts `keyFingerprint` value. Never a
+  # credential — a hex counting sequence. Replaced at the tip by a
+  # low-entropy fixture; this anchor exists only so that commit's diff stops
+  # tripping the history scan.
+  '''^0123456789abcdef01234567$''',
+  # Multi-listing review-link test fixture
+  # (src/app/api/sub-accounts/[id]/google-review/adopt-listing-url/route.listing.test.ts):
+  # a fake-provider location id held in a constant named KEY, which trips
+  # generic-api-key by name. Never a credential; the anchor matches only it.
+  '''^e2e-velo-gqeberha-north$''',
+  # Keyless-hardening test fixtures: only exist in commit f384dbfe's diff
+  # (src/app/api/keyless-ids.test.ts and keyless-body-caps.test.ts line 15
+  # at that point in history) as the VAPI / token HMAC secret the tests set.
+  # Never credentials — a counting sequence. Replaced at the tip by
+  # low-entropy fixtures; these anchors exist only so that commit's diff
+  # stops tripping the history scan.
+  '''^keyless-ids-secret-0123456789abcdef$''',
+  '''^keyless-caps-secret-0123456789abcdef$''',
+  # ApexGEO connection test fixture: only exists in commit d9f45ce7's diff
+  # (src/components/settings/sub-account-apexgeo-section.test.ts line 15 and
+  # src/app/api/sub-accounts/[id]/apexgeo-connection/route.test.ts line 19 at
+  # that point in history) as a made-up apx_ key. Never a credential.
+  # Replaced at the tip by a low-entropy fixture; this anchor exists only so
+  # that commit's diff stops tripping the history scan.
+  '''^apx_live_abcdef123456$''',
+  # Agency-key auth test fixture (src/lib/api/auth.agency-key.test.ts line 21,
+  # introduced in commit 92f1464b): a Firestore document PATH held in a
+  # constant named KEY_PATH, which trips generic-api-key by name. Never a
+  # credential; the anchor matches only this exact path.
+  '''^agencies/ag1/apiKeys/ak1$''',
+  # Web Voice (WV-2, PR #418) test fixtures that exist only in history:
+  # the custom-LLM path secrets SECRET / SECRET2 in
+  # src/app/api/webhooks/elevenlabs/llm/[subAccountId]/[secret]/[[...rest]]/route.test.ts
+  # lines 42-43 from commit 1e8ea3e3, and a made-up ElevenLabs conversation id
+  # in src/lib/web-voice/elevenlabs.contract.test.ts line 85 from commit
+  # 4fe57597. Never credentials — base64 of English phrases and a lettered id.
+  # Replaced at the tip by low-entropy fixtures; these anchors exist only so
+  # those commits' diffs stop tripping the history scan.
+  '''^Q2xhdWRlLXRlc3Qtc2VjcmV0LTAwMDAwMDAw$''',
+  '''^b3RoZXItc3ViLWFjY291bnQtc2VjcmV0LTAw$''',
+  '''^conv_8401k5abcdefghijklmnopqrst$''',
+]

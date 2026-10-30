@@ -1,0 +1,541 @@
+import "server-only";
+
+import { FieldValue } from "firebase-admin/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
+import { mirrorContactAssignee } from "@/lib/server/conversation-mirror";
+import { fireWorkflowTrigger, type TriggerOutcome } from "@/lib/workflows/engine";
+import {
+  holdFailuresOf,
+  type AgentActor,
+  type HeldEnrolment,
+  type HoldFailure,
+} from "@/lib/workflows/agent-hold";
+import {
+  serializeContactForApi,
+  type ContactApiObject,
+} from "@/lib/api/serializers/contacts";
+import type { ContactAttribution } from "@/types/contacts";
+import type { ContactProspecting } from "@/types/prospecting";
+import type { CustomFieldValue } from "@/types/custom-fields";
+import { normalizePhoneLenient } from "@/lib/contacts/phone";
+import { GLOBAL_TERRITORY_ID } from "@/types";
+import { isDocId } from "@/lib/server/doc-id";
+import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
+import { runAfterResponse } from "@/lib/server/after-response";
+
+/**
+ * Server-side Contact write service — the single chokepoint where a contact
+ * is created/updated AND the matching webhook fires.
+ *
+ * Why this exists: the dashboard used to write contacts straight from the
+ * browser via the client Firestore SDK, so no server code ran and no
+ * `contact.created` webhook fired. Every dashboard write now POSTs to a
+ * thin route that calls into here (Admin SDK), so a contact born in the UI
+ * fires the same event as one created through `POST /api/v1/contacts`.
+ *
+ * Firing is free when nobody's listening: `emitWebhookEvent` early-returns
+ * after one subscription lookup when no active subscription matches the
+ * event type + mode, so these helpers are safe to call on every write.
+ */
+
+type Mode = "live" | "test";
+
+/**
+ * Fields a caller may set when creating a contact. Superset of the
+ * dashboard `ContactFormData` and the public-API `ContactCreateInput`, so
+ * both entry points share one write path. Everything past `tags` is
+ * optional and defaults to the same values the old client/admin writes used.
+ */
+export interface CreateContactInput {
+  subAccountId: string;
+  agencyId: string;
+  createdByUid: string;
+  mode: Mode;
+  name: string;
+  email: string;
+  phone: string;
+  /**
+   * Workspace `defaultPhoneCountry` for lenient E.164 normalization of
+   * `phone` (see lib/contacts/phone.ts). Callers with the sub-account doc
+   * in hand pass it through; absent → "US" fallback.
+   */
+  phoneCountry?: string | null;
+  company: string;
+  /** Linked `companies/{id}` (routes verify tenancy via resolveCompanyLink). */
+  companyId?: string | null;
+  address: string;
+  source: string;
+  tags: string[];
+  pipelineStage?: string | null;
+  territoryId?: string | null;
+  /** Member uid (validated by the route) or null. */
+  assignedToUid?: string | null;
+  /** Validated custom-field value map (routes validate against live defs). */
+  customFields?: Record<string, CustomFieldValue> | null;
+  attribution?: ContactAttribution | null;
+  /**
+   * Public-API key id, when the create came in over /api/v1/contacts.
+   * Forwarded to the trigger so enrolments count against that key's hourly
+   * cap (lib/api/enrolment-cap).
+   */
+  apiKeyId?: string;
+  /**
+   * An API agent made this write: its workflow enrolments are held as
+   * proposals (ruling Q), and the create AWAITS the trigger to return them.
+   */
+  actor?: AgentActor;
+  /**
+   * The contact is being created from an inbound WhatsApp opt-out (a
+   * never-seen number whose message is STOP). It is written already opted
+   * out and announces nothing — no `contact.created` webhook, no workflow
+   * enrolment — so no automation can message someone whose only message
+   * was STOP.
+   */
+  optedOutOnWhatsapp?: boolean;
+  /** Prospect facts (Get Leads import). Absent = the contact carries no map. */
+  prospecting?: ContactProspecting;
+  /** Optional resolved location (form submit supplies this; UI doesn't). */
+  location?: {
+    countryCode: string | null;
+    country: string | null;
+    city: string | null;
+    lat: number | null;
+    lng: number | null;
+  } | null;
+}
+
+export interface ContactWriteResult {
+  id: string;
+  contact: ContactApiObject;
+  /**
+   * Whether this write fired a workflow trigger. The tag diff that decides
+   * it lives here and only here, so a caller holding an enrolment
+   * reservation (the public API) can settle it without re-deriving the diff
+   * — see lib/api/enrolment-cap.
+   */
+  firedTrigger: boolean;
+  /** Agent writes only: the enrolments held for approval… */
+  held?: HeldEnrolment[];
+  /** …and the matched workflows that could be neither held nor run. */
+  holdFailures?: HoldFailure[];
+}
+
+/**
+ * Create a contact + emit `contact.created`. Returns the new id and the
+ * serialized wire object (handy for the API response). The webhook is
+ * fire-and-forget — the write never blocks on dispatch.
+ */
+export async function createContactServerSide(
+  input: CreateContactInput
+): Promise<ContactWriteResult> {
+  const ref = getAdminDb().collection("contacts").doc();
+  const doc = buildContactDoc(input);
+  await ref.set({ ...doc, ...agentEditStamp(input.actor) });
+  if (input.optedOutOnWhatsapp) {
+    const now = new Date();
+    const contact = serializeContactForApi(
+      ref.id,
+      { ...doc, createdAt: now, updatedAt: now },
+      input.mode
+    );
+    return { id: ref.id, contact, firedTrigger: false };
+  }
+  const { contact, trigger } = announceContactCreated(input, ref.id, doc);
+  if (input.actor) {
+    const outcome = trigger ? await trigger : null;
+    return {
+      id: ref.id,
+      contact,
+      firedTrigger: trigger !== null,
+      held: outcome?.held ?? [],
+      holdFailures: outcome ? holdFailuresOf(outcome) : [],
+    };
+  }
+  return { id: ref.id, contact, firedTrigger: trigger !== null };
+}
+
+/**
+ * The document a new contact is written as. Shared with the phone upsert
+ * (lib/server/contact-upsert), which writes it inside a transaction, so a
+ * contact created either way has the same shape.
+ */
+export function buildContactDoc(input: CreateContactInput) {
+  const loc = input.location ?? null;
+  return {
+    name: input.name,
+    email: input.email,
+    phone: normalizePhoneLenient(input.phone, input.phoneCountry),
+    company: input.company,
+    companyId: input.companyId ?? null,
+    address: input.address,
+    source: input.source,
+    tags: [...new Set(input.tags)],
+    pipelineStage: input.pipelineStage ?? null,
+    customFields: input.customFields ?? {},
+    attribution: input.attribution ?? null,
+    emailOptedOut: false,
+    smsOptedOut: false,
+    ...(input.optedOutOnWhatsapp ? { whatsappOptedOut: true } : {}),
+    ...(input.prospecting ? { prospecting: input.prospecting } : {}),
+    countryCode: loc?.countryCode ?? null,
+    country: loc?.country ?? null,
+    city: loc?.city ?? null,
+    lat: loc?.lat ?? null,
+    lng: loc?.lng ?? null,
+    territoryId: input.territoryId ?? GLOBAL_TERRITORY_ID,
+    assignedToUid: input.assignedToUid ?? null,
+    agencyId: input.agencyId,
+    subAccountId: input.subAccountId,
+    createdByUid: input.createdByUid,
+    mode: input.mode,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  };
+}
+
+type Announcer = Pick<CreateContactInput, "subAccountId" | "agencyId" | "mode" | "apiKeyId" | "actor" | "createdByUid">;
+
+/**
+ * Everything a newly written contact announces: the `contact.created`
+ * webhook and, in live mode, the workflow trigger. Returns the trigger's
+ * promise (null when none fired) so a caller that must know the outcome can
+ * await it; every other caller discards it.
+ */
+export function announceContactCreated(
+  input: Announcer,
+  id: string,
+  doc: ReturnType<typeof buildContactDoc>,
+): { contact: ContactApiObject; trigger: Promise<TriggerOutcome> | null } {
+  // Serialize from the in-memory doc with a JS `now` for the timestamps
+  // (the serverTimestamp sentinels aren't readable without a re-read, and a
+  // sub-millisecond drift on created_at is immaterial to subscribers).
+  const now = new Date();
+  const contact = serializeContactForApi(
+    id,
+    { ...doc, createdAt: now, updatedAt: now },
+    input.mode
+  );
+
+  runAfterResponse(() => emitWebhookEvent({
+    subAccountId: input.subAccountId,
+    agencyId: input.agencyId,
+    mode: input.mode,
+    type: "contact.created",
+    payload: { contact },
+    ...(input.actor ? { byAgent: true } : {}),
+    actorUid: input.createdByUid,
+  }));
+  const trigger =
+    input.mode === "live"
+      ? fireWorkflowTrigger({
+          subAccountId: input.subAccountId,
+          agencyId: input.agencyId,
+          type: "contact.created",
+          contactId: id,
+          apiKeyId: input.apiKeyId,
+          ...(input.actor ? { hold: input.actor } : {}),
+        })
+      : null;
+  return { contact, trigger };
+}
+
+/** Fields that can be patched. All optional; only provided keys are written. */
+export interface UpdateContactPatch {
+  name?: string;
+  email?: string;
+  phone?: string;
+  company?: string;
+  companyId?: string | null;
+  address?: string;
+  source?: string;
+  tags?: string[];
+  pipelineStage?: string | null;
+  /**
+   * Straight field write, same as the public API has always done. A full
+   * territory MOVE (fanning out to the contact's deals/quotes/tasks/events)
+   * still belongs to the dedicated admin endpoint — see the note below.
+   */
+  territoryId?: string | null;
+  /** Member uid (validated by the route) or null to unassign. */
+  assignedToUid?: string | null;
+  /** Full replacement of the custom-field value map (validated by the route). */
+  customFields?: Record<string, CustomFieldValue>;
+  /**
+   * Prospect facts (validated by the public API parser), merged field by
+   * field: each key is written as `prospecting.<key>`, keys not sent are kept.
+   */
+  prospecting?: ContactProspecting;
+}
+
+/** The Firestore update for `input` against the stored doc `existing`. */
+function buildUpdatePatch(existing: FirebaseFirestore.DocumentData, input: UpdateContactPatch) {
+  const { prospecting, ...fields } = input;
+  return {
+    ...fields,
+    ...Object.fromEntries(
+      Object.entries(prospecting ?? {}).map(([k, v]) => [`prospecting.${k}`, v]),
+    ),
+    ...(input.tags ? { tags: [...new Set(input.tags)] } : {}),
+    // A writer that changes the free-text `company` without saying which
+    // company (the public API, which has no companyId field) breaks the
+    // link rather than leaving companyId pointing at a company whose name
+    // the contact no longer carries. The dashboard always sends companyId.
+    ...(companyStringDrifts(existing, input) ? { companyId: null } : {}),
+  };
+}
+
+/** True when `patch` rewrites `company` on a linked contact without a companyId of its own. */
+export function companyStringDrifts(
+  existing: { companyId?: string | null; company?: string },
+  patch: { company?: string; companyId?: string | null },
+): boolean {
+  return (
+    patch.companyId === undefined &&
+    patch.company !== undefined &&
+    !!existing.companyId &&
+    patch.company !== existing.company
+  );
+}
+
+/**
+ * Update a contact + emit `contact.updated`. Reads the doc back so the
+ * webhook payload + return value reflect the merged state. Returns null when
+ * the contact doesn't exist.
+ *
+ * Territory patches atomically update conversation access alongside the contact.
+ * The dashboard endpoint also cascades to deals/quotes/tasks/events.
+ */
+export async function updateContactServerSide(opts: {
+  contactId: string;
+  patch: UpdateContactPatch;
+  /** The contact's mode (from the existing doc); defaults to live. */
+  mode?: Mode;
+  /**
+   * Public-API key id, when the update came in over /api/v1/contacts.
+   * Forwarded to the trigger so enrolments count against that key's hourly
+   * cap (lib/api/enrolment-cap).
+   */
+  apiKeyId?: string;
+  /** When set, a contact in any other sub-account reads as missing (null). */
+  subAccountId?: string;
+  /**
+   * An API agent made this write: a tag it adds holds its enrolments as
+   * proposals (ruling Q), and the update AWAITS the trigger to return them.
+   */
+  actor?: AgentActor;
+  /**
+   * Build the patch from the CURRENT doc, read and written in one
+   * transaction — for a change relative to what is stored (add a tag,
+   * merge custom fields), so a concurrent write is never overwritten.
+   * Used instead of `patch` (pass `{}`); never with a territory change.
+   */
+  computePatch?: (current: FirebaseFirestore.DocumentData) => UpdateContactPatch;
+  /**
+   * An agent chose these values but a person approved the write: stamp the
+   * agent's key (agentEditStamp) without `actor`'s hold / webhook effects.
+   */
+  agentEditedBy?: Pick<AgentActor, "keyPrefix">;
+}): Promise<ContactWriteResult | null> {
+  if (!isDocId(opts.contactId)) return null;
+  const db = getAdminDb();
+  const ref = db.doc(`contacts/${opts.contactId}`);
+  const snap = await ref.get();
+  if (!snap.exists) return null;
+
+  let existing = snap.data()!;
+  if (opts.subAccountId !== undefined && existing.subAccountId !== opts.subAccountId) return null;
+  const mode = opts.mode ?? (existing.mode as Mode) ?? "live";
+  let patch = buildUpdatePatch(existing, opts.patch);
+
+  // update(), not set(..., {merge: true}): merge recurses into nested maps,
+  // which would keep cleared customFields values forever. update() replaces
+  // a map field wholesale and behaves identically for the scalar fields.
+  const stamp = agentEditStamp(opts.actor ?? opts.agentEditedBy);
+  const update = { ...patch, updatedAt: FieldValue.serverTimestamp(), ...stamp };
+  if (opts.computePatch) {
+    const computed = await db.runTransaction(async (tx) => {
+      const current = (await tx.get(ref)).data();
+      if (!current || current.subAccountId !== existing.subAccountId) return null;
+      const computedPatch = opts.computePatch!(current);
+      // A territory move also re-scopes conversations (the branch below).
+      if ("territoryId" in computedPatch) throw new Error("computePatch may not change territoryId.");
+      const next = buildUpdatePatch(current, computedPatch);
+      tx.update(ref, { ...next, updatedAt: FieldValue.serverTimestamp(), ...stamp });
+      return { current, next };
+    });
+    if (!computed) return null;
+    existing = computed.current;
+    patch = computed.next;
+  } else if (Object.prototype.hasOwnProperty.call(patch, "territoryId")) {
+    await db.runTransaction(async (tx) => {
+      const current = (await tx.get(ref)).data();
+      if (
+        !current ||
+        current.subAccountId !== existing.subAccountId ||
+        current.agencyId !== existing.agencyId
+      )
+        throw new Error("Contact tenant changed during territory update.");
+      const conversations = await tx.get(
+        db
+          .collection("conversations")
+          .where("subAccountId", "==", current.subAccountId)
+          .where("contactId", "==", opts.contactId)
+      );
+      for (const conversation of conversations.docs)
+        if (conversation.data().agencyId !== current.agencyId)
+          throw new Error(
+            "Conversation tenant mismatch during territory update."
+          );
+      tx.update(ref, update);
+      for (const conversation of conversations.docs)
+        tx.update(conversation.ref, {
+          territoryId: patch.territoryId ?? null,
+          updatedAt: update.updatedAt,
+        });
+    });
+  } else {
+    await ref.update(update);
+  }
+
+  // Owner mirror (SP2 T1). This is the ONE chokepoint every contact PATCH
+  // goes through — dashboard and public API alike — so mirroring here covers
+  // both. Bulk assign writes its own batch and mirrors itself.
+  if (Object.prototype.hasOwnProperty.call(patch, "assignedToUid")) {
+    await mirrorContactAssignee({
+      contactId: opts.contactId,
+      subAccountId: existing.subAccountId as string,
+    });
+  }
+
+  const fresh = await ref.get();
+  const contact = serializeContactForApi(fresh.id, fresh.data()!, mode);
+
+  runAfterResponse(() => emitWebhookEvent({
+    subAccountId: existing.subAccountId,
+    agencyId: existing.agencyId,
+    mode,
+    type: "contact.updated",
+    payload: { contact },
+    ...(opts.actor ? { byAgent: true } : {}),
+  }));
+  // Replace-semantics patch → diff against the pre-update tags.
+  const trigger = patch.tags
+    ? fireTagsAdded({
+        subAccountId: existing.subAccountId,
+        agencyId: existing.agencyId,
+        contactId: opts.contactId,
+        mode,
+        before: existing.tags,
+        after: patch.tags,
+        apiKeyId: opts.apiKeyId,
+        actor: opts.actor,
+      })
+    : null;
+
+  if (opts.actor) {
+    const outcome = trigger ? await trigger : null;
+    return {
+      id: ref.id,
+      contact,
+      firedTrigger: trigger !== null,
+      held: outcome?.held ?? [],
+      holdFailures: outcome ? holdFailuresOf(outcome) : [],
+    };
+  }
+  return { id: ref.id, contact, firedTrigger: trigger !== null };
+}
+
+/**
+ * THE tag diff — the only place that decides whether a write added a tag.
+ * Fires `contact.tag.added` once, with only the tags `after` introduces over
+ * `before`, and only in live mode. Returns the trigger's promise, or null
+ * when nothing fired. Used by the update path above and the phone upsert.
+ */
+export function fireTagsAdded(opts: {
+  subAccountId: string;
+  agencyId: string;
+  contactId: string;
+  mode: Mode;
+  /** Tags before the write — anything non-array reads as none. */
+  before: unknown;
+  after: string[];
+  apiKeyId?: string;
+  /** An agent's write: its enrolments are held for approval. */
+  actor?: AgentActor;
+}): Promise<TriggerOutcome> | null {
+  if (opts.mode !== "live") return null;
+  const oldTags: string[] = Array.isArray(opts.before) ? opts.before : [];
+  const added = opts.after.filter((t) => !oldTags.includes(t));
+  if (added.length === 0) return null;
+  return fireWorkflowTrigger({
+    subAccountId: opts.subAccountId,
+    agencyId: opts.agencyId,
+    type: "contact.tag.added",
+    contactId: opts.contactId,
+    context: { addedTags: added },
+    apiKeyId: opts.apiKeyId,
+    ...(opts.actor ? { hold: opts.actor } : {}),
+  });
+}
+
+/**
+ * Emit `contact.created` for a contact that was ALREADY written elsewhere
+ * (public form submit, web-chat / voice capture, booking reconcile). Reads
+ * the doc, serializes it, fires the event. Self-guarded so it's safe to
+ * `void` from any write path — a read blip can never break the originating
+ * request.
+ */
+export async function emitContactCreatedById(opts: {
+  subAccountId: string;
+  agencyId: string;
+  contactId: string;
+  mode?: Mode;
+}): Promise<void> {
+  try {
+    const snap = await getAdminDb().doc(`contacts/${opts.contactId}`).get();
+    if (!snap.exists) return;
+    const mode = opts.mode ?? (snap.data()!.mode as Mode) ?? "live";
+    const contact = serializeContactForApi(snap.id, snap.data()!, mode);
+    await emitWebhookEvent({
+      subAccountId: opts.subAccountId,
+      agencyId: opts.agencyId,
+      mode,
+      type: "contact.created",
+      payload: { contact },
+    });
+    if (mode === "live") {
+      runAfterResponse(() => fireWorkflowTrigger({
+        subAccountId: opts.subAccountId,
+        agencyId: opts.agencyId,
+        type: "contact.created",
+        contactId: opts.contactId,
+      }));
+    }
+  } catch (err) {
+    console.warn("[contacts-service] emitContactCreatedById failed", err);
+  }
+}
+
+/**
+ * Emit `contact.deleted`. Called from the contact DELETE route, which has
+ * already read the doc (the contact is gone by the time subscribers react,
+ * so we serialize from the pre-delete snapshot data).
+ */
+export function emitContactDeleted(opts: {
+  subAccountId: string;
+  agencyId: string;
+  contactId: string;
+  data: FirebaseFirestore.DocumentData;
+  mode?: Mode;
+}): void {
+  const mode = opts.mode ?? (opts.data.mode as Mode) ?? "live";
+  const contact = serializeContactForApi(opts.contactId, opts.data, mode);
+  runAfterResponse(() => emitWebhookEvent({
+    subAccountId: opts.subAccountId,
+    agencyId: opts.agencyId,
+    mode,
+    type: "contact.deleted",
+    payload: { contact },
+  }));
+}

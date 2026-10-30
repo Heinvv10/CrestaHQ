@@ -1,0 +1,6 @@
+[fake-llm] <<< Hi, I would like to book a review audit call this afternoon if possible.
+[fake-llm] >>> [[slots]]
+[fake-llm] <<< [SYSTEM TOOL RESULT — not the caller speaking] Available times (Africa/Johannesburg): | - start="2026-09-13T10:15:00.000Z" → Sunday, September 13 at 12:15 PM | - start="2026-09-13T10:45:00.000Z" → Sunday, September 13 at 12:45 PM | - start="2026-09-13T11:00:00.000Z" → Sunday, September 13 at 1:00 PM | - start="2026-09-13T11:15:00.000Z" → Sunday, September 13 at 1:15 PM | - start="2026-09-13T11:30:00.000Z" → Sunday, September 13 at 1:30 PM | - start="2026-09-13T11:45:00.000Z" → Sunday, September 13 at 1:45 PM | - start="2026-09-13T12:00:00.000Z" → Sunday, September 13 at 2:00 PM | - start="2026-09-13T12:15:00.
+[fake-llm] >>> [[book start="2026-09-13T10:15:00.000Z" name="Voiceprobe"]]
+[fake-llm] <<< [SYSTEM TOOL RESULT — not the caller speaking] Booked: Sunday, September 13 at 12:15 PM (15 minutes). Confirm briefly to the caller — day and time only — and let them know it's locked in.
+[fake-llm] >>> Done — you're booked. Anything else?

@@ -1,0 +1,244 @@
+import "server-only";
+
+import { randomUUID } from "node:crypto";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { autoReplyNeverCollection, stableReviewKey } from "@/lib/gbp/auto-reply-never";
+import { PENDING_MS } from "@/lib/gbp/reply-attempts";
+import { assertFakeFixtureAgency, gbpProviderMode } from "@/lib/gbp/provider/select";
+import { reviewsCollection, toMillis } from "@/lib/gbp/sync/types";
+import { reviewsAiConfigured, reviewsAiMode } from "../ai/mode";
+import { assertReviewsAiFixtureAgency, getReviewsAiFor } from "../ai/select";
+import type { ReviewsAi } from "../ai/types";
+import { beginDraftCall, draftInputFor } from "../draft";
+import { reviewBasis } from "../sentiment-basis";
+import { sentimentUsagePath } from "../sentiment-calls";
+import {
+  decide, SLOP_REDRAFT_CAP, type DecideCounts, type DecidePending, type DecideReview, type DecideSettings, type Decision,
+} from "./decide";
+import { sendAutoReplyAlert } from "./alerts";
+import { autoReplyKillSwitchOn } from "./kill-switch";
+import { postQueued } from "./post";
+import { AUTO_REPLY_DAILY_DRAFT_CAP, listingOn, readAutoReplyListings, readAutoReplySettings } from "./settings";
+import {
+  acquireAutoReplyLease, markHeldAlerted, autoDraftsToday, autoReplyDismissedCollection, holdQueuedForApproval, postsToday, readPending,
+  releaseAutoReplyLease, renewAutoReplyLease, storePending, toDecidePending,
+} from "./store";
+
+/**
+ * The review auto-reply engine (AUTO_REPLY_V1_PLAN.md) — one sub-account,
+ * after a sync, never inside it. Inert unless the deployment's kill switch
+ * is set (no read at all otherwise). Then: the three gates, auto-reply on
+ * for at least one listing (the main one it was enabled for and/or switched-on
+ * extras — MULTI_LISTING_V1_PLAN.md PR 6; settings and caps shared), Reviews
+ * AI configured; one run per
+ * sub-account (lease); every review decided (decide.ts) newest first; each
+ * draft stored on the review BEFORE any post (so a retry posts the same
+ * bytes); each post through post.ts. The deadline is checked before every
+ * draft and every post. A run that puts ≥1 review in front of a PERSON for
+ * the first time at its current content (approval / texted — also when its
+ * draft failed, since a person must answer it anyway — or a queued draft
+ * moved to approval; deduped by `heldAlertBasis`, store.ts) sends one alert
+ * (alerts.ts), even when the run then fails. Reviews waiting on a daily
+ * limit or an auto post's retry are not alerted: they resolve on their own. Never throws: a failure is logged by kind and
+ * the next sync's run carries on from the stored state.
+ */
+
+export interface AutoReplyRun {
+  drafted: number;
+  posted: number;
+  held: number;
+  /** Put in front of a person for the first time at this content by THIS run (the held alert's count; `markHeldAlerted`). */
+  newlyHeld: number;
+  stop: string | null;
+}
+
+const kind = (err: unknown) => (err instanceof Error ? err.name : typeof err);
+
+export async function autoReplyAfterSync(sa: string, runStartedAt: Date, deadline: number): Promise<AutoReplyRun | null> {
+  if (!autoReplyKillSwitchOn()) return null;
+  try {
+    // With either fake — GBP or Reviews AI (CI and dev, which run on the
+    // PRODUCTION Firestore) — only that fake's fixture agency is served: for
+    // any other sub-account the engine reads only its doc (for the agencyId)
+    // and writes nothing, not even the lease. Throws (→ logged, null) otherwise.
+    if (gbpProviderMode() === "fake") await assertFakeFixtureAgency(sa);
+    if (reviewsAiMode() === "fake") await assertReviewsAiFixtureAgency(sa);
+    return await runEngine(sa, runStartedAt.getTime(), deadline);
+  } catch (err) {
+    console.warn(`[reputation/auto-reply] sa=${sa} run failed kind=${kind(err)}`);
+    return null;
+  }
+}
+
+interface Ctx {
+  sa: string;
+  runId: string;
+  runStartedAt: number;
+  deadline: number;
+  settings: DecideSettings;
+  counts: DecideCounts;
+  ai: ReviewsAi;
+  tally: AutoReplyRun;
+}
+
+async function runEngine(sa: string, runStartedAt: number, deadline: number): Promise<AutoReplyRun> {
+  const tally: AutoReplyRun = { drafted: 0, posted: 0, held: 0, newlyHeld: 0, stop: null };
+  const db = getAdminDb();
+  const sub = (await db.doc(`subAccounts/${sa}`).get()).data() ?? {};
+  const gatesOn = sub.googleEnabledByAgency === true && sub.reviewsAiEnabledByAgency === true
+    && sub.reviewsAutoReplyEnabledByAgency === true;
+  const stored = readAutoReplySettings(sub.reviewsAutoReply);
+  // The listings it is on for: main (still the listing it was enabled for) and each switched-on extra.
+  const listings = readAutoReplyListings(sub.reviewsAutoReply, sub);
+  const none = Object.keys(listings).length === 0;
+  if (!gatesOn || (none && !stored.enabled)) return { ...tally, stop: "off" };
+  if (none) return { ...tally, stop: "listing_changed" };
+  if (Object.values(listings).some((l) => l.enabledByUid === null) || !reviewsAiConfigured()) return { ...tally, stop: "not_configured" };
+
+  const runId = randomUUID();
+  if (!(await acquireAutoReplyLease(sa, runId, Date.now()))) return { ...tally, stop: "busy" };
+  try {
+    const now = Date.now();
+    const ctx: Ctx = {
+      sa, runId, runStartedAt, deadline, tally,
+      settings: { modes: stored.modes, includeBacklog: stored.includeBacklog, listings },
+      counts: { postsToday: await postsToday(sa, now), autoDraftsToday: await autoDraftsToday(sentimentUsagePath(sa), now) },
+      ai: await getReviewsAiFor(sa),
+    };
+    const dismissed = new Map<string, unknown>();
+    for (const d of (await db.collection(autoReplyDismissedCollection(sa)).get()).docs) dismissed.set(d.id, d.data().basisHash);
+    const never = new Set((await db.collection(autoReplyNeverCollection(sa)).get()).docs.map((d) => d.id));
+    const docs = (await db.collection(reviewsCollection(sa)).get()).docs
+      .map((d) => ({ id: d.id, data: d.data() as Record<string, unknown> }))
+      .sort((a, b) => (toMillis(b.data.createTime) ?? 0) - (toMillis(a.data.createTime) ?? 0));
+    for (const { id, data } of docs) {
+      const key = stableReviewKey(String(data.reviewName ?? ""));
+      const review = decideInput(data, dismissed.get(key), never.has(key), Date.now());
+      const decision = decide(review, ctx.settings, { now: Date.now(), runStartedAt }, ctx.counts);
+      tally.stop = await act(ctx, id, data, review, decision);
+      if (tally.stop) break;
+    }
+  } finally {
+    // Here, not after, and before the release (which may throw): a run that
+    // fails after holding must still say so — the next run sees those reviews
+    // as already held and would never count them.
+    if (tally.newlyHeld > 0) await sendAutoReplyAlert(sa, { kind: "held", runId, count: tally.newlyHeld });
+    await releaseAutoReplyLease(sa, runId);
+  }
+  return tally;
+}
+
+function decideInput(d: Record<string, unknown>, dismissedBasis: unknown, never: boolean, now: number): DecideReview {
+  const lock = d.replyInFlight as { at?: unknown } | null | undefined;
+  return {
+    state: String(d.state ?? ""),
+    locationName: String(d.locationName ?? ""),
+    starRating: typeof d.starRating === "number" ? d.starRating : null,
+    comment: typeof d.comment === "string" ? d.comment : null,
+    createTimeMs: toMillis(d.createTime),
+    lastSeenAtMs: toMillis(d.lastSeenAt),
+    hasReply: !!d.reply,
+    hadReply: d.hadReply === true,
+    never,
+    inFlight: !!lock && now - (toMillis(lock.at) ?? 0) < PENDING_MS,
+    autoReplied: !!d.autoReplied,
+    basisHash: d.state === "active" ? reviewBasis(d) : null,
+    pending: toDecidePending(readPending(d.pendingReply)),
+    dismissedBasisHash: typeof dismissedBasis === "string" ? dismissedBasis : null,
+  };
+}
+
+/** One review's decision carried out; a non-null result stops the run. */
+async function act(ctx: Ctx, docId: string, data: Record<string, unknown>, review: DecideReview, d: Decision): Promise<string | null> {
+  if (d.verdict === "skip") return null;
+  if (d.verdict === "to_approval") {
+    const p = readPending(data.pendingReply);
+    if (p?.textHash && (await holdQueuedForApproval(ctx.sa, docId, p.textHash))) await heldForPerson(ctx, docId, review.basisHash!);
+    ctx.tally.held += 1;
+    return null;
+  }
+  const basisHash = review.basisHash!;
+  if (d.verdict === "hold" && !d.draft) {
+    const p = review.pending;
+    if (!(p?.reason === d.reason && p.basisHash === basisHash)) {
+      await storePending(ctx.sa, docId, { text: null, basisHash, reason: d.reason, model: null }, new Date());
+    }
+    ctx.tally.held += 1;
+    return null;
+  }
+  let text = d.verdict === "auto" && d.stored ? readPending(data.pendingReply)?.text ?? null : null;
+  if (text === null) {
+    const drafted = await draft(ctx, docId, basisHash, d.verdict === "auto" ? "auto_queued" : d.reason, review.pending);
+    if (drafted !== null && typeof drafted === "object") return drafted.stop;
+    if (drafted === null || d.verdict !== "auto") return null;
+    text = drafted;
+  }
+  const reviewName = String(data.reviewName ?? "");
+  // Posted on behalf of whoever switched auto-reply on for this review's listing (decide found it on).
+  const enabledByUid = listingOn(ctx.settings.listings, review.locationName)!.enabledByUid!;
+  const result = await postQueued(ctx.sa, { runId: ctx.runId, docId, reviewName, text, enabledByUid, deadline: ctx.deadline });
+  if (result === "posted") {
+    ctx.tally.posted += 1;
+    ctx.counts.postsToday += 1;
+  }
+  if (result === "held") {
+    ctx.tally.held += 1;
+    await heldForPerson(ctx, docId, basisHash);
+  }
+  return result === "stop" ? "post_stopped" : null;
+}
+
+/**
+ * Draft one review and store it as `reason`. The stored text when it was
+ * stored; `{stop}` to end the run; null when this review is done for now
+ * (held for lack of budget, draft failed, or changed during the call). The
+ * SLOP_REDRAFT_CAP-th consecutive voice failure at this content is held for a
+ * person (and alerted) whatever `reason` was — an Auto review included.
+ */
+async function draft(
+  ctx: Ctx, docId: string, basisHash: string,
+  reason: "auto_queued" | "approval" | "texted", prior: DecidePending | null,
+): Promise<string | { stop: string } | null> {
+  if (Date.now() >= ctx.deadline) return { stop: "deadline" };
+  if (!(await renewAutoReplyLease(ctx.sa, ctx.runId, Date.now()))) return { stop: "lease_lost" };
+  const stop = await beginDraftCall(ctx.sa, { auto: true });
+  if (stop === "gate_off" || stop === "ai_gate_off") return { stop };
+  if (stop) {
+    ctx.counts.autoDraftsToday = AUTO_REPLY_DAILY_DRAFT_CAP;
+    await storePending(ctx.sa, docId, { text: null, basisHash, reason: "no_budget", model: null }, new Date());
+    ctx.tally.held += 1;
+    return null;
+  }
+  ctx.counts.autoDraftsToday += 1;
+  // No reviewer name on the auto path: a display name is untrusted text a
+  // member of the public chose, and this draft may be posted unread.
+  const input = { ...(await draftInputFor(ctx.sa, docId)), reviewerFirstName: null };
+  // The run's deadline: no voice retry without room for a second bounded call.
+  const result = await ctx.ai.draftReply(input, ctx.deadline);
+  if (result.text === null) {
+    console.warn(`[reputation/auto-reply] no draft sa=${ctx.sa} failure=${result.failure}`);
+    const priorFails = prior?.reason === "draft_failed" && prior.basisHash === basisHash ? prior.slopFails ?? 0 : 0;
+    // A voice failure increments; any other failure (a skipped-deadline retry included) carries
+    // the count forward unchanged — only a successful draft or a change of content clears it.
+    const slopFails = result.failure === "slop" ? priorFails + 1 : priorFails;
+    const stored = await storePending(
+      ctx.sa, docId, { text: null, basisHash, reason: "draft_failed", model: ctx.ai.model, slopFails }, new Date(),
+    );
+    // A review a person must answer anyway, now without a draft — or one whose drafts keep failing the voice check.
+    if (stored && (reason !== "auto_queued" || slopFails >= SLOP_REDRAFT_CAP)) await heldForPerson(ctx, docId, basisHash);
+    return null;
+  }
+  const stored = await storePending(ctx.sa, docId, { text: result.text, basisHash, reason, model: ctx.ai.model }, new Date());
+  if (!stored) return null;
+  ctx.tally.drafted += 1;
+  if (reason !== "auto_queued") {
+    ctx.tally.held += 1;
+    await heldForPerson(ctx, docId, basisHash);
+  }
+  return result.text;
+}
+
+/** Counted for the held alert only the first time this review, at this content, waits for a person. */
+async function heldForPerson(ctx: Ctx, docId: string, basisHash: string): Promise<void> {
+  if (await markHeldAlerted(ctx.sa, docId, basisHash)) ctx.tally.newlyHeld += 1;
+}

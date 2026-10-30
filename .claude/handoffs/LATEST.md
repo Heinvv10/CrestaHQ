@@ -1,0 +1,45 @@
+> **There is a second open handoff:** `.claude/handoffs/2026-09-14-0818.md` (another session, same day). Read it if continuing that work; `.claude/handoffs/2026-09-13-1935.md` is the one before.
+
+# Handoff — 2026-09-14 17:33 SAST
+
+**Project:** CrestaHQ (LeadStack CRM)
+**Branch:** main (SP5 work all merged; worktrees listed below)
+**Session goal:** SP5 — GHL Reputation & GBP remainder parity: ledger + six PRs (a–f), each blind-reviewed and merged under the Level-3 boundary, no deploy.
+
+## Status
+SP5 is built and merged. Ledger `docs/parity/sp5.md` rows are all "merged (#N)"; every Google-dependent row carries "live half blocked: case 4-6894000042302". Deployed to crm.crestahq.com 2026-09-14 17:48 SAST (`cde3b17`) on Hein's go; walked on #1000 (`docs/parity/evidence/sp5/prod-1000/`). No Firestore rules or indexes changed, so no rules deploy is needed.
+
+## What got done this session
+- **Ledger** `docs/parity/sp5.md` + GHL evidence `docs/parity/evidence/sp5/ghl/` (CrestaHQ location empty; Blitz aggregates only, sidebars cropped, owner name/number redacted).
+- **(a) #122** Reputation sidebar entry + `/sa/[id]/reputation` (Overview · Reviews · Requests · Widgets · Insights · Settings); Overview metrics (`lib/reputation/overview.ts`, `GET …/reputation/overview`); shared served-reviews loader `lib/gbp/sync/served.ts`.
+- **(e) #121** widget `layout` (carousel/grid/list/badge) + `theme` (light/dark) → feed `display` → `public/embed/gbp-reviews.js`; dashboard preview (same-origin GET, allow-list not loosened).
+- **(f) #126** Insights tab: `fetchDailyMetrics` (Performance API) on the provider seam + fake, `GET …/reputation/insights`, location picker; quota-0 429 → `access_not_approved`; **GBP provider refusals now HTTP 424 not 502** (Cloudflare replaced 502 bodies with HTML — that was #1000's "Couldn't load listings (error)").
+- **(d1) #129** one seam `lib/reviews/request-log.ts` logs every review ask (dispatcher, workflow SMS/WA/template/email, broadcasts, inbox routes, scheduled sends) — detection = rendered content contains the configured review URL; `failed` only after a provider attempt (`lib/comms/provider-attempt.ts` mark); Requests tab + Send Review Request dialog.
+- **(b) #124** sentiment: gate `reviewsAiEnabledByAgency` (opt-in), `lib/reputation/ai/` seam (OpenRouter + fenced `REVIEWS_AI_PROVIDER=fake`), classify after sync via Next `after()`, never re-billed (basisHash), 300 AI calls/sub-account/UTC day, one review per call, 60 s abort via new optional `signal` on `lib/comms/ai/openrouter.ts` `callAi`; strikes only for 403 / unusable answer.
+- **(c) #135** AI reply drafts (`POST …/gbp/reviews/[id]/draft`, human edits + clicks Post — `lib/gbp/reply.ts` still the only poster), reply guidelines, Reputation → Settings tab, best-effort contact guard `lib/reputation/ai/contact-guard.ts`, drafts ≤100 of the 300 daily calls.
+- **(d2) #132** reminders + `/rr/[token]` click tracking — **default off**, SMS-only, needs dedicated Twilio number + `inboundWebhookConfigured` + Google review link + E.164 phone; one chain per person; stops on click/reply/opt-out/etc.; max every 7 days (QStash plan unconfirmed).
+- **#128** flaky `feature-gates/route.gbp.test.ts` (import in `beforeAll`, 60 s) — was failing CI/deploy under box load.
+
+## What's next
+1. **Done:** deployed `cde3b17` 2026-09-14 17:48 and walked #1000 (Overview, Insights, Settings, Google Business "not approved" wording).
+2. **Set `OPENROUTER_API_KEY`** in `/home/velo/crestahq-config/.env.production` (Hein) — without it sentiment labels star-only reviews only and drafts are hidden.
+3. **Case 4-6894000042302** (decision ~09-18): on approval, live-prove reviews/replies/insights on a TEST sub-account per `docs/features/gbp-reviews.md` owner checklist.
+4. Enable `reviewsAiEnabledByAgency` per sub-account (agency Manage dialog) and, only with Hein's OK, reminders on a real sub-account.
+
+## Open questions / blockers
+- QStash plan max delay unconfirmed → reminders capped at 7 days.
+- Follow-ups surfaced in review, not built: ~12 non-GBP routes still answer 502 with a JSON body the UI shows (lost behind Cloudflare, e.g. `comms/whatsapp/send-template`, `comms/voice/call`, `broadcasts/email/send`); `lib/reviews/request.ts` (~506 lines) and `workflows/engine.ts` over 300 lines; `inboundWebhookConfigured` is only set by webhook auto-config (hand-set webhooks can't enable reminders).
+
+## Context the next session needs
+- GBP API family (incl. Performance) on project 893869567850 answers 429 `quota_limit_value "0"` until case approval — probed with #1000's real grant 2026-09-14.
+- A PR that conflicts with base gets NO pull_request CI run — merge main into it when a run never appears. The single self-hosted runner queue was ~2 h at times; cancel superseded queued runs.
+- Local E2E: `.env.local` per worktree (ports 3105/3106/3107), lock `/home/hein/Workspace/.sp5-orch/e2e.lock`, never while :3100 is busy (CI). Another session's E2E on another port touched the fixture tenant once.
+- Orchestration notes/mutation logs: `/home/hein/Workspace/.sp5-orch/` (not in repo).
+- DO NOT RESURRECT: auto-response / drip auto-reply to Google reviews — rejected (replies stay a human click). Minimum-rating widget filter — rejected (review gating). Transport-vs-billed rollback classes in sentiment — replaced after 3 fix rounds by "strike only 403/unusable answer".
+
+## Git state
+- **Uncommitted:** none from this session (the shared checkout is dirty with other sessions' work — don't stage there).
+- **Worktrees from this session:** `../CrestaHQ-wt-sp5`, `../CrestaHQ-wt-sp5d`, `../CrestaHQ-wt-sp5e` (branches merged/deleted; safe to remove).
+
+## Where to resume
+Read this file, then `docs/parity/sp5.md` (ledger) and `docs/features/reputation.md`.

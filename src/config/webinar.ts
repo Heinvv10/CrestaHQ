@@ -1,0 +1,45 @@
+// Stub — see publish/README.md. Neutralised webinar landing config
+// (LeadStack-only marketing content). Same shape as the real export so anything
+// importing it still type-checks; the /webinar page + its components are
+// stubbed too.
+export const WEBINAR = {
+  publicUrl: "",
+  registerApiUrl: "",
+  slug: "",
+  marquee: [] as string[],
+  recBadge: "",
+  eyebrow: "",
+  kicker: "",
+  headlineLead: "",
+  headlineHighlight: "",
+  subhead: "",
+  orientation: "",
+  penHook: "",
+  form: {
+    heading: "",
+    sub: "",
+    nameLabel: "",
+    namePlaceholder: "",
+    emailLabel: "",
+    emailPlaceholder: "",
+    cta: "",
+    microtrust: "",
+    successTitle: "",
+    successBody: "",
+    successCta: "",
+  },
+  steps: {
+    label: "",
+    items: [] as { label: string; meta: string }[],
+    note: "",
+  },
+  dealTease: "",
+  proof: { rating: "", ratingLabel: "", reach: "" },
+  quotes: [] as { text: string; author: string }[],
+  bullets: [] as string[],
+  forYou: [] as string[],
+  notForYou: [] as string[],
+  host: { role: "", name: "", blurb: "" },
+  finalCta: { heading: "", sub: "", button: "" },
+  faqs: [] as { q: string; a: string }[],
+} as const;

@@ -1,0 +1,88 @@
+import "server-only";
+
+import { NextResponse } from "next/server";
+import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
+import { territoryGate } from "@/lib/auth/territory-filter";
+import { isDocId } from "@/lib/server/doc-id";
+import type { Contact } from "@/types/contacts";
+
+export function requireUid(request: Request):
+  | { uid: string; email: string }
+  | NextResponse {
+  const uid = request.headers.get("x-user-uid");
+  if (!uid) {
+    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  }
+  const email = request.headers.get("x-user-email") ?? "";
+  return { uid, email };
+}
+
+/**
+ * Confirm the caller can act on the given contact. The caller passes:
+ *   - if they're the agency owner of the contact's agency, OR
+ *   - if they have an active sub-account membership in the contact's
+ *     sub-account AND, when territory scoping is on and they are a
+ *     collaborator, the contact's territory is one of theirs (the same
+ *     rule as the `contacts` read rule — see `territoryGate`).
+ *
+ * Returns the resolved Contact on success, or a NextResponse with the
+ * appropriate error status. Replaces the legacy `requireContactOwner` which
+ * relied on the single-tenant `ownerId == uid` shortcut.
+ */
+export async function requireContactAccessible(
+  uid: string,
+  contactId: string,
+): Promise<Contact | NextResponse> {
+  if (!contactId) {
+    return NextResponse.json(
+      { error: "Missing contactId" },
+      { status: 400 },
+    );
+  }
+  // A "/" in the id would address a subcollection doc (e.g. a member-written
+  // note) that carries the contact's tenancy keys — treat it as not found.
+  if (!isDocId(contactId)) {
+    return NextResponse.json({ error: "Contact not found" }, { status: 404 });
+  }
+  const db = getAdminDb();
+  const snap = await db.collection("contacts").doc(contactId).get();
+  if (!snap.exists) {
+    return NextResponse.json({ error: "Contact not found" }, { status: 404 });
+  }
+  const data = snap.data() as Omit<Contact, "id">;
+
+  const callerRecord = await getAdminAuth().getUser(uid).catch(() => null);
+  const claims = (callerRecord?.customClaims ?? {}) as {
+    status?: "active" | "removed";
+    agencyId?: string | null;
+    agencyRole?: "owner" | "staff" | null;
+  };
+  if (claims.status !== "active") {
+    return NextResponse.json({ error: "Account inactive" }, { status: 403 });
+  }
+
+  // Agency owner shortcut: if the caller is the owner of the contact's
+  // agency, they have access to every sub-account inside it.
+  if (claims.agencyRole === "owner" && claims.agencyId === data.agencyId) {
+    return { id: snap.id, ...data };
+  }
+
+  // Otherwise verify an active sub-account membership.
+  const memberSnap = await db
+    .doc(`subAccounts/${data.subAccountId}/subAccountMembers/${uid}`)
+    .get();
+  if (!memberSnap.exists) {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const member = memberSnap.data() ?? {};
+  if (member.status !== "active") {
+    return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  }
+  const gate = await territoryGate(
+    { uid, subAccountId: data.subAccountId, subAccountRole: member.role },
+    data.territoryId,
+  );
+  if (gate) return gate;
+
+  return { id: snap.id, ...data };
+}

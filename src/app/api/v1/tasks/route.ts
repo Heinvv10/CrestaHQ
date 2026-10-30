@@ -1,0 +1,173 @@
+import "server-only";
+
+import { FieldPath, FieldValue, type Query } from "firebase-admin/firestore";
+import { getAdminDb } from "@/lib/firebase/admin";
+import { withApiAuth } from "@/lib/api/auth";
+import { isDocId } from "@/lib/server/doc-id";
+import { apiError, apiOk } from "@/lib/api/responses";
+import { emitWebhookEvent } from "@/lib/api/webhooks/dispatch";
+import { writeTaskCreatedActivity } from "@/lib/server/contact-activities";
+import { refInSubAccount } from "@/lib/server/tenant-ref";
+import {
+  parseTaskCreate,
+  serializeTaskForApi,
+} from "@/lib/api/serializers/tasks";
+import { GLOBAL_TERRITORY_ID } from "@/types";
+import { runAfterResponse } from "@/lib/server/after-response";
+
+const DEFAULT_LIMIT = 20;
+const MAX_LIMIT = 100;
+
+export const GET = withApiAuth(async ({ request, ctx }) => {
+  const url = new URL(request.url);
+  const limitRaw = Number(url.searchParams.get("limit"));
+  const limit = Number.isFinite(limitRaw)
+    ? Math.min(MAX_LIMIT, Math.max(1, Math.floor(limitRaw)))
+    : DEFAULT_LIMIT;
+  const startingAfter = url.searchParams.get("starting_after");
+  const completedParam = url.searchParams.get("completed");
+  const contactId = url.searchParams.get("contact_id");
+
+  const db = getAdminDb();
+  let q: Query = db
+    .collection("tasks")
+    .where("subAccountId", "==", ctx.subAccountId)
+    .where("mode", "==", ctx.mode);
+  if (completedParam === "true") q = q.where("completed", "==", true);
+  else if (completedParam === "false") q = q.where("completed", "==", false);
+  if (contactId) q = q.where("contactId", "==", contactId);
+  q = q
+    .orderBy("createdAt", "desc")
+    .orderBy(FieldPath.documentId(), "desc");
+
+  if (startingAfter) {
+    if (!isDocId(startingAfter)) {
+      return apiError(ctx, "invalid_request", "invalid_cursor", "starting_after is not a valid id.");
+    }
+    const cursorSnap = await db.doc(`tasks/${startingAfter}`).get();
+    if (!cursorSnap.exists) {
+      return apiError(
+        ctx,
+        "invalid_request",
+        "invalid_cursor",
+        `starting_after=${startingAfter} not found.`,
+      );
+    }
+    const cursor = cursorSnap.data()!;
+    if (cursor.subAccountId !== ctx.subAccountId || cursor.mode !== ctx.mode) {
+      return apiError(
+        ctx,
+        "invalid_request",
+        "invalid_cursor",
+        "Cursor belongs to a different sub-account or mode.",
+      );
+    }
+    // Doc id tiebreaks docs sharing a createdAt (bulk import writes many
+    // tasks in one batch with a single serverTimestamp).
+    q = q.startAfter(cursor.createdAt, startingAfter);
+  }
+
+  const snap = await q.limit(limit + 1).get();
+  const docs = snap.docs.slice(0, limit);
+  const hasMore = snap.docs.length > limit;
+  return apiOk(ctx, {
+    object: "list",
+    data: docs.map((d) => serializeTaskForApi(d.id, d.data(), ctx.mode)),
+    has_more: hasMore,
+    url: "/v1/tasks",
+  });
+});
+
+export const POST = withApiAuth(async ({ body, ctx }) => {
+  const parsed = parseTaskCreate(body);
+  if (!parsed.ok) {
+    return apiError(ctx, "invalid_request", parsed.code ?? "invalid_body", parsed.error!);
+  }
+  const input = parsed.value!;
+  const db = getAdminDb();
+
+  // If a contact_id is provided, verify it exists in same tenancy + mode and
+  // inherit its territory.
+  let inheritedTerritory: string | null = null;
+  if (input.contactId) {
+    const cs = await db.doc(`contacts/${input.contactId}`).get();
+    if (!cs.exists) {
+      return apiError(
+        ctx,
+        "invalid_request",
+        "contact_not_found",
+        `contact_id=${input.contactId} does not exist.`,
+      );
+    }
+    const cd = cs.data()!;
+    if (cd.subAccountId !== ctx.subAccountId || cd.mode !== ctx.mode) {
+      return apiError(
+        ctx,
+        "invalid_request",
+        "contact_not_found",
+        `contact_id=${input.contactId} does not exist.`,
+      );
+    }
+    inheritedTerritory = (cd.territoryId as string | null) ?? null;
+  }
+  for (const [collection, id, field] of [
+    ["deals", input.dealId, "deal"],
+    ["events", input.eventId, "event"],
+  ] as const) {
+    if (id && !(await refInSubAccount(collection, id, ctx.subAccountId, ctx.mode))) {
+      return apiError(
+        ctx,
+        "invalid_request",
+        `${field}_not_found`,
+        `${field}_id=${id} does not exist.`,
+      );
+    }
+  }
+
+  const ref = db.collection("tasks").doc();
+  const now = new Date();
+  await ref.set({
+    title: input.title,
+    notes: input.notes,
+    dueAt: input.dueAt,
+    completed: false,
+    completedAt: null,
+    contactId: input.contactId,
+    dealId: input.dealId,
+    eventId: input.eventId,
+    territoryId:
+      input.territoryId ?? inheritedTerritory ?? GLOBAL_TERRITORY_ID,
+    agencyId: ctx.agencyId,
+    subAccountId: ctx.subAccountId,
+    createdByUid: `apikey:${ctx.keyPrefix}`,
+    mode: ctx.mode,
+    createdAt: FieldValue.serverTimestamp(),
+    updatedAt: FieldValue.serverTimestamp(),
+  });
+  const created = await ref.get();
+  const wire = serializeTaskForApi(created.id, created.data()!, ctx.mode);
+  if (wire.created_at === new Date(0).toISOString()) {
+    wire.created_at = now.toISOString();
+    wire.updated_at = now.toISOString();
+  }
+  runAfterResponse(() => emitWebhookEvent({
+    subAccountId: ctx.subAccountId,
+    agencyId: ctx.agencyId,
+    mode: ctx.mode,
+    type: "task.created",
+    payload: { task: wire },
+    actorUid: `apikey:${ctx.keyPrefix}`,
+  }));
+  if (input.contactId) {
+    await writeTaskCreatedActivity(db, {
+      contactId: input.contactId,
+      taskId: ref.id,
+      title: input.title,
+      dueAt: input.dueAt,
+      createdByUid: `apikey:${ctx.keyPrefix}`,
+      agencyId: ctx.agencyId,
+      subAccountId: ctx.subAccountId,
+    });
+  }
+  return apiOk(ctx, { task: wire }, { status: 201 });
+});

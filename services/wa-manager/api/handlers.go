@@ -1,0 +1,367 @@
+package api
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"log"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/health"
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/provision"
+	"github.com/Heinvv10/CrestaHQ/services/wa-manager/store"
+)
+
+// tenantView is what this API discloses about a tenant.
+//
+// It is an explicit projection rather than store.Tenant re-encoded, so that a
+// field added to the row later cannot start appearing in an operator console
+// by accident. No credential has any representation here: the manager never
+// hands back a STORED credential, and there is no route anywhere in this API
+// that reads one. The single exception is the moment of creation — see
+// tenantCreatedView, which handleCreate alone uses to return the app
+// consumer's freshly minted pair once, and which is deliberately a separate
+// type so that this projection cannot acquire them by accident.
+type tenantView struct {
+	TenantID    string      `json:"tenantId"`
+	DisplayName string      `json:"displayName"`
+	Instance    string      `json:"instance"`
+	Port        int         `json:"port"`
+	State       string      `json:"state"`
+	Phone       string      `json:"phone,omitempty"`
+	Health      *healthView `json:"health"`
+}
+
+// healthView mirrors a health.Report. A tenant the poller could not see gets a
+// nil Health rather than a zero-valued one: an unreachable bridge and a bridge
+// reporting all-zeroes are different incidents, and collapsing them would
+// render the manager's whole reason for existing useless.
+type healthView struct {
+	Reachable             bool `json:"reachable"`
+	Connected             bool `json:"connected"`
+	Killed                bool `json:"killed"`
+	Degraded              bool `json:"degraded"`
+	OutboundLast24h       int  `json:"outboundLast24h"`
+	DailyCap              int  `json:"dailyCap"`
+	LastInboundAgeSeconds *int `json:"lastInboundAgeSeconds"`
+	// AllowlistCount is how many contacts have escaped the bridge's reply-only
+	// rail. Never omitempty and never a plain int: null means the bridge could
+	// not read its own allowlist, which is a rail gone blind and the opposite
+	// fact from "nobody has escaped".
+	AllowlistCount *int `json:"allowlisted"`
+	// Incomplete says this tenant was never checked because the sweep hit its
+	// deadline. Never omitempty: "we did not look" and "we looked and it is
+	// down" are different facts, and a caller must be able to see which.
+	Incomplete bool     `json:"incomplete"`
+	Problems   []string `json:"problems,omitempty"`
+	Error      string   `json:"error,omitempty"`
+}
+
+func viewOf(t store.Tenant, r *health.Report) tenantView {
+	v := tenantView{
+		TenantID:    t.ID,
+		DisplayName: t.DisplayName,
+		Instance:    t.Instance,
+		Port:        t.Port,
+		State:       string(t.State),
+		Phone:       t.Phone,
+	}
+	if r != nil {
+		v.Health = &healthView{
+			Reachable:             r.Reachable,
+			Connected:             r.Connected,
+			Killed:                r.Killed,
+			Degraded:              r.Degraded,
+			OutboundLast24h:       r.OutboundLast24h,
+			DailyCap:              r.DailyCap,
+			LastInboundAgeSeconds: r.LastInboundAgeSeconds,
+			AllowlistCount:        r.AllowlistCount,
+			Incomplete:            r.Incomplete,
+			Problems:              r.Problems,
+			Error:                 r.Err,
+		}
+	}
+	return v
+}
+
+func (s *server) handleList(w http.ResponseWriter, r *http.Request) {
+	tenants, err := s.deps.Store.ListTenants()
+	if err != nil {
+		log.Printf("listing tenants failed err=%v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not list tenants"})
+		return
+	}
+
+	reports, truncated := s.snapshot(r.Context(), tenants)
+
+	out := make([]tenantView, 0, len(tenants))
+	for _, t := range tenants {
+		var rep *health.Report
+		if got, ok := reports[t.ID]; ok {
+			rep = &got
+		}
+		out = append(out, viewOf(t, rep))
+	}
+	body := map[string]any{"tenants": out}
+	if truncated {
+		// Said in the body, not only per-tenant, so a script polling this
+		// endpoint cannot mistake a truncated sweep for a healthy one.
+		body["healthSweepTruncated"] = true
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+type createRequest struct {
+	TenantID    string `json:"tenantId"`
+	DisplayName string `json:"displayName"`
+}
+
+func (s *server) handleCreate(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil || len(body) > maxBodyBytes {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unreadable or oversized body"})
+		return
+	}
+	var req createRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "body must be JSON"})
+		return
+	}
+	// Validated BEFORE the provisioner is touched. Provisioning allocates a
+	// port and writes a directory; an id that can never yield a safe unit name
+	// must not get that far, even though the provisioner would refuse it too.
+	if _, ok := checkTenantID(w, req.TenantID); !ok {
+		return
+	}
+
+	created, err := s.deps.Provisioner.Create(req.TenantID, req.DisplayName)
+	if err != nil {
+		// Only a refusal the provisioner AUTHORED is relayed and called a
+		// conflict. Create also surfaces os.MkdirAll / os.WriteFile
+		// PathErrors and raw systemctl stderr, which would hand the install
+		// layout to any token holder — and, worse, would report a read-only
+		// disk as 409 "already exists", sending an operator to hunt a
+		// duplicate tenant that does not exist. The real error goes to the
+		// log, where an operator on the box can read it.
+		log.Printf("provisioning failed tenant=%s err=%v", req.TenantID, err)
+		var conflict *provision.ConflictError
+		if errors.As(err, &conflict) {
+			writeJSON(w, http.StatusConflict, map[string]any{"error": conflict.Error()})
+			return
+		}
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "could not provision this tenant; check the manager log",
+		})
+		return
+	}
+	// The ONE disclosure of a credential in this API, and only for the pair
+	// this call just minted. Nothing logs either value — not here and not in
+	// provision — and no other route can produce them, so a caller that drops
+	// this response must destroy and re-provision the tenant, which costs the
+	// customer a re-pair. That is the accepted v1 tradeoff in place of a
+	// rotation route: a route that could re-read a stored token would give
+	// every operator-token holder the ability to send as any number on the box
+	// forever, which is exactly the property this API is built not to have.
+	writeJSON(w, http.StatusCreated, tenantCreatedView{
+		tenantView:    viewOf(created.Tenant, nil),
+		Token:         created.AppToken,
+		WebhookSecret: created.WebhookSecret,
+	})
+}
+
+// tenantCreatedView is the 201 body of POST /api/tenants, and the only shape
+// in this package that carries a secret.
+//
+// It embeds tenantView rather than adding fields to it: that struct's whole
+// job is to be an explicit projection nothing can leak through, and widening
+// it would put these two values on the list route and the operator console as
+// well. Only handleCreate constructs this.
+//
+// WebhookSecret is omitempty because a manager configured without a webhook
+// secret generator provisions unsigned tenants — the legal pre-signing shape —
+// and an empty string in the body would read as "the secret is blank" rather
+// than "this tenant has none".
+type tenantCreatedView struct {
+	tenantView
+	// Token is the app consumer's bearer token: the credential the CRM
+	// presents on the bridge's /v1/*. Shown once, here, never again.
+	Token string `json:"token"`
+	// WebhookSecret is the HMAC key the bridge signs inbound deliveries with,
+	// which the receiver must store to verify them. Shown once, here.
+	WebhookSecret string `json:"webhookSecret,omitempty"`
+}
+
+// handleDelete tears a tenant down completely: unit, files, WhatsApp session
+// and port.
+//
+// It requires ?confirm=<tenant id> matching the path. The operator token
+// proves WHO is calling; it does not prove they meant THIS tenant, and this is
+// the one action in the API that cannot be undone — the session directory is
+// gone and the customer must re-scan a QR on their phone to come back. Naming
+// the tenant twice costs an operator nothing and makes a mistyped or
+// copy-pasted path inert rather than destructive.
+func (s *server) handleDelete(w http.ResponseWriter, r *http.Request) {
+	id, ok := tenantIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	if r.URL.Query().Get("confirm") != id {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error": fmt.Sprintf("destroying a tenant erases its WhatsApp session; repeat the id as ?confirm=%s to confirm", id),
+		})
+		return
+	}
+	if _, ok := s.lookupTenant(w, id); !ok {
+		return
+	}
+	if err := s.deps.Provisioner.Destroy(id); err != nil {
+		// Destroy's errors wrap RemoveAll and systemctl; neither is the
+		// caller's business. The tenant is left visibly half-destroyed and
+		// the operator can retry — see provision.Destroy on why that is the
+		// safe direction.
+		log.Printf("destroy failed tenant=%s err=%v", id, err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "could not fully tear this tenant down; check the manager log and retry",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tenantId": id, "destroyed": true})
+}
+
+// handleRestart bounces one tenant's unit. Stop failing aborts rather than
+// pressing on to Start: an operator who asked for a bounce and got a 200 will
+// walk away, and a bridge that never stopped is exactly the stuck process they
+// were trying to clear.
+func (s *server) handleRestart(w http.ResponseWriter, r *http.Request) {
+	id, ok := tenantIDFromPath(w, r)
+	if !ok {
+		return
+	}
+	t, ok := s.lookupTenant(w, id)
+	if !ok {
+		return
+	}
+	if problem := s.restartUnit(id, t); problem != "" {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": problem})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "tenantId": id, "instance": t.Instance})
+}
+
+// restartUnit does the bounce, returning the operator-facing reason it failed
+// or "" for success. Every failure is a 500 at both call sites, so the status
+// does not travel with it.
+//
+// Shared by the JSON route and the UI's re-pair form so a bounce cannot come to
+// mean two different things depending on which one an operator reached for —
+// the UI form exists precisely because a logged-out bridge only issues a
+// pairing code on a fresh start.
+func (s *server) restartUnit(id string, t store.Tenant) string {
+	if s.deps.Units == nil {
+		return "no unit controller configured"
+	}
+
+	// Clear the start rate limit first. StartLimitBurst=5 in ten minutes
+	// counts every start, clean exits included, and once it trips systemd
+	// refuses the restart — so the button offered for a bridge that keeps
+	// dying would fail for up to ten minutes with nothing telling the operator
+	// that `reset-failed` is the remedy. A failure here is not fatal: the
+	// restart below is still worth attempting, and its error is the one the
+	// operator needs to see.
+	if err := s.deps.Units.ResetFailed(t.Instance); err != nil {
+		log.Printf("restart reset-failed did not take tenant=%s err=%v", id, err)
+	}
+	// One verb, not Stop-then-Start. The pair leaves the number stopped when
+	// the start half fails, and systemd will not bring back a unit that was
+	// stopped deliberately — so an operator pressing this button on a broken
+	// bridge could take the number from "briefly deaf" to "down until someone
+	// notices". The rollout worker was fixed first; this is the other caller.
+	if err := s.deps.Units.Restart(t.Instance); err != nil {
+		log.Printf("restart failed tenant=%s err=%v", id, err)
+		return "the unit did not come back; check the manager log"
+	}
+	// A support record, not part of the operation: losing the line must not
+	// turn a successful bounce into a failure.
+	_ = s.deps.Store.AppendEvent(id, "restarted", "operator requested a restart")
+	return ""
+}
+
+type rolloutRequest struct {
+	// Version is the build every bridge should end up running — the same
+	// string the deploy script stamps into the binary with -ldflags.
+	Version string `json:"version"`
+	// Now skips the overnight window. It exists for a fix that cannot wait
+	// until 22:00, and it is the caller's decision because only the caller
+	// knows whether the thing being shipped is worth a five-minute delivery
+	// hole on every number in working hours.
+	Now bool `json:"now"`
+}
+
+// handleRollout records the intent to bring every bridge onto a build. It does
+// NOT restart anything: the worker does that, on its own loop, so a rollout
+// survives the request that asked for it and the ssh session behind it.
+//
+// The deploy script calls this and then polls GET /api/rollout.
+func (s *server) handleRollout(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxBodyBytes+1))
+	if err != nil || len(body) > maxBodyBytes {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unreadable or oversized body"})
+		return
+	}
+	var req rolloutRequest
+	if err := json.Unmarshal(body, &req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "body must be JSON"})
+		return
+	}
+	if strings.TrimSpace(req.Version) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "version is required"})
+		return
+	}
+
+	got, err := s.deps.Store.RequestRollout(req.Version, req.Now)
+	if err != nil {
+		// Not a 409. An outstanding rollout is superseded rather than refused,
+		// so a conflict is no longer a thing this can return — anything that
+		// arrives here is a store failure, and dressing it as a conflict told
+		// the deploy script a lie it treats as fatal.
+		log.Printf("rollout request failed err=%v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]any{
+			"error": "could not record the rollout; check the manager log",
+		})
+		return
+	}
+	writeJSON(w, http.StatusOK, rolloutBody(got))
+}
+
+// handleRolloutStatus is what the deploy script polls until the rollout leaves
+// pending/running.
+func (s *server) handleRolloutStatus(w http.ResponseWriter, _ *http.Request) {
+	got, ok, err := s.deps.Store.LastRollout()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": "could not read rollout state"})
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"rollout": nil})
+		return
+	}
+	writeJSON(w, http.StatusOK, rolloutBody(got))
+}
+
+func rolloutBody(r store.Rollout) map[string]any {
+	body := map[string]any{
+		"id":        r.ID,
+		"version":   r.Version,
+		"state":     r.State,
+		"immediate": r.Immediate,
+		"detail":    r.Detail,
+		"requested": r.Requested.UTC().Format(time.RFC3339),
+	}
+	if !r.Finished.IsZero() {
+		body["finished"] = r.Finished.UTC().Format(time.RFC3339)
+	}
+	return body
+}

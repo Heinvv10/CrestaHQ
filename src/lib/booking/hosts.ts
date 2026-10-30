@@ -1,0 +1,183 @@
+import "server-only";
+
+import { getAdminDb } from "@/lib/firebase/admin";
+import { eventOccupiesSlot, eventStatus, isImportedEvent } from "@/types/events";
+import type { CalendarEvent } from "@/types/events";
+import type { BookingHost } from "@/types/booking";
+import type { SubAccountMemberDoc } from "@/types/tenancy";
+
+/**
+ * Server-side helpers for booking-page hosts: resolving the host list against
+ * live membership on save, host notification contacts, and the upcoming-load
+ * counts round-robin assignment reads. The assignment itself is pure and
+ * lives in `page-slots.ts`.
+ */
+
+/**
+ * Resolve a requested host list against the sub-account's live membership:
+ * keep only uids that are ACTIVE members, re-snapshot each `name` from the
+ * member doc (never trust the client-supplied name), preserve request order,
+ * per-host `workingHours`, `dateOverrides` and `priority`, and drop removed/unknown
+ * members. Called from the booking-page POST/PATCH routes after shape
+ * validation.
+ */
+export async function resolveBookingHosts(
+  subAccountId: string,
+  requested: BookingHost[] | undefined | null,
+): Promise<BookingHost[]> {
+  const reqList = requested ?? [];
+  if (reqList.length === 0) return [];
+
+  const snap = await getAdminDb()
+    .collection(`subAccounts/${subAccountId}/subAccountMembers`)
+    .get();
+  const activeByUid = new Map<string, SubAccountMemberDoc>();
+  for (const d of snap.docs) {
+    const m = d.data() as SubAccountMemberDoc;
+    const uid = m.uid ?? d.id;
+    if (m.status === "active") activeByUid.set(uid, m);
+  }
+
+  const out: BookingHost[] = [];
+  const seen = new Set<string>();
+  for (const h of reqList) {
+    if (seen.has(h.uid)) continue;
+    const m = activeByUid.get(h.uid);
+    if (!m) continue; // dropped: no longer an active member
+    seen.add(h.uid);
+    const name = (m.displayName || m.email || h.name || "Host").slice(0, 120);
+    const resolved: BookingHost = { uid: h.uid, name };
+    // Preserve the per-host schedule override (already shape-validated by
+    // validateHosts). Omit when empty so the host inherits the page hours.
+    if (h.workingHours && h.workingHours.length > 0) {
+      resolved.workingHours = h.workingHours;
+    }
+    if (h.priority) resolved.priority = h.priority;
+    if (h.dateOverrides && h.dateOverrides.length > 0) {
+      resolved.dateOverrides = h.dateOverrides;
+    }
+    out.push(resolved);
+  }
+  return out;
+}
+
+/**
+ * Resolve a host's notification contact (display name + email) from their
+ * live member doc. Used to email the assigned host after a booking. Returns
+ * null when the member is gone or has no email on file — the caller treats a
+ * null as "skip the host notification" (never fatal to the booking).
+ */
+export async function loadHostNotifyContact(
+  subAccountId: string,
+  uid: string,
+): Promise<{ name: string; email: string } | null> {
+  try {
+    const snap = await getAdminDb()
+      .doc(`subAccounts/${subAccountId}/subAccountMembers/${uid}`)
+      .get();
+    if (!snap.exists) return null;
+    const m = snap.data() as SubAccountMemberDoc;
+    const email = (m.email ?? "").trim();
+    if (!email) return null;
+    return {
+      name: (m.displayName || m.email || "Host").slice(0, 120),
+      email,
+    };
+  } catch (err) {
+    console.warn(`[booking/hosts] notify contact lookup failed uid=${uid}`, err);
+    return null;
+  }
+}
+
+/**
+ * Every event `uid` attends in the sub-account — the two sources of
+ * `eventHostUids`: the ones they own (`assignedToUid`) and the collective ones
+ * listing them in `hostUids` — merged by id. Imported Google events are never
+ * returned: they are not bookings. `refine` adds the same range /
+ * order / limit to both queries. With `want`, `refine` must order and not
+ * limit: each query is paged until it has `want` non-imported events, so
+ * imported ones can't crowd bookings out of a cap. Needs the composite indexes
+ * events(subAccountId, assignedToUid, startAt) and
+ * events(subAccountId, hostUids CONTAINS, startAt).
+ */
+export async function queryHostEvents(
+  subAccountId: string,
+  uid: string,
+  refine: (q: FirebaseFirestore.Query) => FirebaseFirestore.Query,
+  opts: { want?: number } = {},
+): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+  const events = getAdminDb()
+    .collection("events")
+    .where("subAccountId", "==", subAccountId);
+  const run = (q: FirebaseFirestore.Query) =>
+    opts.want === undefined ? q.get().then((s) => s.docs) : pagedNonImported(q, opts.want);
+  const [owned, listed] = await Promise.allSettled([
+    run(refine(events.where("assignedToUid", "==", uid))),
+    run(refine(events.where("hostUids", "array-contains", uid))),
+  ]);
+  if (owned.status === "rejected") throw owned.reason;
+  const byId = new Map<string, FirebaseFirestore.QueryDocumentSnapshot>();
+  for (const d of owned.value) byId.set(d.id, d);
+  if (listed.status === "fulfilled") {
+    for (const d of listed.value) byId.set(d.id, d);
+  } else {
+    // Most likely the hostUids index isn't built yet: keep the owned half
+    // rather than lose every booking, and say so.
+    console.error(
+      `[booking/hosts] collective-host query failed sa=${subAccountId} uid=${uid}`,
+      listed.reason,
+    );
+  }
+  return [...byId.values()].filter((d) => !isImportedEvent(d.data()));
+}
+
+/** Up to `want` non-imported docs of an ordered query, at most 10 pages of `want`. */
+async function pagedNonImported(
+  q: FirebaseFirestore.Query,
+  want: number,
+): Promise<FirebaseFirestore.QueryDocumentSnapshot[]> {
+  const out: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+  let cursor: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+  for (let page = 0; page < 10 && out.length < want; page++) {
+    const snap: FirebaseFirestore.QuerySnapshot = await (cursor ? q.startAfter(cursor) : q).limit(want).get();
+    for (const d of snap.docs) if (!isImportedEvent(d.data())) out.push(d);
+    if (snap.size < want) break;
+    cursor = snap.docs[snap.docs.length - 1];
+  }
+  return out.slice(0, want);
+}
+
+/**
+ * Count each host's upcoming occupying bookings — a load proxy for the
+ * least-loaded tiebreak. A collective booking counts for each of its hosts.
+ * Runs BEFORE the book transaction (slightly stale is fine, fairness doesn't
+ * need transactional accuracy). Indexes: see `queryHostEvents`.
+ */
+export async function loadHostUpcomingCounts(
+  subAccountId: string,
+  hostUids: string[],
+  now: Date,
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  await Promise.all(
+    hostUids.map(async (uid) => {
+      try {
+        const docs = await queryHostEvents(subAccountId, uid, (q) =>
+          q.where("startAt", ">=", now),
+        );
+        let n = 0;
+        for (const d of docs) {
+          const e = d.data() as CalendarEvent;
+          if (eventOccupiesSlot(eventStatus(e))) n++;
+        }
+        counts.set(uid, n);
+      } catch (err) {
+        // Most likely the composite index isn't deployed yet — degrade to a
+        // zero count so assignment still works (just not load-balanced).
+        console.warn(`[booking/hosts] load count failed uid=${uid}`, err);
+        counts.set(uid, 0);
+      }
+    }),
+  );
+  return counts;
+}

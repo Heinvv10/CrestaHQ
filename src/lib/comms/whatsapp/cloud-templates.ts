@@ -1,0 +1,189 @@
+import "server-only";
+
+import type {
+  WhatsappTemplateCategory,
+  WhatsappTemplateStatus,
+  WhatsappTemplateButton,
+  WhatsappTemplateVariable,
+} from "@/types/whatsapp-templates";
+import type { WhatsappCloudSecret } from "@/types/whatsapp-cloud";
+import { describeGraphError } from "./graph-error";
+
+/**
+ * Template management against the Meta Graph API — the `cloud` rail's
+ * equivalent of `templates-api.ts` (which talks to Twilio's Content API).
+ *
+ * Templates belong to a WABA, so these calls address `wabaId`, not the
+ * phone-number id used for sending. The two are adjacent in Meta's dashboard
+ * and easy to transpose, which produces a 404 that says nothing useful.
+ */
+
+function graphVersion(): string {
+  return process.env.WHATSAPP_GRAPH_VERSION ?? "v23.0";
+}
+
+export class CloudTemplateError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = "CloudTemplateError";
+  }
+}
+
+export type MetaTemplateComponent =
+  | { type: "BODY"; text: string; example?: { body_text: string[][] } }
+  | {
+      type: "BUTTONS";
+      buttons: Array<
+        { type: "QUICK_REPLY"; text: string } | { type: "URL"; text: string; url: string }
+      >;
+    };
+
+/**
+ * Our stored template → Meta's component shape.
+ *
+ * Two things Meta is strict about. Samples go in ONE row
+ * (`[[first, second]]`), not one row per variable. And a template with no
+ * variables must omit `example` entirely rather than send an empty array.
+ *
+ * Sorted by `position` because the builder stores variables in edit order
+ * while Meta reads them positionally — an unsorted array approves the
+ * template with its arguments transposed, which is worse than a rejection
+ * because it looks like it worked.
+ */
+export function buildMetaTemplateComponents(
+  body: string,
+  variables: WhatsappTemplateVariable[],
+  buttons: WhatsappTemplateButton[] = [],
+): MetaTemplateComponent[] {
+  const ordered = [...variables].sort((a, b) => a.position - b.position);
+  const component: MetaTemplateComponent = { type: "BODY", text: body };
+  if (ordered.length > 0) {
+    component.example = { body_text: [ordered.map((v) => v.sampleValue)] };
+  }
+  if (buttons.length === 0) return [component];
+  // Static buttons only: a quick reply carries its text, a URL a fixed link.
+  // Neither needs a button parameter at send time.
+  return [
+    component,
+    {
+      type: "BUTTONS",
+      buttons: buttons.map((b) =>
+        b.type === "url"
+          ? { type: "URL", text: b.text, url: b.url }
+          : { type: "QUICK_REPLY", text: b.text },
+      ),
+    },
+  ];
+}
+
+/**
+ * Meta's template states → ours. An unrecognised state maps to `pending`, not
+ * `approved`: Meta adds states over time, and guessing "approved" would let
+ * the send path fire a template Meta has not cleared. Pending merely keeps
+ * polling.
+ */
+export function mapMetaTemplateStatus(
+  raw: string | null | undefined,
+): WhatsappTemplateStatus {
+  switch ((raw ?? "").toUpperCase()) {
+    case "APPROVED":
+      return "approved";
+    case "REJECTED":
+      return "rejected";
+    case "PAUSED":
+      return "paused";
+    case "DISABLED":
+      return "disabled";
+    default:
+      return "pending";
+  }
+}
+
+export async function createCloudTemplate(
+  creds: WhatsappCloudSecret,
+  input: {
+    name: string;
+    language: string;
+    category: WhatsappTemplateCategory;
+    body: string;
+    variables: WhatsappTemplateVariable[];
+    buttons?: WhatsappTemplateButton[];
+  },
+): Promise<{ id: string; status: WhatsappTemplateStatus }> {
+  const url = `https://graph.facebook.com/${graphVersion()}/${creds.wabaId}/message_templates`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${creds.accessToken}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      name: input.name,
+      language: input.language,
+      category: input.category,
+      components: buildMetaTemplateComponents(input.body, input.variables, input.buttons),
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!res.ok) {
+    const raw = await res.text().catch(() => "unknown error");
+    throw new CloudTemplateError(
+      describeGraphError(raw, creds.accessToken),
+      res.status,
+    );
+  }
+
+  const data = (await res.json()) as { id?: string; status?: string };
+  const id = data.id?.trim();
+  if (!id) {
+    // An empty external id would make the registration look real while being
+    // unsendable — the send path would take its template branch and fail.
+    throw new CloudTemplateError(
+      "Meta accepted the template but returned it without a template id",
+      res.status,
+    );
+  }
+  return { id, status: mapMetaTemplateStatus(data.status) };
+}
+
+/**
+ * Current approval state for one template name. Returns null when Meta does
+ * not know the name — treated by the caller as "keep waiting", since a
+ * just-submitted template can briefly not be listed.
+ */
+export async function fetchCloudTemplateStatus(
+  creds: WhatsappCloudSecret,
+  name: string,
+): Promise<{ status: WhatsappTemplateStatus; reason: string | null } | null> {
+  const url =
+    `https://graph.facebook.com/${graphVersion()}/${creds.wabaId}/message_templates` +
+    `?name=${encodeURIComponent(name)}&fields=name,status,id,rejected_reason&limit=5`;
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${creds.accessToken}` },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) {
+    const raw = await res.text().catch(() => "unknown error");
+    throw new CloudTemplateError(
+      describeGraphError(raw, creds.accessToken),
+      res.status,
+    );
+  }
+  const data = (await res.json()) as {
+    data?: Array<{ name?: string; status?: string; rejected_reason?: string }>;
+  };
+  // Meta's `name` filter is a prefix match, so an exact comparison is needed:
+  // querying "quote" would otherwise return "quote_reminder" and report the
+  // wrong template's status.
+  const match = data.data?.find((t) => t.name === name);
+  if (!match) return null;
+  const reason = match.rejected_reason?.trim();
+  return {
+    status: mapMetaTemplateStatus(match.status),
+    reason: reason && reason.toUpperCase() !== "NONE" ? reason : null,
+  };
+}

@@ -1,0 +1,920 @@
+"use client";
+
+import {
+  useEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from "react";
+import { toast } from "sonner";
+import {
+  Trash2,
+  MapPin,
+  StickyNote,
+  CalendarClock,
+  CheckCircle2,
+  DollarSign,
+  ExternalLink,
+  User,
+  UserX,
+  Video,
+  XCircle,
+  Loader2,
+} from "lucide-react";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { ContactPicker } from "@/components/quotes/contact-picker";
+import { useSubAccount } from "@/context/sub-account-context";
+import { updateEvent, deleteEvent } from "@/lib/firestore/events";
+import { BookingReassign } from "@/components/calendar/booking-reassign";
+import { GoogleSyncNotice } from "@/components/calendar/google-sync-notice";
+import {
+  changedFields,
+  notifySkipDetail,
+  saveBookingPageEdit,
+  type TimeBaseline,
+} from "@/components/calendar/booking-edit-save";
+import { createdEventFromResponse } from "@/lib/calendar/event-overrides-view";
+import { toDate } from "@/lib/format";
+import {
+  eventOccupiesSlot,
+  eventSource,
+  eventStatus,
+  eventStatusLabel,
+  type CalendarEvent,
+  type EventFormData,
+  type EventNotifySkipReason,
+  type EventStatus,
+} from "@/types/events";
+import type { Contact } from "@/types/contacts";
+
+interface EventDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  contacts: Contact[];
+  /**
+   * The event as the page shows it, confirmed-change overrides applied. The
+   * form initialises from it only when the dialog opens or another event is
+   * opened, so an update while it is open never wipes unsaved edits.
+   */
+  event?: CalendarEvent | null;
+  defaultDate?: Date | null;
+  /** A status change the actions panel just had confirmed by the server. */
+  onStatusChange?: (eventId: string, status: EventStatus) => void;
+  /** The times (and stored reschedule count) an operator reschedule's 200 just confirmed. */
+  onRescheduled?: (eventId: string, startAt: Date, endAt: Date, rescheduleCount?: number) => void;
+  /** The assignee a host reassign's 200 response just confirmed. */
+  onReassigned?: (eventId: string, assignedToUid: string | null, assignedToName: string | null) => void;
+  /** A Retry sync whose 200 said the event is now synced. */
+  onSyncCleared?: (eventId: string) => void;
+  /** A delete the server confirmed (the server route's 200, or the client delete's commit). */
+  onDeleted?: (eventId: string) => void;
+  /** The event the create route's 201 says it stored. */
+  onCreated?: (event: CalendarEvent) => void;
+}
+
+function toDateInput(d: Date): string {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+function toTimeInput(d: Date): string {
+  const h = String(d.getHours()).padStart(2, "0");
+  const m = String(d.getMinutes()).padStart(2, "0");
+  return `${h}:${m}`;
+}
+
+function fromInputs(date: string, time: string): Date {
+  return new Date(`${date}T${time}:00`);
+}
+
+/** What Save writes for the form's values. */
+function formData(v: {
+  title: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  contactId: string | null;
+  location: string;
+  notes: string;
+  meetingUrl: string;
+}): EventFormData {
+  const trimmedMeetingUrl = v.meetingUrl.trim();
+  return {
+    title: v.title.trim(),
+    startAt: fromInputs(v.date, v.startTime),
+    endAt: fromInputs(v.date, v.endTime),
+    contactId: v.contactId || null,
+    location: v.location.trim(),
+    notes: v.notes.trim(),
+    meetingUrl: trimmedMeetingUrl.length > 0 ? trimmedMeetingUrl : null,
+  };
+}
+
+function roundedNowHour(): Date {
+  const d = new Date();
+  d.setMinutes(0, 0, 0);
+  d.setHours(d.getHours() + 1);
+  return d;
+}
+
+export function EventDialog({
+  open,
+  onOpenChange,
+  contacts,
+  event,
+  defaultDate,
+  onStatusChange,
+  onRescheduled,
+  onReassigned,
+  onSyncCleared,
+  onDeleted,
+  onCreated,
+}: EventDialogProps) {
+  const { subAccountId } = useSubAccount();
+  const isEdit = !!event;
+  // Status as last changed from the actions panel, so the time lock below
+  // engages even where the page's `event` has not picked the change up (a
+  // surface that passes no `onStatusChange`).
+  const [panelStatus, setPanelStatus] = useState<EventStatus | null>(null);
+  // Time the server holds after a reschedule made from this dialog, so a
+  // retry after a failed field write doesn't re-POST the same move.
+  const [timeBaseline, setTimeBaseline] = useState<TimeBaseline | null>(null);
+  // A cancelled / completed / no-show booking no longer holds a slot, so the
+  // reschedule endpoint refuses to move it — lock the time instead of
+  // letting Save 409.
+  const timeLocked =
+    !!event &&
+    eventSource(event) === "booking_page" &&
+    !eventOccupiesSlot(panelStatus ?? eventStatus(event));
+
+  const [title, setTitle] = useState("");
+  const [date, setDate] = useState("");
+  const [startTime, setStartTime] = useState("");
+  const [endTime, setEndTime] = useState("");
+  const [contactId, setContactId] = useState<string | null>(null);
+  const [location, setLocation] = useState("");
+  const [meetingUrl, setMeetingUrl] = useState("");
+  const [notes, setNotes] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  // What the form held when it was initialised for the open event. Save
+  // writes only what differs from it: the `event` prop follows the page
+  // (overrides, snapshots) while the dialog is open, so diffing against it
+  // would send a third party's change back as the operator's.
+  const formBaseline = useRef<EventFormData | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    if (event) {
+      const start = toDate(event.startAt) ?? new Date();
+      const end = toDate(event.endAt) ?? new Date(start.getTime() + 30 * 60000);
+      const initial = {
+        title: event.title,
+        date: toDateInput(start),
+        startTime: toTimeInput(start),
+        endTime: toTimeInput(end),
+        contactId: event.contactId,
+        location: event.location ?? "",
+        meetingUrl: event.meetingUrl ?? "",
+        notes: event.notes ?? "",
+      };
+      setTitle(initial.title);
+      setDate(initial.date);
+      setStartTime(initial.startTime);
+      setEndTime(initial.endTime);
+      setContactId(initial.contactId);
+      setLocation(initial.location);
+      setMeetingUrl(initial.meetingUrl);
+      setNotes(initial.notes);
+      formBaseline.current = formData(initial);
+    } else {
+      formBaseline.current = null;
+      const start = defaultDate
+        ? (() => {
+            const d = new Date(defaultDate);
+            const rounded = roundedNowHour();
+            d.setHours(rounded.getHours(), 0, 0, 0);
+            return d;
+          })()
+        : roundedNowHour();
+      const end = new Date(start.getTime() + 30 * 60000);
+      setTitle("");
+      setDate(toDateInput(start));
+      setStartTime(toTimeInput(start));
+      setEndTime(toTimeInput(end));
+      setContactId(null);
+      setLocation("");
+      setMeetingUrl("");
+      setNotes("");
+    }
+    setErrors({});
+    setPanelStatus(null);
+    setTimeBaseline(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the id: a confirmed change or a snapshot arriving for the open event must not reset the form
+  }, [open, event?.id, defaultDate]);
+
+  // When the lock engages on a booking whose time the operator had edited,
+  // put the booking's real time back rather than leave an edited value on
+  // screen that Save will silently ignore.
+  useEffect(() => {
+    if (!timeLocked || !event) return;
+    const start = timeBaseline?.startAt ?? toDate(event.startAt);
+    const end = timeBaseline?.endAt ?? toDate(event.endAt);
+    if (!start || !end) return;
+    setDate(toDateInput(start));
+    setStartTime(toTimeInput(start));
+    setEndTime(toTimeInput(end));
+  }, [timeLocked, event, timeBaseline]);
+
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    const next: Record<string, string> = {};
+    if (!title.trim()) next.title = "Title is required";
+    if (!date) next.date = "Date is required";
+    if (!startTime) next.startTime = "Start time is required";
+    if (!endTime) next.endTime = "End time is required";
+    const startDt = date && startTime ? fromInputs(date, startTime) : null;
+    const endDt = date && endTime ? fromInputs(date, endTime) : null;
+    if (startDt && endDt && endDt.getTime() <= startDt.getTime()) {
+      next.endTime = "End must be after start";
+    }
+    setErrors(next);
+    if (Object.keys(next).length > 0 || !startDt || !endDt) return;
+
+    const payload = formData({ title, date, startTime, endTime, contactId, location, notes, meetingUrl });
+
+    setSaving(true);
+    try {
+      if (isEdit && event) {
+        const base = formBaseline.current;
+        const changed = base ? changedFields(payload, base) : payload;
+        if (eventSource(event) === "booking_page") {
+          const { startAt: _startAt, endAt: _endAt, ...fields } = changed;
+          const result = await saveBookingPageEdit({
+            eventId: event.id,
+            baseline: timeBaseline ?? {
+              startAt: base?.startAt ?? toDate(event.startAt),
+              endAt: base?.endAt ?? toDate(event.endAt),
+            },
+            startAt: payload.startAt,
+            endAt: payload.endAt,
+            timeLocked,
+            fields,
+            reschedule: async (id, start, end) => {
+              const res = await fetch(`/api/events/by-id/${id}/reschedule`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                  startAt: start.toISOString(),
+                  endAt: end.toISOString(),
+                }),
+              });
+              return { ok: res.ok, body: await res.json().catch(() => ({})) };
+            },
+            updateFields: updateEvent,
+            onRescheduled: (time) =>
+              onRescheduled?.(event.id, time.startAt, time.endAt, time.rescheduleCount),
+          });
+          if (result.kind === "reschedule_refused") {
+            toast.error(result.error);
+            return;
+          }
+          setTimeBaseline(result.baseline);
+          if (result.kind === "fields_failed") {
+            console.error(result.error);
+            toast.error(
+              !result.rescheduled
+                ? "Couldn't save event. Try again."
+                : result.warning
+                  ? `${result.warning} The other changes didn't save — try again.`
+                  : "Rescheduled, but the other changes didn't save. Try again.",
+            );
+            return;
+          }
+          if (result.warning) {
+            toast.warning(result.warning);
+            onOpenChange(false);
+            return;
+          }
+        } else {
+          // Plain edit has no webhook event — stays a client-side write.
+          if (Object.keys(changed).length > 0) await updateEvent(event.id, changed);
+        }
+        toast.success("Event updated");
+      } else {
+        // Create goes through the server so event.created fires.
+        const res = await fetch("/api/events", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            subAccountId,
+            title: payload.title,
+            startAt: payload.startAt.toISOString(),
+            endAt: payload.endAt.toISOString(),
+            contactId: payload.contactId,
+            location: payload.location,
+            notes: payload.notes,
+            meetingUrl: payload.meetingUrl,
+          }),
+        });
+        const b = (await res.json().catch(() => ({}))) as { error?: string };
+        if (!res.ok) {
+          toast.error(b.error ?? "Couldn't save event. Try again.");
+          return;
+        }
+        const created = createdEventFromResponse(b);
+        if (created) onCreated?.(created);
+        toast.success("Event created");
+      }
+      onOpenChange(false);
+    } catch (err) {
+      console.error(err);
+      toast.error("Couldn't save event. Try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleDelete() {
+    if (!event) return;
+    if (!confirm(`Delete "${event.title}"?`)) return;
+    setDeleting(true);
+    try {
+      // The rules refuse a client delete of an event mirrored in a host's
+      // Google Calendar; the server route takes the Google copy down first.
+      if (Object.keys((event as { googleEventIds?: Record<string, string> | null }).googleEventIds ?? {}).length > 0) {
+        const res = await fetch(`/api/events/by-id/${event.id}`, { method: "DELETE" });
+        if (!res.ok) {
+          const data = (await res.json().catch(() => ({}))) as { error?: string; message?: string };
+          // Still in a host's Google Calendar: not deleted. The dialog's
+          // Retry sync notice stays available.
+          if (data.error === "google_removal_failed" && data.message) {
+            toast.error(data.message);
+            return;
+          }
+          throw new Error(`delete failed (${res.status})`);
+        }
+        onDeleted?.(event.id);
+      } else {
+        await deleteEvent(event.id);
+        // Resolves on the server's commit. Clears an event shown only from
+        // its create response, which the snapshot never held.
+        onDeleted?.(event.id);
+      }
+      toast.success("Event deleted");
+      onOpenChange(false);
+    } catch (err) {
+      console.error(err);
+      toast.error("Couldn't delete event.");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  const isBookingPageEvent = event ? eventSource(event) === "booking_page" : false;
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="w-full overflow-y-auto sm:max-w-lg">
+        <SheetHeader>
+          <SheetTitle>{isEdit ? "Edit Event" : "New Event"}</SheetTitle>
+          <SheetDescription>
+            {isEdit
+              ? "Update this event on your calendar."
+              : "Add a meeting, call, or any calendar event."}
+          </SheetDescription>
+        </SheetHeader>
+
+        {isBookingPageEvent && event && (
+          <div className="px-4 pt-4">
+            <BookingActionsPanel
+              event={event}
+              onStatusChange={(status) => {
+                setPanelStatus(status);
+                onStatusChange?.(event.id, status);
+              }}
+              onReassigned={(uid, name) => onReassigned?.(event.id, uid, name)}
+              onSyncCleared={() => onSyncCleared?.(event.id)}
+            />
+          </div>
+        )}
+
+        <form className="space-y-4 p-4 pt-0" onSubmit={handleSubmit}>
+          <div className="space-y-1.5">
+            <Label htmlFor="ev-title">
+              Title <span className="text-destructive">*</span>
+            </Label>
+            <Input
+              id="ev-title"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="Demo with Sarah"
+              aria-invalid={!!errors.title}
+            />
+            {errors.title && (
+              <p className="text-xs text-destructive">{errors.title}</p>
+            )}
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="ev-date">
+              Date <span className="text-destructive">*</span>
+            </Label>
+            <Input
+              id="ev-date"
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              aria-invalid={!!errors.date}
+              disabled={timeLocked}
+            />
+            {errors.date && (
+              <p className="text-xs text-destructive">{errors.date}</p>
+            )}
+          </div>
+
+          <div className="grid grid-cols-2 gap-4">
+            <div className="space-y-1.5">
+              <Label htmlFor="ev-start">
+                Start <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="ev-start"
+                type="time"
+                value={startTime}
+                onChange={(e) => setStartTime(e.target.value)}
+                aria-invalid={!!errors.startTime}
+                disabled={timeLocked}
+              />
+              {errors.startTime && (
+                <p className="text-xs text-destructive">{errors.startTime}</p>
+              )}
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="ev-end">
+                End <span className="text-destructive">*</span>
+              </Label>
+              <Input
+                id="ev-end"
+                type="time"
+                value={endTime}
+                onChange={(e) => setEndTime(e.target.value)}
+                aria-invalid={!!errors.endTime}
+                disabled={timeLocked}
+              />
+              {errors.endTime && (
+                <p className="text-xs text-destructive">{errors.endTime}</p>
+              )}
+            </div>
+          </div>
+          {timeLocked && (
+            <p className="-mt-2 text-[11px] text-muted-foreground">
+              Finished or cancelled bookings can&apos;t be moved — rebook instead.
+            </p>
+          )}
+
+          <div className="space-y-1.5">
+            <Label htmlFor="ev-contact">Contact</Label>
+            <div className="flex items-center gap-2">
+              <div className="min-w-0 flex-1">
+                <ContactPicker
+                  id="ev-contact"
+                  contacts={contacts}
+                  value={contactId ?? ""}
+                  onChange={(id) => setContactId(id)}
+                  placeholder="Optional — link to a contact"
+                  title="Link a contact"
+                />
+              </div>
+              {contactId && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setContactId(null)}
+                >
+                  Clear
+                </Button>
+              )}
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="ev-meeting-url">
+              <Video className="mr-1 inline h-3.5 w-3.5" />
+              Meeting URL
+            </Label>
+            <div className="flex items-center gap-1.5">
+              <Input
+                id="ev-meeting-url"
+                type="url"
+                value={meetingUrl}
+                onChange={(e) => setMeetingUrl(e.target.value)}
+                placeholder="https://zoom.us/j/1234567890"
+                autoComplete="off"
+                spellCheck={false}
+              />
+              {meetingUrl.trim() && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  render={
+                    <a
+                      href={meetingUrl.trim()}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                    />
+                  }
+                  className="shrink-0"
+                  title="Open the call in a new tab"
+                >
+                  <ExternalLink className="mr-1 h-3.5 w-3.5" />
+                  Join
+                </Button>
+              )}
+            </div>
+            <p className="text-[11px] text-muted-foreground">
+              Zoom, Google Meet, Whereby, or any video-call link. Booking-page
+              events inherit this from the page; edit per-event if you need
+              to switch rooms.
+            </p>
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="ev-location">
+              <MapPin className="mr-1 inline h-3.5 w-3.5" />
+              Location
+            </Label>
+            <Input
+              id="ev-location"
+              value={location}
+              onChange={(e) => setLocation(e.target.value)}
+              placeholder="Address, meeting room, phone…"
+            />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="ev-notes">
+              <StickyNote className="mr-1 inline h-3.5 w-3.5" />
+              Notes
+            </Label>
+            <Textarea
+              id="ev-notes"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Agenda, prep, reminders…"
+              rows={3}
+            />
+          </div>
+
+          <div className="flex items-center justify-between gap-2 pt-2">
+            {isEdit && (() => {
+              // Delete on an ACTIVE booking-page event silently destroys the
+              // record without notifying the attendee — a UX trap. Force the
+              // operator through "Cancel booking" (in the panel above) so
+              // the visitor gets a cancellation email. Delete is only shown
+              // for manual events OR booking-page events that have already
+              // reached a terminal state (cleanup after the fact).
+              const eventStatusNow = event ? eventStatus(event) : "scheduled";
+              const isTerminal =
+                eventStatusNow === "cancelled" ||
+                eventStatusNow === "completed" ||
+                eventStatusNow === "no_show";
+              if (isBookingPageEvent && !isTerminal) {
+                return (
+                  <p className="max-w-[60%] text-[11px] text-muted-foreground">
+                    Use <strong>Cancel booking</strong> above so the visitor
+                    is notified by email. Delete is hidden for active
+                    bookings to avoid silent cancellations.
+                  </p>
+                );
+              }
+              return (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  size="sm"
+                  onClick={handleDelete}
+                  disabled={saving || deleting}
+                >
+                  <Trash2 className="mr-1 h-3.5 w-3.5" />
+                  {deleting ? "Deleting…" : "Delete"}
+                </Button>
+              );
+            })()}
+            {!isEdit && <span />}
+            <div className="flex gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => onOpenChange(false)}
+                disabled={saving}
+              >
+                Cancel
+              </Button>
+              <Button type="submit" disabled={saving}>
+                {saving ? "Saving…" : isEdit ? "Save Changes" : "Create Event"}
+              </Button>
+            </div>
+          </div>
+        </form>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+/**
+ * Inline panel showing the booking-page status + operator actions.
+ * Only mounted when `event.source === "booking_page"`. Surfaces:
+ *   - status badge (awaiting payment / confirmed / completed / cancelled / no-show)
+ *   - "Mark as paid" for awaiting_payment
+ *   - "Mark attended" / "Mark no-show" once the event is in the past
+ *   - "Cancel" for any non-terminal state (operator-initiated; emails the visitor)
+ *
+ * All actions POST to /api/events/[id]/* and reflect locally on success;
+ * the calendar's onSnapshot subscription picks up the canonical state
+ * once Firestore syncs.
+ */
+export function BookingActionsPanel({
+  event,
+  onStatusChange,
+  onReassigned,
+  onSyncCleared,
+}: {
+  event: CalendarEvent;
+  onStatusChange: (status: EventStatus) => void;
+  onReassigned: (assignedToUid: string | null, assignedToName: string | null) => void;
+  onSyncCleared: () => void;
+}) {
+  const status = eventStatus(event);
+  const startAt = toDate(event.startAt);
+  const isPast = startAt ? startAt.getTime() < Date.now() : false;
+  const [busy, setBusy] = useState<string | null>(null);
+  const [localStatus, setLocalStatus] = useState<EventStatus>(status);
+
+  useEffect(() => {
+    setLocalStatus(eventStatus(event));
+  }, [event]);
+
+  async function markPaid() {
+    setBusy("paid");
+    try {
+      const res = await fetch(`/api/events/by-id/${event.id}/mark-paid`, {
+        method: "POST",
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error ?? "Couldn't mark as paid.");
+      }
+      setLocalStatus("scheduled");
+      onStatusChange("scheduled");
+      toast.success("Marked as paid. Confirmation sent.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Action failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  async function setStatus(
+    next: "completed" | "no_show" | "cancelled",
+    label: string,
+  ) {
+    if (
+      next === "cancelled" &&
+      !confirm("Cancel this booking? The visitor is notified by email.")
+    ) {
+      return;
+    }
+    setBusy(next);
+    try {
+      const res = await fetch(`/api/events/by-id/${event.id}/mark-status`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: next }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        ok?: boolean;
+        error?: string;
+        notifyEmailSent?: boolean;
+        notifyEmailSkipReason?: EventNotifySkipReason;
+      };
+      if (!res.ok || !data.ok) {
+        throw new Error(data.error ?? "Couldn't update.");
+      }
+      setLocalStatus(next);
+      onStatusChange(next);
+      // For cancel: tell the operator what ACTUALLY happened to the
+      // visitor notification — not just "Visitor notified" optimistically.
+      if (next === "cancelled") {
+        if (data.notifyEmailSent) {
+          toast.success("Cancelled. Visitor notified by email.");
+        } else {
+          toast.warning(
+            `Cancelled, but ${notifySkipDetail(data.notifyEmailSkipReason)}. Reach out manually.`,
+          );
+        }
+      } else {
+        toast.success(label);
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Action failed.");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  // "cancelled" is truly final; "completed"/"no_show" can still be
+  // corrected into each other but never into anything else.
+  const terminal = localStatus === "cancelled";
+  const correctable = localStatus === "completed" || localStatus === "no_show";
+
+  return (
+    <div className="space-y-3 rounded-xl border bg-muted/30 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="inline-flex items-center gap-1.5 rounded-full bg-teal-500/10 px-2 py-0.5 text-[10px] font-medium text-teal-700 dark:text-teal-400">
+          <CalendarClock className="h-3 w-3" />
+          From booking page
+        </span>
+        <BookingStatusBadge status={localStatus} />
+        {!!event.rescheduleCount && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400">
+            <CalendarClock className="h-3 w-3" />
+            Rescheduled
+          </span>
+        )}
+        {event.assignedToName && (
+          <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/10 px-2 py-0.5 text-[10px] font-medium text-indigo-700 dark:text-indigo-400">
+            <User className="h-3 w-3" />
+            {event.assignedToName}
+          </span>
+        )}
+        {event.paymentAmount != null && event.paymentCurrency && (
+          <span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-700 dark:text-zinc-400">
+            {event.paymentCurrency} {event.paymentAmount}
+          </span>
+        )}
+      </div>
+      {!terminal && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          {localStatus === "awaiting_payment" && (
+            <Button
+              type="button"
+              size="sm"
+              onClick={markPaid}
+              disabled={busy !== null}
+            >
+              {busy === "paid" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <DollarSign className="mr-1 h-3.5 w-3.5" />
+              )}
+              Mark as paid
+            </Button>
+          )}
+          {localStatus === "scheduled" && isPast && (
+            <>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setStatus("completed", "Marked as attended.")}
+                disabled={busy !== null}
+              >
+                {busy === "completed" ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+                )}
+                Mark attended
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setStatus("no_show", "Marked as no-show.")}
+                disabled={busy !== null}
+              >
+                {busy === "no_show" ? (
+                  <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+                ) : (
+                  <UserX className="mr-1 h-3.5 w-3.5" />
+                )}
+                Mark no-show
+              </Button>
+            </>
+          )}
+          {localStatus === "completed" && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setStatus("no_show", "Corrected to no-show.")}
+              disabled={busy !== null}
+            >
+              {busy === "no_show" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <UserX className="mr-1 h-3.5 w-3.5" />
+              )}
+              Correct to no-show
+            </Button>
+          )}
+          {localStatus === "no_show" && (
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setStatus("completed", "Corrected to attended.")}
+              disabled={busy !== null}
+            >
+              {busy === "completed" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <CheckCircle2 className="mr-1 h-3.5 w-3.5" />
+              )}
+              Correct to attended
+            </Button>
+          )}
+          {!correctable && (
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={() => setStatus("cancelled", "Cancelled. Visitor notified.")}
+              disabled={busy !== null}
+              className="text-destructive hover:bg-destructive/5 hover:text-destructive"
+            >
+              {busy === "cancelled" ? (
+                <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <XCircle className="mr-1 h-3.5 w-3.5" />
+              )}
+              Cancel booking
+            </Button>
+          )}
+        </div>
+      )}
+
+      {/* Reassign host — only renders while the booking is still live
+          (not cancelled, not a completed/no_show correction target). */}
+      {!terminal && !correctable && (
+        <BookingReassign event={event} onReassigned={onReassigned} />
+      )}
+      <GoogleSyncNotice event={event} onSynced={onSyncCleared} />
+    </div>
+  );
+}
+
+function BookingStatusBadge({ status }: { status: EventStatus }) {
+  if (status === "awaiting_payment") {
+    return (
+      <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[10px] font-medium text-amber-700 dark:text-amber-400">
+        {eventStatusLabel(status)}
+      </span>
+    );
+  }
+  if (status === "cancelled") {
+    return (
+      <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[10px] font-medium text-rose-700 dark:text-rose-400">
+        {eventStatusLabel(status)}
+      </span>
+    );
+  }
+  if (status === "completed") {
+    return (
+      <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
+        {eventStatusLabel(status)}
+      </span>
+    );
+  }
+  if (status === "no_show") {
+    return (
+      <span className="rounded-full bg-zinc-500/10 px-2 py-0.5 text-[10px] font-medium text-zinc-700 dark:text-zinc-400">
+        {eventStatusLabel(status)}
+      </span>
+    );
+  }
+  return (
+    <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[10px] font-medium text-emerald-700 dark:text-emerald-400">
+      {eventStatusLabel(status)}
+    </span>
+  );
+}

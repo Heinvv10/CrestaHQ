@@ -1,0 +1,78 @@
+"use client";
+
+import { useMemo } from "react";
+import Link from "next/link";
+import { FileText, Link2, Receipt, Repeat } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { QuoteList } from "@/components/quotes/quote-list";
+import { useSubAccount } from "@/context/sub-account-context";
+import { useSubAccountContacts } from "@/context/contacts-context";
+
+/**
+ * Sub-account-wide quotes list. Mounts <QuoteList> with a name-map
+ * built from the contacts subscription so each row can show "ACME
+ * Plumbing" rather than a contact ID.
+ */
+export default function QuotesPage() {
+  const { subAccountId, agencyId, saPath, subAccount } = useSubAccount();
+  const { contacts } = useSubAccountContacts();
+
+  const contactNames = useMemo(() => {
+    const map: Record<string, string> = {};
+    for (const c of contacts) {
+      map[c.id] = c.name || c.email || c.phone || "(unnamed contact)";
+    }
+    return map;
+  }, [contacts]);
+
+  return (
+    <div className="mx-auto w-full max-w-5xl space-y-6 p-6">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight">Quotes &amp; invoices</h1>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Send branded quotes for review or invoices for payment. Recipients
+            view on a shareable link; quotes get accepted/declined, invoices
+            pay by card or PayPal — whichever is connected under Settings →
+            Payments.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            render={<Link href={saPath("/quotes/recurring")} />}
+          >
+            <Repeat className="h-4 w-4" />
+            Recurring
+          </Button>
+          {subAccount?.paymentsEnabledByAgency === true && (
+            <Button
+              variant="ghost"
+              render={<Link href={saPath("/quotes/payment-links")} />}
+            >
+              <Link2 className="h-4 w-4" />
+              Payment links
+            </Button>
+          )}
+          <Button
+            variant="outline"
+            render={<Link href={saPath("/quotes/new")} />}
+          >
+            <FileText className="h-4 w-4" />
+            New quote
+          </Button>
+          <Button render={<Link href={saPath("/quotes/new?kind=invoice")} />}>
+            <Receipt className="h-4 w-4" />
+            New invoice
+          </Button>
+        </div>
+      </div>
+
+      <QuoteList
+        scope={{ agencyId: agencyId ?? "", subAccountId }}
+        contactNames={contactNames}
+      />
+    </div>
+  );
+}

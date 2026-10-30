@@ -1,0 +1,157 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+/**
+ * Contract test for the two ElevenLabs reads Web Voice metering relies on.
+ * The bodies below are written from ElevenLabs' published API reference for
+ * `GET /v1/convai/conversations/{id}` and `GET /v1/convai/conversations`
+ * (ElevenAgents), with the fields it documents around the ones we read. They
+ * are ASSUMED, not recorded from a live account: no key has been connected
+ * (docs/features/web-voice.md). When the first live walk records a real
+ * response, replace these with it — if this test then fails, metering would
+ * have been wrong.
+ */
+
+vi.mock("server-only", () => ({}));
+
+const { getConversation, listConversations } = await import("./elevenlabs");
+
+// Id shapes as ElevenLabs documents them, built low-entropy at runtime: the
+// secret scan reads a random-looking id literal as a credential.
+const AGENT = `agent_${"a".repeat(26)}`;
+const CONV_DONE = `conv_${"b".repeat(26)}`;
+const CONV_LIVE = `conv_${"c".repeat(26)}`;
+
+const CONVERSATION_DETAIL = {
+  agent_id: AGENT,
+  conversation_id: CONV_DONE,
+  status: "done",
+  user_id: null,
+  transcript: [{ role: "agent", message: "Hi there!", time_in_call_secs: 0 }],
+  metadata: {
+    start_time_unix_secs: 1760342400,
+    accepted_time_unix_secs: 1760342401,
+    call_duration_secs: 187,
+    cost: 512,
+    termination_reason: "Client disconnected",
+    main_language: "en",
+  },
+  analysis: null,
+  conversation_initiation_client_data: {
+    custom_llm_extra_body: { token: "s1.redacted" },
+  },
+  has_audio: true,
+  has_user_audio: true,
+  has_response_audio: true,
+};
+
+const CONVERSATION_LIST = {
+  conversations: [
+    {
+      agent_id: AGENT,
+      agent_name: "Acme — website voice",
+      conversation_id: CONV_DONE,
+      start_time_unix_secs: 1760342400,
+      call_duration_secs: 187,
+      message_count: 14,
+      status: "done",
+      call_successful: "success",
+      transcript_summary: null,
+      call_summary_title: null,
+      direction: "inbound",
+    },
+    {
+      agent_id: AGENT,
+      agent_name: "Acme — website voice",
+      conversation_id: CONV_LIVE,
+      start_time_unix_secs: 1760342990,
+      call_duration_secs: 0,
+      message_count: 0,
+      status: "in-progress",
+      call_successful: "unknown",
+      transcript_summary: null,
+      call_summary_title: null,
+      direction: "inbound",
+    },
+  ],
+  next_cursor: "eyJwYWdlIjoyfQ",
+  has_more: true,
+};
+
+afterEach(() => vi.unstubAllGlobals());
+
+function answer(body: unknown) {
+  const fetchMock = vi.fn(async (_input: string | URL) => Response.json(body));
+  vi.stubGlobal("fetch", fetchMock);
+  return fetchMock;
+}
+
+describe("ElevenLabs conversation reads (ASSUMED shapes)", () => {
+  it("reads agent, status, duration and start time from a conversation", async () => {
+    answer(CONVERSATION_DETAIL);
+    expect(await getConversation("key", CONV_DONE)).toEqual({
+      agentId: AGENT,
+      status: "done",
+      durationSeconds: 187,
+      startTimeUnixSecs: 1760342400,
+    });
+  });
+
+  it("lists an agent's conversations with the filters and paging metering expects", async () => {
+    const fetchMock = answer(CONVERSATION_LIST);
+    const page = await listConversations("key", AGENT, 1760342000.9, "eyJwYWdlIjoxfQ");
+    const url = new URL(String(fetchMock.mock.calls[0]?.[0]));
+    expect(url.pathname).toBe("/v1/convai/conversations");
+    expect(Object.fromEntries(url.searchParams)).toEqual({
+      agent_id: AGENT,
+      call_start_after_unix: "1760342000",
+      page_size: "100",
+      cursor: "eyJwYWdlIjoxfQ",
+    });
+    expect(page).toEqual({
+      hasMore: true,
+      nextCursor: "eyJwYWdlIjoyfQ",
+      conversations: [
+        {
+          conversationId: CONV_DONE,
+          agentId: AGENT,
+          status: "done",
+          durationSeconds: 187,
+          startTimeUnixSecs: 1760342400,
+        },
+        {
+          conversationId: CONV_LIVE,
+          agentId: AGENT,
+          status: "in-progress",
+          durationSeconds: 0,
+          startTimeUnixSecs: 1760342990,
+        },
+      ],
+    });
+  });
+
+  it.each<[string, Record<string, unknown>, boolean | "throws"]>([
+    ["a next_cursor, even with has_more false", { has_more: false, next_cursor: "c2" }, true],
+    ["has_more true and a next_cursor", { has_more: true, next_cursor: "c2" }, true],
+    ["has_more false, next_cursor null", { has_more: false, next_cursor: null }, false],
+    ["has_more true, next_cursor null (more, but no way to it)", { has_more: true, next_cursor: null }, true],
+    ["has_more false, no next_cursor", { has_more: false }, false],
+    ["no has_more, next_cursor null", { next_cursor: null }, false],
+    ["no has_more, a next_cursor", { next_cursor: "c2" }, true],
+    ["neither field", {}, "throws"],
+    ["has_more not a boolean, no next_cursor", { has_more: "no" }, "throws"],
+  ])("reads paging fail-closed: %s", async (_label, paging, hasMore) => {
+    answer({ conversations: [], ...paging });
+    const read = listConversations("key", "agent_1", 0, null);
+    if (hasMore === "throws") await expect(read).rejects.toThrow(/no paging information/);
+    else expect((await read).hasMore).toBe(hasMore);
+  });
+
+  it("throws on a list body without a conversations array, and nulls a malformed item", async () => {
+    answer({ items: [], has_more: false });
+    await expect(listConversations("key", "agent_1", 0, null)).rejects.toThrow(/no conversations array/);
+    answer({ conversations: [{ conversation_id: "../x", start_time_unix_secs: -5, call_duration_secs: "9" }], has_more: false });
+    expect((await listConversations("key", "agent_1", 0, null)).conversations).toEqual([
+      { conversationId: null, agentId: null, status: null, durationSeconds: null, startTimeUnixSecs: null },
+    ]);
+  });
+});

@@ -1,0 +1,220 @@
+import { describe, expect, it, vi } from "vitest";
+
+/**
+ * Locks the registry's exact contents, in order. The order is the tool order
+ * the model sees, and the level / requiredRole / readonly / surfaces columns
+ * are the permission surface — so moving capabilities between files must
+ * leave this table untouched. Adding or removing a capability, or changing
+ * where one is offered, means editing this table on purpose.
+ */
+
+vi.mock("@/lib/firebase/admin", () => ({ getAdminDb: () => ({}) }));
+
+const { AI_SUITE_CAPABILITIES } = await import("./capabilities");
+
+// [name, level, requiredRole, readonly, surfaces (null = every surface)]
+//
+// N2a (UPSTREAM_PORT_PLAN.md): upstream offered update_contact, list_pipelines,
+// create_pipeline, list_quotes, mark_quote_paid and list_snapshots in chat;
+// they stay ["agent"] here on purpose (not widened by N2a). New in N2a:
+// list_communities, find_awaiting_payment_bookings and watchdog_status are
+// reads on both surfaces; pause_all_workflows (pause only), add_course,
+// add_lesson and configure_watchdog are chat-only confirm-gated admin
+// writes; mark_booking_paid emails the customer, so it is agent-only behind
+// the outbound approval and refused in chat.
+//
+// N2b (agency tools): billing_overview and sub_account_usage are reads on
+// both surfaces (an agent key sees only what it reaches);
+// deployment_setup_status is a chat-only read (it describes the deployment,
+// not the key's agency). comp_client (cancels a subscription) and
+// set_usage_limits are chat-only confirm-gated owner writes.
+// resend_checkout_link hands a payable link out and kills the old ones, so it
+// is agent-only behind the outbound approval and refused in chat.
+const EXPECTED: Array<[string, string, string, boolean, string[] | null]> = [
+  ["list_sub_accounts",                         "agency",      "agencyOwner",      true, null],
+  ["sub_account_stats",                         "agency",      "agencyOwner",      true, null],
+  ["set_feature_gate",                          "agency",      "agencyOwner",      false, ["chat"]],
+  ["create_sub_account",                        "agency",      "agencyOwner",      false, null],
+  ["set_sub_account_gate",                      "agency",      "agencyOwner",      false, ["agent"]],
+  ["list_snapshots",                            "agency",      "agencyOwner",      true, ["agent"]],
+  ["apply_snapshot",                            "agency",      "agencyOwner",      false, ["agent"]],
+  ["list_billing_plans",                        "agency",      "agencyOwner",      true, ["chat", "agent"]],
+  ["create_billing_plan",                       "agency",      "agencyOwner",      false, ["chat", "agent"]],
+  ["assign_billing_plan",                       "agency",      "agencyOwner",      false, ["chat", "agent"]],
+  ["create_one_time_charge",                    "agency",      "agencyOwner",      false, ["chat", "agent"]],
+  ["billing_overview",                          "agency",      "agencyOwner",      true, ["chat", "agent"]],
+  ["comp_client",                               "agency",      "agencyOwner",      false, ["chat"]],
+  ["resend_checkout_link",                      "agency",      "agencyOwner",      false, ["agent"]],
+  ["sub_account_usage",                         "agency",      "agencyOwner",      true, ["chat", "agent"]],
+  ["set_usage_limits",                          "agency",      "agencyOwner",      false, ["chat"]],
+  ["deployment_setup_status",                   "agency",      "agencyOwner",      true, ["chat"]],
+  ["my_access",                                 "sub-account", "subAccountMember", true, ["chat"]],
+  ["open_workspace",                            "sub-account", "subAccountMember", true, ["chat"]],
+  ["find_contacts",                             "sub-account", "subAccountMember", true, null],
+  ["workspace_stats",                           "sub-account", "subAccountMember", true, null],
+  ["find_deals",                                "sub-account", "subAccountMember", true, null],
+  ["create_deal",                               "sub-account", "subAccountMember", false, null],
+  ["move_deal_stage",                           "sub-account", "subAccountMember", false, null],
+  ["update_deal",                               "sub-account", "subAccountMember", false, ["agent"]],
+  ["delete_deal",                               "sub-account", "subAccountMember", false, ["agent"]],
+  ["mark_deal_completed",                       "sub-account", "subAccountMember", false, ["agent"]],
+  ["list_pipelines",                            "sub-account", "subAccountMember", true, ["agent"]],
+  ["get_pipeline",                              "sub-account", "subAccountMember", true, ["agent"]],
+  ["create_pipeline",                           "sub-account", "subAccountAdmin",  false, ["agent"]],
+  ["update_pipeline",                           "sub-account", "subAccountAdmin",  false, ["agent"]],
+  ["delete_pipeline",                           "sub-account", "subAccountAdmin",  false, ["agent"]],
+  ["list_custom_fields",                         "sub-account", "subAccountMember",true, ["agent"]],
+  ["create_custom_field",                        "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["update_custom_field",                        "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["delete_custom_field",                        "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["list_custom_field_folders",                  "sub-account", "subAccountMember",true, ["agent"]],
+  ["create_custom_field_folder",                 "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["update_custom_field_folder",                 "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["reorder_custom_field_folders",               "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["delete_custom_field_folder",                 "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["list_products",                              "sub-account", "subAccountMember",true, ["agent"]],
+  ["create_product",                             "sub-account", "subAccountMember",false, ["agent"]],
+  ["update_product",                             "sub-account", "subAccountMember",false, ["agent"]],
+  ["delete_product",                             "sub-account", "subAccountMember",false, ["agent"]],
+  ["list_snippets",                              "sub-account", "subAccountMember",true, ["agent"]],
+  ["create_snippet",                             "sub-account", "subAccountMember",false, ["agent"]],
+  ["update_snippet",                             "sub-account", "subAccountMember",false, ["agent"]],
+  ["delete_snippet",                             "sub-account", "subAccountMember",false, ["agent"]],
+  ["list_whatsapp_templates",                    "sub-account", "subAccountMember",true, ["agent"]],
+  ["create_whatsapp_template",                   "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["submit_whatsapp_template",                   "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["list_quotes",                                "sub-account", "subAccountMember",true, ["agent"]],
+  ["get_quote",                                  "sub-account", "subAccountMember",true, ["agent"]],
+  ["create_quote",                               "sub-account", "subAccountMember",false, ["agent"]],
+  ["update_quote",                               "sub-account", "subAccountMember",false, ["agent"]],
+  ["send_quote",                                 "sub-account", "subAccountMember",false, ["agent"]],
+  ["mark_quote_paid",                            "sub-account", "subAccountMember",false, ["agent"]],
+  ["list_recurring_schedules",                   "sub-account", "subAccountAdmin", true, ["agent"]],
+  ["create_recurring_schedule",                  "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["update_recurring_schedule",                  "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["pause_recurring_schedule",                   "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["resume_recurring_schedule",                  "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["cancel_recurring_schedule",                  "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["list_webhooks",                             "sub-account", "subAccountAdmin",  true, null],
+  ["create_webhook",                            "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["send_webhook_test",                         "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["update_webhook_url",                        "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["create_community",                          "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["list_communities",                          "sub-account", "subAccountMember", true, ["chat", "agent"]],
+  ["add_course",                                "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["add_lesson",                                "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["create_workflow",                           "sub-account", "subAccountAdmin",  false, null],
+  ["list_workflows",                            "sub-account", "subAccountAdmin",  true, ["chat", "agent"]],
+  ["get_workflow",                              "sub-account", "subAccountAdmin",  true, ["chat", "agent"]],
+  ["list_workflow_runs",                        "sub-account", "subAccountAdmin",  true, ["agent"]],
+  ["update_workflow",                           "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
+  ["set_workflow_status",                       "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
+  ["delete_workflow",                           "sub-account", "subAccountAdmin",  false, ["agent"]],
+  ["pause_all_workflows",                       "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["speed_to_lead_readiness",                   "sub-account", "subAccountMember", true, ["chat"]],
+  ["list_forms",                                "sub-account", "subAccountMember", true, null],
+  ["create_form",                               "sub-account", "subAccountAdmin",  false, null],
+  ["create_contact",                            "sub-account", "subAccountMember", false, null],
+  ["get_contact",                               "sub-account", "subAccountMember", true, ["agent"]],
+  ["update_contact",                            "sub-account", "subAccountMember", false, ["agent"]],
+  ["add_tags",                                  "sub-account", "subAccountMember", false, ["agent"]],
+  ["remove_tags",                               "sub-account", "subAccountMember", false, ["agent"]],
+  ["update_contact_channels",                   "sub-account", "subAccountMember", false, ["agent"]],
+  ["delete_contact",                            "sub-account", "subAccountAdmin",  false, ["agent"]],
+  ["list_companies",                            "sub-account", "subAccountMember", true, ["agent"]],
+  ["create_company",                            "sub-account", "subAccountMember", false, ["agent"]],
+  ["update_company",                            "sub-account", "subAccountMember", false, ["agent"]],
+  ["delete_company",                            "sub-account", "subAccountAdmin",  false, ["agent"]],
+  ["find_conversations",                        "sub-account", "subAccountMember", true, ["agent"]],
+  ["get_conversation",                          "sub-account", "subAccountMember", true, ["agent"]],
+  ["list_scheduled_messages",                   "sub-account", "subAccountMember", true, ["agent"]],
+  ["set_bot_mode",                              "sub-account", "subAccountMember", false, ["agent"]],
+  ["cancel_scheduled_message",                  "sub-account", "subAccountMember", false, ["agent"]],
+  ["add_conversation_note",                     "sub-account", "subAccountMember", false, ["agent"]],
+  ["send_message",                              "sub-account", "subAccountMember", false, ["agent"]],
+  ["schedule_message",                          "sub-account", "subAccountMember", false, ["agent"]],
+  ["send_whatsapp_template",                    "sub-account", "subAccountMember", false, ["agent"]],
+  ["create_task",                               "sub-account", "subAccountMember", false, null],
+  ["find_tasks",                                "sub-account", "subAccountMember", true, null],
+  ["complete_task",                             "sub-account", "subAccountMember", false, null],
+  ["update_task",                                "sub-account", "subAccountMember",false, ["agent"]],
+  ["delete_task",                                "sub-account", "subAccountMember",false, ["agent"]],
+  ["find_events",                               "sub-account", "subAccountMember", true, null],
+  ["create_event",                              "sub-account", "subAccountMember", false, null],
+  ["set_event_status",                           "sub-account", "subAccountMember",false, ["agent"]],
+  ["list_booking_pages",                         "sub-account", "subAccountMember",true, ["agent"]],
+  ["get_booking_page",                           "sub-account", "subAccountMember",true, ["agent"]],
+  ["create_booking_page",                        "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["delete_booking_page",                        "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["update_booking_page",                        "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["find_awaiting_payment_bookings",             "sub-account", "subAccountMember",true, ["chat", "agent"]],
+  ["mark_booking_paid",                          "sub-account", "subAccountMember",false, ["agent"]],
+  ["list_members",                              "sub-account", "subAccountAdmin",  true, null],
+  ["invite_member",                             "sub-account", "subAccountAdmin",  false, ["chat", "agent"]],
+  ["research_website_reference",                "sub-account", "subAccountAdmin",  true, ["chat"]],
+  ["get_website_prefill",                       "sub-account", "subAccountAdmin",  true, ["chat"]],
+  ["create_website",                            "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["list_website_concepts",                     "sub-account", "subAccountMember", true, ["chat"]],
+  ["check_website_status",                      "sub-account", "subAccountMember", true, ["chat"]],
+  ["update_website_cta",                        "sub-account", "subAccountAdmin",  false, ["chat"]],
+  ["list_social_posts",                          "sub-account", "subAccountMember",true, ["agent"]],
+  ["create_social_post",                         "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["delete_social_post",                         "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["schedule_social_post",                       "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["reputation_overview",                        "sub-account", "subAccountMember",true, ["agent"]],
+  ["list_reviews",                               "sub-account", "subAccountMember",true, ["agent"]],
+  ["send_review_request",                        "sub-account", "subAccountMember",false, ["agent"]],
+  ["list_broadcasts",                            "sub-account", "subAccountMember",true, ["agent"]],
+  ["create_broadcast",                           "sub-account", "subAccountAdmin", false, ["agent"]],
+  ["start_voice_call",                           "sub-account", "subAccountMember",false, ["agent"]],
+  ["watchdog_status",                            "sub-account", "subAccountAdmin", true, ["chat", "agent"]],
+  ["configure_watchdog",                         "sub-account", "subAccountAdmin", false, ["chat"]],
+  ["find_contacts_in_sub_account",              "agency",      "agencyOwner",      true, ["chat"]],
+  ["find_deals_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],
+  ["find_tasks_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],
+  ["find_events_in_sub_account",                "agency",      "agencyOwner",      true, ["chat"]],
+  ["workspace_stats_in_sub_account",            "agency",      "agencyOwner",      true, ["chat"]],
+  ["list_webhooks_in_sub_account",              "agency",      "agencyOwner",      true, ["chat"]],
+  ["list_members_in_sub_account",               "agency",      "agencyOwner",      true, ["chat"]],
+  ["create_contact_in_sub_account",             "agency",      "agencyOwner",      false, ["chat"]],
+  ["create_task_in_sub_account",                "agency",      "agencyOwner",      false, ["chat"]],
+  ["complete_task_in_sub_account",              "agency",      "agencyOwner",      false, ["chat"]],
+  ["create_deal_in_sub_account",                "agency",      "agencyOwner",      false, ["chat"]],
+  ["move_deal_stage_in_sub_account",            "agency",      "agencyOwner",      false, ["chat"]],
+  ["create_event_in_sub_account",               "agency",      "agencyOwner",      false, ["chat"]],
+  ["create_workflow_in_sub_account",            "agency",      "agencyOwner",      false, ["chat"]],
+  ["create_webhook_in_sub_account",             "agency",      "agencyOwner",      false, ["chat"]],
+  ["send_webhook_test_in_sub_account",          "agency",      "agencyOwner",      false, ["chat"]],
+  ["update_webhook_url_in_sub_account",         "agency",      "agencyOwner",      false, ["chat"]],
+  ["create_community_in_sub_account",           "agency",      "agencyOwner",      false, ["chat"]],
+  ["invite_member_in_sub_account",              "agency",      "agencyOwner",      false, ["chat"]],
+  ["get_website_prefill_in_sub_account",        "agency",      "agencyOwner",      true, ["chat"]],
+  ["research_website_reference_in_sub_account", "agency",      "agencyOwner",      true, ["chat"]],
+  ["create_website_in_sub_account",             "agency",      "agencyOwner",      false, ["chat"]],
+  ["list_website_concepts_in_sub_account",      "agency",      "agencyOwner",      true, ["chat"]],
+  ["check_website_status_in_sub_account",       "agency",      "agencyOwner",      true, ["chat"]],
+  ["speed_to_lead_readiness_in_sub_account",    "agency",      "agencyOwner",      true, ["chat"]],
+  ["list_forms_in_sub_account",                 "agency",      "agencyOwner",      true, ["chat"]],
+  ["create_form_in_sub_account",                "agency",      "agencyOwner",      false, ["chat"]],
+  ["update_website_cta_in_sub_account",         "agency",      "agencyOwner",      false, ["chat"]],
+];
+
+describe("AI Suite capability registry", () => {
+  it("exposes exactly these capability names, in this order", () => {
+    expect(AI_SUITE_CAPABILITIES.map((c) => c.name)).toEqual(
+      EXPECTED.map(([name]) => name)
+    );
+  });
+
+  it("keeps each capability's level, requiredRole, readonly and surfaces", () => {
+    expect(
+      AI_SUITE_CAPABILITIES.map((c) => [
+        c.name,
+        c.level,
+        c.requiredRole,
+        c.readonly === true,
+        c.surfaces ?? null,
+      ])
+    ).toEqual(EXPECTED);
+  });
+});
