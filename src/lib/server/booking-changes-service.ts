@@ -9,7 +9,11 @@ import { nextIcsSequence } from "@/lib/booking/ics";
 import { emitBookingWebhook, fireBookingTrigger, recordBookingActivity } from "@/lib/booking/lifecycle";
 import { isLongEvent } from "@/lib/booking/long-event";
 import { MAX_SLOT_MINUTES } from "@/lib/booking/page-slots";
-import { rescheduleWithoutAvailabilityCheck, runRescheduleSideEffects } from "@/lib/booking/reschedule";
+import {
+  RescheduleRejected,
+  rescheduleWithoutAvailabilityCheck,
+  runRescheduleSideEffects,
+} from "@/lib/booking/reschedule";
 import { departedHostMessage, movingEventOf, resolvePageAvailability } from "@/lib/booking/resolve-availability";
 import { loadGoogleBusyForEvent } from "@/lib/google-calendar/busy";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
@@ -50,6 +54,8 @@ export type CancelBookingResult =
 export type RescheduleBookingResult =
   | { ok: true; newStart: Date; newEnd: Date; newToken: string; publicEventUrl: string }
   | { ok: false; code: "invalid" }
+  /** The requested time itself is unusable (the routes' 400). */
+  | { ok: false; code: "bad_request"; message: string }
   | { ok: false; code: "bad_state"; message: string }
   | { ok: false; code: "slot_taken" }
   | { ok: false; code: "error" };
@@ -58,7 +64,8 @@ class GuardRefused extends Error {}
 class BadState extends Error {}
 class SlotConflict extends Error {}
 
-const errText = (err: unknown) => (err instanceof Error ? err.message : String(err));
+// The stack (message included), never the raw object: SDK errors can carry request headers.
+const errText = (err: unknown) => (err instanceof Error ? (err.stack ?? err.message) : String(err));
 
 export async function cancelBooking(input: {
   eventId: string;
@@ -147,10 +154,10 @@ export async function rescheduleBooking(input: {
   const { eventId, newStart } = input;
   if (!isDocId(eventId)) return { ok: false, code: "invalid" };
   if (Number.isNaN(newStart.getTime()) || newStart.getTime() <= Date.now()) {
-    return { ok: false, code: "bad_state", message: "Choose a time in the future." };
+    return { ok: false, code: "bad_request", message: "Choose a time in the future." };
   }
   if (input.newEnd && !(input.newEnd.getTime() > newStart.getTime())) {
-    return { ok: false, code: "bad_state", message: "Pick a valid new time." };
+    return { ok: false, code: "bad_request", message: "Pick a valid new time." };
   }
 
   const db = getAdminDb();
@@ -266,6 +273,7 @@ export async function rescheduleBookingAsOperator(
   event: CalendarEvent;
   notify: { emailSent: boolean; emailSkipReason?: EventNotifySkipReason };
 }> {
+  if (!isDocId(eventId)) throw new RescheduleRejected(404, "Event not found.");
   const { event, newToken, page } = await rescheduleWithoutAvailabilityCheck(eventId, newStart, newEnd);
   const notify = await runRescheduleSideEffects({
     event,

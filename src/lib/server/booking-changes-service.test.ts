@@ -34,7 +34,7 @@ vi.mock("@/lib/google-calendar/push", () => ({ pushBookingToGoogle: fx.push }));
 vi.mock("@/lib/google-calendar/busy", () => ({ loadGoogleBusyForEvent: async () => [] }));
 
 const { flushAfterResponse } = await import("@/lib/server/after-response");
-const { cancelBooking, rescheduleBooking } = await import("./booking-changes-service");
+const { cancelBooking, rescheduleBooking, rescheduleBookingAsOperator } = await import("./booking-changes-service");
 type Guard = import("./booking-changes-service").BookingChangeGuard;
 
 const HASH = "hash_live";
@@ -102,6 +102,9 @@ describe("guard refusal", () => {
     expect(
       await rescheduleBooking({ ...nested, newStart: at("10:00"), newEnd: at("10:30") }),
     ).toEqual({ ok: false, code: "invalid" });
+    await expect(rescheduleBookingAsOperator(nested.eventId, at("10:00"), at("10:30"))).rejects.toMatchObject({
+      httpStatus: 404,
+    });
     expect(mem.read("events/e1/notes/n1")).toMatchObject({ status: "scheduled", publicTokenHash: HASH });
   });
 });
@@ -176,11 +179,16 @@ describe("reschedule", () => {
   });
 
   it("a time in the past is refused before any read", async () => {
-    expect(await moveTo("05:00", "05:30", allow)).toMatchObject({ ok: false, code: "bad_state" });
+    expect(await moveTo("05:00", "05:30", allow)).toEqual({
+      ok: false,
+      code: "bad_request",
+      message: "Choose a time in the future.",
+    });
+    expect(await moveTo("10:30", "10:00", allow)).toMatchObject({ ok: false, code: "bad_request" });
   });
 });
 
-describe("cancel racing reschedule", () => {
+describe("concurrent changes on one booking", () => {
   /** Outcome must match the doc: exactly one wins, and the doc shows that one. */
   function expectConsistent(c: { ok: boolean }, r: { ok: boolean }) {
     const doc = mem.read("events/e1")!;
@@ -207,6 +215,15 @@ describe("cancel racing reschedule", () => {
     const c = await cancelling!;
     expect(r).toMatchObject({ ok: false, code: "bad_state" });
     expectConsistent(c, r);
+  });
+
+  it("two moves on one link into different free slots: one moves it, the other's link is dead", async () => {
+    const [a, b] = await Promise.all([moveTo("10:00", "10:30"), moveTo("11:00", "11:30")]);
+    expect([a.ok, b.ok].sort()).toEqual([false, true]);
+    const won = a.ok ? a : b.ok ? b : null;
+    expect([a, b].find((r) => !r.ok)).toEqual({ ok: false, code: "invalid" });
+    expect(startMs()).toBe(won!.newStart.getTime());
+    expect(mem.read("events/e1")).toMatchObject({ publicTokenHash: expect.not.stringMatching(HASH), rescheduleCount: 1 });
   });
 
   it("started together, they settle on one outcome", async () => {

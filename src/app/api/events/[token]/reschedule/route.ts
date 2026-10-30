@@ -91,6 +91,9 @@ export async function POST(
   if (result.code === "invalid") {
     return NextResponse.json({ error: "Invalid link" }, { status: 404 });
   }
+  if (result.code === "bad_request") {
+    return NextResponse.json({ error: result.message }, { status: 400 });
+  }
   if (result.code === "bad_state") {
     return NextResponse.json({ error: result.message }, { status: 409 });
   }

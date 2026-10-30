@@ -19,8 +19,8 @@ import type { SubAccountMemberDoc } from "@/types/tenancy";
 /**
  * The one place a booking page's slots are computed or re-verified: the
  * public availability API, the book route (inside its transaction), the
- * reschedule route (inside its transaction) and the voice agent all call
- * this. It loads the busy time for the window and applies the page's type
+ * attendee reschedule (`rescheduleBooking` in booking-changes-service, inside
+ * its transaction) and the voice agent all call this. It loads the busy time for the window and applies the page's type
  * and host rules via `computePageSlots`.
  *
  * Busy time is a list of intervals tagged with the hosts they occupy
