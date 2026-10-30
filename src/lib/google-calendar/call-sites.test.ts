@@ -67,6 +67,22 @@ describe("push call sites", () => {
     expect(push.now).toHaveBeenCalledWith("e2");
   });
 
+  it("a finished meeting (completed / no-show) pushes only when a copy was kept for a Meet room", async () => {
+    const { changeEventStatus } = await import("@/lib/server/event-status-service");
+    vi.setSystemTime(new Date("2026-09-14T12:00:00Z"));
+    seedEvent("e1", "09:00", "09:30", { googleMeetOwnerUid: "former_host" });
+    await changeEventStatus(mem.read("events/e1") as never, "completed");
+    expect(push.now).toHaveBeenCalledWith("e1");
+    push.now.mockClear();
+    seedEvent("e2", "09:00", "09:30", { googleMeetOwnerUid: "former_host" });
+    await changeEventStatus(mem.read("events/e2") as never, "no_show");
+    expect(push.now).toHaveBeenCalledWith("e2");
+    push.now.mockClear();
+    seedEvent("e3", "09:00", "09:30");
+    await changeEventStatus(mem.read("events/e3") as never, "completed");
+    expect(push.now).not.toHaveBeenCalled();
+  });
+
   it("runRescheduleSideEffects (token + operator reschedule)", async () => {
     const { runRescheduleSideEffects } = await import("@/lib/booking/reschedule");
     seedEvent("e1", "09:00", "09:30");

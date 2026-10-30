@@ -10,6 +10,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("@/lib/firebase/admin", async () => (await import("@/test/google-oauth-harness")).adminMock());
 vi.mock("./provider/select", () => ({ getGcalProviderFor: vi.fn(async () => provider) }));
 vi.mock("firebase-admin/firestore", async () => (await import("@/test/google-oauth-harness")).firestoreMock());
+const followUp = vi.hoisted(() => vi.fn(async (_eventId: string, _url: string) => undefined));
+vi.mock("@/lib/booking/meet-link-follow-up", () => ({ sendMeetLinkFollowUp: followUp }));
 
 import { SUB_PATH, state } from "@/test/google-oauth-harness";
 import { PAGE, connect, event, resetGcal, seedEvent, setGate, stubProvider, type StubProvider } from "@/test/gcal-harness";
@@ -17,7 +19,7 @@ import { GbpProviderError } from "@/lib/gbp/provider/types";
 import type { GcalEventInput } from "./provider/types";
 import { flushAfterResponse } from "@/lib/server/after-response";
 import {
-  KEPT_FOR_MEET_PREFIX,
+  KEPT_FOR_MEET_SUMMARY,
   googleEventIdFor,
   pushBookingAndGetMeetUrl,
   pushBookingAndGetMeetUrlWithin,
@@ -48,6 +50,7 @@ function seedMeetBooking(over: Record<string, unknown> = {}, pageFallback: strin
 
 beforeEach(() => {
   resetGcal();
+  followUp.mockClear();
   provider = stubProvider();
   provider.putEvent.mockImplementation(async (_t: string, _id: string, input: GcalEventInput) => ({
     created: true,
@@ -228,6 +231,41 @@ describe("pushBookingAndGetMeetUrlWithin", () => {
     release({ created: true, meetUrl: MEET_LINK });
     await flushAfterResponse();
     expect(event().meetingUrl).toBe(MEET_LINK);
+    // The booker was told the link will follow: it does, once.
+    expect(followUp).toHaveBeenCalledWith("ev_1", MEET_LINK);
+  });
+
+  it("detached, it never replaces the fallback the booker was just sent: the room stays off, no follow-up", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: FALLBACK });
+    let release: (v: { created: boolean; meetUrl: string | null }) => void = () => {};
+    provider.putEvent.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", 50)).toEqual({ meetUrl: null, pending: true });
+    release({ created: true, meetUrl: MEET_LINK });
+    await flushAfterResponse();
+    expect(event().meetingUrl).toBe(FALLBACK);
+    expect(event().googleMeetOwnerUid).toBeUndefined();
+    expect(followUp).not.toHaveBeenCalled();
+  });
+
+  it("detached, a booking that already had its room (no new link stored): no follow-up", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: MEET_LINK, googleMeetOwnerUid: "host_a", googleEventIds: { host_a: gid("host_a") } });
+    let release: (v: { created: boolean; meetUrl: string | null }) => void = () => {};
+    provider.putEvent.mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+    expect((await pushBookingAndGetMeetUrlWithin("ev_1", 50)).pending).toBe(true);
+    release({ created: false, meetUrl: MEET_LINK });
+    await flushAfterResponse();
+    expect(followUp).not.toHaveBeenCalled();
+  });
+
+  it("in time, the same room does replace the fallback, and no follow-up is needed", async () => {
+    connect("host_a");
+    seedMeetBooking({ meetingUrl: FALLBACK });
+    expect(await pushBookingAndGetMeetUrlWithin("ev_1", 5_000)).toEqual({ meetUrl: MEET_LINK, pending: false });
+    await flushAfterResponse();
+    expect(event().meetingUrl).toBe(MEET_LINK);
+    expect(followUp).not.toHaveBeenCalled();
   });
 
   it("returns the link when Google answers in time", async () => {
@@ -263,8 +301,11 @@ describe("a reassigned Google Meet booking keeps the room owner's copy", () => {
     expect(await pushBookingAndGetMeetUrl("ev_1")).toEqual({ meetUrl: MEET_LINK });
     expect(provider.deleteEvent).not.toHaveBeenCalled();
     const kept = sentTo("host_a")!;
-    expect(kept.summary).toBe(`${KEPT_FOR_MEET_PREFIX}Consult — Ada`);
-    expect(kept.description).toMatch(/removed when the booking is cancelled or deleted/);
+    // No booker details: not the title (it names the customer), not the notes, not the link.
+    expect(kept.summary).toBe(KEPT_FOR_MEET_SUMMARY);
+    expect(kept.description).toMatch(/removed when the booking is cancelled, deleted or over/);
+    expect(kept.location).toBe("");
+    expect(JSON.stringify(kept)).not.toMatch(/Ada|Q: hi|meet\.google\.com/);
     expect(kept.transparency).toBe("transparent");
     expect(kept.conferenceData).toBeUndefined();
     expect(sentTo("host_b")).toMatchObject({ location: MEET_LINK });
@@ -309,7 +350,7 @@ describe("a reassigned Google Meet booking keeps the room owner's copy", () => {
     seedReassigned({ meetingUrl: FALLBACK });
     await pushBookingToGoogle("ev_1");
     expect(provider.deleteEvent).not.toHaveBeenCalled();
-    expect(sentTo("host_a")?.summary).toMatch(/^\[Reassigned, kept/);
+    expect(sentTo("host_a")?.summary).toBe(KEPT_FOR_MEET_SUMMARY);
   });
 
   it("no owner and only the page's fixed Meet fallback: not a room, the old copy goes", async () => {
@@ -335,5 +376,46 @@ describe("a reassigned Google Meet booking keeps the room owner's copy", () => {
     await pushBookingToGoogle("ev_1");
     expect(sentTo("host_a")).toBeDefined();
     expect(sentTo("host_a")).not.toHaveProperty("transparency");
+  });
+});
+
+describe("a finished meeting drops the copy kept only for the room", () => {
+  function seedFinished(status: string, over: Record<string, unknown> = {}) {
+    connect("host_a");
+    connect("host_b");
+    seedMeetBooking({
+      status,
+      meetingUrl: MEET_LINK,
+      assignedToUid: "host_b",
+      googleMeetOwnerUid: "host_a",
+      googleMeetKeptUid: "host_a",
+      googleEventIds: { host_a: gid("host_a"), host_b: gid("host_b") },
+      ...over,
+    });
+  }
+
+  it.each([["completed"], ["no_show"]])("%s: the former host's copy goes, the owner is cleared, the host's copy stays", async (status) => {
+    seedFinished(status);
+    await pushBookingToGoogle("ev_1");
+    expect(provider.deleteEvent).toHaveBeenCalledTimes(1);
+    expect(provider.deleteEvent).toHaveBeenCalledWith("a-host_a", gid("host_a"), expect.any(AbortSignal));
+    expect(provider.putEvent).not.toHaveBeenCalled();
+    expect(event()).toMatchObject({ googleEventIds: { host_b: gid("host_b") }, googleMeetOwnerUid: null, googleMeetKeptUid: null });
+  });
+
+  it("an owner still on the booking keeps their copy; only the owner is cleared", async () => {
+    seedFinished("completed", { assignedToUid: "host_a", googleMeetKeptUid: null, googleEventIds: { host_a: gid("host_a") } });
+    await pushBookingToGoogle("ev_1");
+    expect(provider.deleteEvent).not.toHaveBeenCalled();
+    expect(event()).toMatchObject({ googleEventIds: { host_a: gid("host_a") }, googleMeetOwnerUid: null });
+  });
+
+  it("the former host disconnected: recorded on the booking, id kept", async () => {
+    seedFinished("completed");
+    connect("host_a", { status: "revoked" });
+    await pushBookingToGoogle("ev_1");
+    expect(provider.deleteEvent).not.toHaveBeenCalled();
+    expect(event().googleEventIds).toEqual({ host_a: gid("host_a"), host_b: gid("host_b") });
+    expect((event().googleSyncError as { message: string }).message).toMatch(/^Still in HOST_A's Google Calendar/);
   });
 });

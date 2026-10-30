@@ -28,7 +28,7 @@ vi.mock("@/lib/google-calendar/provider/select", () => ({
 }));
 
 const { POST } = await import("./route");
-const { KEPT_FOR_MEET_PREFIX } = await import("@/lib/google-calendar/push");
+const { KEPT_FOR_MEET_SUMMARY } = await import("@/lib/google-calendar/push");
 const reassign = () =>
   POST(
     new Request("http://x/api", {
@@ -92,7 +92,9 @@ describe("reassigning a Google Meet booking", () => {
     expect(google.deleteEvent).not.toHaveBeenCalled();
     expect(sentTo("b")?.conferenceData).toBeUndefined();
     expect(sentTo("b")?.location).toBe(MEET_LINK);
-    expect(sentTo("a")).toMatchObject({ summary: `${KEPT_FOR_MEET_PREFIX}Intro`, transparency: "transparent" });
+    // The former host's copy carries no booker details: time + conference only.
+    expect(sentTo("a")).toMatchObject({ summary: KEPT_FOR_MEET_SUMMARY, location: "", transparency: "transparent" });
+    expect(JSON.stringify(sentTo("a"))).not.toContain("Intro");
     expect(mem.read("events/ev")).toMatchObject({ assignedToUid: "b", meetingUrl: MEET_LINK, googleMeetOwnerUid: "a" });
     expect(Object.keys((mem.read("events/ev") as { googleEventIds: object }).googleEventIds).sort()).toEqual(["a", "b"]);
   });
