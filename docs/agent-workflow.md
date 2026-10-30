@@ -93,24 +93,35 @@ the PR's individual commits stay readable in history.
 
 ### CI runner
 
-CI runs on **GitHub-hosted `ubuntu-latest`** (lint/typecheck/test/build, secret
-scan, FROZEN-shrink, the Go workflows), with two exceptions: the **E2E job in
-`ci.yml` and `e2e-smoke.yml` stay on the self-hosted runner** `velo-crestahq-u`
-(labels `self-hosted, linux, velo, crestahq, crestahq-e2e`; service
-`actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`, running as unix user
-`gha-crestahq`).
+Every CI job runs on **GitHub-hosted `ubuntu-latest`** — lint/typecheck/test/build,
+secret scan, FROZEN-shrink, the Go workflows, the **E2E job in `ci.yml`** and
+**`e2e-smoke.yml`**. Nothing runs on velo-server any more.
 
-Why: every E2E run seeds and purges the same fixture sub-accounts in the
-production Firestore (`e2e/global-setup.ts` `purgeFixtureData` is global), so
-runs must be serialised. One labelled runner does that without losing runs; a
-GitHub concurrency group does not, because it keeps only one *pending* run and
-cancels the older one when a third queues. If PRs sit queued forever, check the
-runner service first — a stopped runner looks exactly like a slow CI. The hosted
-jobs and E2E share no artifacts; E2E only `needs` the hosted gates.
+Every E2E run (PR or production smoke) seeds and purges the same fixture
+sub-accounts in the production Firestore (`e2e/global-setup.ts`
+`purgeFixtureData` is global), so runs must never overlap. A GitHub concurrency
+group cannot do that without losing runs: it keeps only one *pending* run and
+cancels the older one when a third queues. Instead the Playwright step sits
+between two steps of `scripts/ci/fixture-lock.mjs`:
 
-Follow-up: scope `purgeFixtureData` per run id (as `e2e/lib/run-id.ts` already
-does for specs' fixture prefixes), then move E2E and the smoke to hosted
-runners.
+- `acquire` creates the git ref `refs/ci-locks/e2e-fixtures` (create is atomic:
+  422 if it exists) and otherwise **waits**, polling every 20 s, logging the
+  holder run. It never cancels anything.
+- A lock whose holder run attempt has completed (or no longer exists), or that is
+  older than 90 min, is taken over with a fast-forward-only ref update on top of
+  it, so two waiters cannot both take the same stale lock. The Playwright step's
+  own 45-min timeout keeps a live holder well inside that limit.
+- `release` runs under `if: always()` and deletes the ref only if this job still
+  holds it.
+
+The jobs get `contents: write` (the ref) and `actions: read` (holder check); the
+token is passed only to the two lock steps and checkout does not persist it.
+To clear a wedged lock by hand: `gh api -X DELETE repos/Heinvv10/CrestaHQ/git/refs/ci-locks/e2e-fixtures`
+— only when no E2E or smoke run is in its Playwright step.
+
+Follow-up: scope `purgeFixtureData` and the fixture data per run id (as
+`e2e/lib/run-id.ts` already does for specs' fixture prefixes) so runs could
+overlap safely; until no spec depends on global fixture state, the lock stays.
 
 ### Deploy
 

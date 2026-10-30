@@ -157,29 +157,44 @@ describe("check-agent-coverage-shrink CLI", () => {
     expect(e2e).toMatch(/group: ci-e2e-.*\n\s+cancel-in-progress: false/);
   });
 
-  it("keeps E2E and the production smoke on the one self-hosted fixture runner, everything else hosted", () => {
+  it("runs every job hosted, with E2E and the production smoke serialised by the fixture lock", () => {
     const wf = (f: string) => fs.readFileSync(path.join(__dirname, "..", ".github", "workflows", f), "utf8");
-    const e2eLabel = "runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]";
     const ci = wf("ci.yml");
+    const smoke = wf("e2e-smoke.yml");
     const e2e = ci.slice(ci.indexOf("\n  e2e:\n"));
     const hosted = ci.slice(ci.indexOf("\n  ci:\n"), ci.indexOf("\n  e2e:\n"));
-    expect(e2e).toContain(e2eLabel);
+    for (const f of ["ci.yml", "e2e-smoke.yml", "wa-manager.yml", "wa-agent-bridge.yml", "agent-coverage-shrink.yml"]) {
+      expect(wf(f)).toContain("runs-on: ubuntu-latest");
+      expect(wf(f)).not.toMatch(/runs-on:.*self-hosted/);
+    }
+    expect(e2e).toContain("name: E2E (Playwright)\n");
+    expect(e2e).toContain("runs-on: ubuntu-latest");
     expect(hosted.match(/runs-on: ubuntu-latest/g)).toHaveLength(2);
     // The draft helpers run before `ci:`; all three are hosted, and the one that
     // shares E2E's concurrency group must carry the same-repo fork guard.
     const helpers = ci.slice(ci.indexOf("\njobs:\n"), ci.indexOf("\n  ci:\n"));
     expect(helpers.match(/runs-on: ubuntu-latest/g)).toHaveLength(3);
-    expect(helpers).not.toContain("runs-on: [self-hosted");
     const e2eHelper = helpers.slice(helpers.indexOf("\n  replace_pending_e2e_on_draft:"));
     expect(e2eHelper).toContain("github.event.pull_request.head.repo.full_name == github.repository");
-    expect(hosted).not.toContain("runs-on: [self-hosted");
-    // The self-hosted runner has no sudo, so --with-deps (an apt step) must stay off these jobs.
-    expect(e2e).not.toMatch(/install --with-deps/);
-    expect(wf("e2e-smoke.yml")).not.toMatch(/install --with-deps/);
-    expect(wf("e2e-smoke.yml")).toContain(e2eLabel);
-    for (const f of ["wa-manager.yml", "wa-agent-bridge.yml", "agent-coverage-shrink.yml"]) {
-      expect(wf(f)).toContain("runs-on: ubuntu-latest");
-      expect(wf(f)).not.toContain("self-hosted,");
+    expect(e2e).toContain(
+      "if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}",
+    );
+    for (const job of [e2e, smoke]) {
+      // A fresh hosted VM needs Chromium's OS libraries, and pnpm the way `ci` sets it up.
+      expect(job).toMatch(/playwright install --with-deps chromium/);
+      expect(job).toContain("uses: pnpm/action-setup@");
+      expect(job).toContain("cache: pnpm");
+      expect(job).not.toContain("corepack enable");
+      // The fixture-touching step sits strictly between acquire and an always() release.
+      const acquire = job.indexOf("run: node scripts/ci/fixture-lock.mjs acquire");
+      const playwright = job.indexOf("pnpm exec playwright test");
+      const release = job.indexOf("run: node scripts/ci/fixture-lock.mjs release");
+      expect(acquire).toBeGreaterThan(-1);
+      expect(playwright).toBeGreaterThan(acquire);
+      expect(release).toBeGreaterThan(playwright);
+      expect(job.slice(job.lastIndexOf("- name:", release), release)).toContain("if: always()");
+      expect(job).toMatch(/permissions:\n\s+contents: write\n\s+actions: read/);
+      expect(job).toContain("persist-credentials: false");
     }
   });
 });
