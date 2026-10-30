@@ -381,13 +381,54 @@ export async function removeBookingFromGoogleBeforeDelete(
  * Member removal, BEFORE their tokens are deleted: take their Google copies
  * of upcoming bookings down (nothing could reach them afterwards). The next
  * push for each booking then records them as no longer a member. Never throws.
+ *
+ * Also every copy KEPT in their calendar for a Google Meet room after a
+ * reassign (`googleMeetOwnerUid`, any date): they are no longer on those
+ * bookings, so the host query can't find them. Those go first, and each
+ * event's owner is cleared. Without a working connection nothing can be
+ * removed: each such event records it in `googleSyncError`, id kept.
  */
 export async function removeMemberGoogleCopies(subAccountId: string, uid: string): Promise<void> {
   try {
     const conn = await readConnection(subAccountId, uid);
-    if (!conn || conn.status !== "connected") return;
+    const owned = (
+      await getAdminDb()
+        .collection("events")
+        .where("subAccountId", "==", subAccountId)
+        .where("googleMeetOwnerUid", "==", uid)
+        .get()
+    ).docs.filter((d) => !isImportedEvent(d.data() as SyncedEvent));
+    const hasCopy = (d: FirebaseFirestore.QueryDocumentSnapshot) => !!(d.data() as SyncedEvent).googleEventIds?.[uid];
+    const nameIn = async (d: FirebaseFirestore.QueryDocumentSnapshot) => {
+      const e = d.data() as SyncedEvent;
+      return hostLabel(e, await loadPage(e).catch(() => null), uid);
+    };
+
+    if (!conn || conn.status !== "connected") {
+      await Promise.all(
+        owned.map(async (d) =>
+          d.ref
+            .update({
+              googleMeetOwnerUid: null,
+              ...(hasCopy(d)
+                ? {
+                    googleSyncError: {
+                      message: `Still in ${await nameIn(d)}'s Google Calendar: they left with their Google Calendar not connected, so the copy kept for the Google Meet link couldn't be removed.`,
+                      at: new Date(),
+                    },
+                  }
+                : {}),
+            })
+            .catch((err) => console.warn(`[google-calendar] removed-member owner clear failed event=${d.id}`, err instanceof Error ? err.message : String(err))),
+        ),
+      );
+      return;
+    }
+
+    // Owners without a copy left: just clear the owner.
+    await Promise.all(owned.filter((d) => !hasCopy(d)).map((d) => d.ref.update({ googleMeetOwnerUid: null })));
     const docs = await queryHostEvents(subAccountId, uid, (q) => q.where("startAt", ">=", new Date()));
-    const queue = docs.filter((d) => (d.data() as SyncedEvent).googleEventIds?.[uid]);
+    const queue = [...new Map([...owned.filter(hasCopy), ...docs.filter(hasCopy)].map((d) => [d.id, d])).values()];
     const provider = await getGcalProviderFor(subAccountId, uid);
     const deadline = Date.now() + MEMBER_CLEANUP_TOTAL_MS;
     const worker = async () => {
@@ -403,10 +444,12 @@ export async function removeMemberGoogleCopies(subAccountId: string, uid: string
               }
             }, signal),
           );
-          await d.ref.update({ [`googleEventIds.${uid}`]: FieldValue.delete() });
+          await d.ref.update({
+            [`googleEventIds.${uid}`]: FieldValue.delete(),
+            ...((d.data() as SyncedEvent).googleMeetOwnerUid === uid ? { googleMeetOwnerUid: null } : {}),
+          });
         } catch (err) {
-          const e = d.data() as SyncedEvent;
-          const name = hostLabel(e, await loadPage(e).catch(() => null), uid);
+          const name = await nameIn(d);
           await d.ref
             .update({ googleSyncError: { message: `Still in ${name}'s Google Calendar: ${describeFailure(err, "push")}`, at: new Date() } })
             .catch(() => undefined);
