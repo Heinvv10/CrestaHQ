@@ -115,6 +115,14 @@ export interface AgencyDoc {
    */
   agencyAssistantModel?: AiSuiteModelChoice;
   /**
+   * Usage rebilling master switch, read `=== true`. Off = no client is billed
+   * for usage, whatever their own switch says. Written by PATCH /api/agency
+   * (owner only).
+   */
+  usageRebillingEnabled?: boolean;
+  /** When the master switch last turned on (same rule as the client switch). */
+  usageRebillingSince?: Date | null;
+  /**
    * Agency Agent API kill switch. OFF by default — read `=== true`. While
    * off, every agency API key is refused at auth and none can be minted.
    * Written by PATCH /api/agency; shown in the Agency Assistant card.
@@ -191,6 +199,14 @@ export interface SubAccountDoc {
    * `usageQuotas` but for the sell rates. See UsageRates.
    */
   usageRates?: import("./usage").UsageRates | null;
+  /**
+   * Bill this client for usage past its allowance. Needs
+   * AgencyDoc.usageRebillingEnabled too. Default off; read `=== true`.
+   * Agency-owner-only writes via the feature-gates PATCH.
+   */
+  usageRebillingEnabled?: boolean;
+  /** When the switch last turned on; a month is only billed if it was on before the month ended. */
+  usageRebillingSince?: Date | null;
   createdByUid: string;
   createdAt: Date;
   updatedAt: Date;
