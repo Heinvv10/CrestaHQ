@@ -66,6 +66,9 @@ export interface OrderApiObject {
   buyer_name: string | null;
   stripe_checkout_session_id: string;
   stripe_payment_intent_id: string | null;
+  /** Only on an express buy-page order paid through Paystack (whose
+   *  `stripe_checkout_session_id` is ""): its checkout reference, `po-{id}`. */
+  paystack_reference?: string;
 }
 
 export function serializeOrderForApi(order: Order): OrderApiObject {
@@ -94,6 +97,7 @@ export function serializeOrderForApi(order: Order): OrderApiObject {
     buyer_name: order.buyerName,
     stripe_checkout_session_id: order.stripeCheckoutSessionId,
     stripe_payment_intent_id: order.stripePaymentIntentId,
+    ...(order.paystackReference ? { paystack_reference: order.paystackReference } : {}),
   };
 }
 
