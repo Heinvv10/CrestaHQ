@@ -832,6 +832,13 @@ export interface SubAccountDoc {
    */
   replyToEmail: string | null;
   /**
+   * Broadcast open pixel and click redirect (lib/broadcasts/email-tracking.ts).
+   * Absent or false = off, the default. Set by a sub-account admin through
+   * PATCH /api/agency/sub-accounts/[id]; read at send time and again on each
+   * open or click, so switching off also stops collection for sent emails.
+   */
+  emailTracking?: { opens?: boolean; clicks?: boolean };
+  /**
    * Sub-account-level kill switch for the automation engine. When true:
    *   - fireTriggers() returns early without creating any execution docs
    *   - in-flight executions short-circuit at their next step with

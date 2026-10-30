@@ -364,6 +364,12 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // Mystery-shop website-form job (Prospecting PR 5c) — same auth: the
   // signature, verified inside the route and bound to its URL.
   /^\/api\/automations\/prospecting\/mystery-shop-form$/,
+  // Broadcast open pixel and click redirect (W4 PR2), loaded by a mail
+  // client with no session. One token segment each, nothing below it; the
+  // HMAC token is verified inside the route, and the click destination comes
+  // only from the link doc the send step stored.
+  /^\/t\/o\/[^/]+$/,
+  /^\/t\/c\/[^/]+$/,
 ];
 
 export function isPublicPath(pathname: string): boolean {

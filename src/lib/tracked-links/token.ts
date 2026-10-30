@@ -20,6 +20,10 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 const TOKEN_PARTS = 3;
 /** A "." in either id would break the split on verify. */
 const ID_RE = /^[A-Za-z0-9_-]{1,200}$/;
+/** What the issuer emits. Checked before the compare: a presented value of the
+ *  right string length but with non-ASCII characters has a different BYTE
+ *  length, and `timingSafeEqual` throws on unequal buffers. */
+const SIG_RE = /^[0-9a-f]{64}$/;
 
 /**
  * Callers validate ids against this before minting, so a bad id is a 400 from
@@ -57,6 +61,7 @@ export function verifyTrackedLinkToken(
   const [linkId, contactId, presentedSig] = parts;
   if (!linkId || !contactId || !presentedSig) return null;
   if (!ID_RE.test(linkId) || !ID_RE.test(contactId)) return null;
+  if (!SIG_RE.test(presentedSig)) return null;
 
   let expectedSig: string;
   try {
@@ -66,7 +71,6 @@ export function verifyTrackedLinkToken(
   } catch {
     return null;
   }
-  if (presentedSig.length !== expectedSig.length) return null;
   if (!timingSafeEqual(Buffer.from(presentedSig), Buffer.from(expectedSig))) {
     return null;
   }

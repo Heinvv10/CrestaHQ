@@ -203,6 +203,23 @@ describe("isPublicPath — the gitpage build-settled callback", () => {
   });
 });
 
+describe("isPublicPath — the broadcast open pixel and click redirect", () => {
+  it("lets a mail client load the pixel and follow a link without a session", () => {
+    expect(isPublicPath("/t/o/b1.c1.sig")).toBe(true);
+    expect(isPublicPath("/t/c/b1.c1.k1.sig")).toBe(true);
+  });
+
+  it("opens exactly one token segment under each — nothing under or beside them", () => {
+    expect(isPublicPath("/t")).toBe(false);
+    expect(isPublicPath("/t/o")).toBe(false);
+    expect(isPublicPath("/t/c")).toBe(false);
+    expect(isPublicPath("/t/o/b1.c1.sig/extra")).toBe(false);
+    expect(isPublicPath("/t/c/b1.c1.k1.sig/extra")).toBe(false);
+    expect(isPublicPath("/t/x/token")).toBe(false);
+    expect(isPublicPath("/tx/o/token")).toBe(false);
+  });
+});
+
 describe("isPublicPath — the uploaded-logo route", () => {
   it("lets email clients fetch an uploaded logo without a session", () => {
     expect(isPublicPath("/api/brand/logo/agency/ag1")).toBe(true);
