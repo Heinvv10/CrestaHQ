@@ -49,6 +49,9 @@ export interface CreateTaskInput {
   dealId: string | null;
   eventId: string | null;
   assignedToUid?: string | null;
+  /** Overrides the contact-derived territory (a deal-keyed task follows its
+   *  deal; `null` = untagged, admins only). Absent = the contact's. */
+  territoryId?: string | null;
   /** Set by the workflow engine so the `task_created` timeline row links
    *  back to the run that minted the task. */
   workflow?: { workflowId: string; runId: string };
@@ -65,7 +68,10 @@ export async function createTaskServerSide(
   input: CreateTaskInput,
 ): Promise<TaskWriteResult> {
   const db = getAdminDb();
-  const territoryId = await territoryForContact(input.contactId);
+  const territoryId =
+    input.territoryId !== undefined
+      ? input.territoryId
+      : await territoryForContact(input.contactId);
   const ref = db.collection("tasks").doc();
 
   const doc = {

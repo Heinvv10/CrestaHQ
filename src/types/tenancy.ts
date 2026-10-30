@@ -636,8 +636,9 @@ export interface SubAccountDoc {
    */
   dialerEnabledByAgency?: boolean;
   /**
-   * Agency-controlled gate for the agent monitors (stale-deals and inbox
-   * watchdog). Opt-in because every judgment spends the agency's AI credits.
+   * Agency-controlled gate for the Stale deals agent monitor (the inbox
+   * watchdog on the same Monitors tab keeps the Labs + AI Suite gates).
+   * Opt-in because every flagged deal spends the agency's AI credits.
    * Standalone (NOT in `PLAN_GATE_KEYS`). Read `=== true`.
    */
   agentsEnabledByAgency?: boolean;

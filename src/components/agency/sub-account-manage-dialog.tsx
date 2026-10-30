@@ -1272,10 +1272,10 @@ function ManageDialogBody({
             }
             title="Agent monitors"
           >
-            When enabled, this sub-account can run AI monitors that watch for
-            stalled deals and unanswered threads. Every judgment spends your AI
-            credits. The monitors are not available in this build yet, so the
-            switch only takes effect once they ship.
+            When enabled, this sub-account can run the Stale deals monitor
+            (AI Agents → Monitors), which turns a deal stuck in one stage into
+            a follow-up task. Every flagged deal spends your AI credits on a
+            one-line note. The inbox watchdog stays under the Labs gate.
           </GateToggle>
 
           <GateToggle
