@@ -16,6 +16,7 @@ import {
   signerEmailFor,
 } from "@/lib/quotes/accept-signature";
 import { quoteRequiresSignature } from "@/lib/quotes/signature";
+import { sendSignedCopies, signedCopyExpected } from "@/lib/quotes/signed-copy";
 import {
   DECLINE_REASONS,
   type DeclineReason,
@@ -52,6 +53,8 @@ interface SuccessBody {
   ok: true;
   status: "accepted" | "declined";
   signed?: boolean;
+  /** A signed copy is on its way to the signer (email configured + address known). */
+  copyEmailed?: boolean;
 }
 
 export async function POST(
@@ -117,6 +120,7 @@ export async function POST(
   const signerEmail = payload.action === "accept" ? await signerEmailFor(verified.quoteId) : null;
 
   let signedThisRequest = false;
+  let copyEmailed = false;
 
   // Transactional state flip. Re-reads inside the txn so two concurrent
   // accepts (e.g. recipient triple-clicks on a slow connection) don't
@@ -221,6 +225,12 @@ export async function POST(
       });
       await fireQuoteTrigger(freshQuote, "quote_accepted");
       runAfterResponse(() => emitQuoteWebhook(freshQuote, "quote_accepted"));
+      if (signedThisRequest && freshQuote.signature) {
+        // Both parties get the signed PDF, once. Email trouble never fails the
+        // accept, which has already committed.
+        copyEmailed = await signedCopyExpected(freshQuote);
+        runAfterResponse(() => sendSignedCopies(freshQuote));
+      }
       // Pipeline outcome: a linked deal moves to Won; otherwise the
       // Won-stage deal auto-creates when the operator opted in (the
       // helper no-ops when the flag is false).
@@ -238,7 +248,7 @@ export async function POST(
   const body: SuccessBody = {
     ok: true,
     status: payload.action === "accept" ? "accepted" : "declined",
-    ...(signedThisRequest ? { signed: true } : {}),
+    ...(signedThisRequest ? { signed: true, copyEmailed } : {}),
   };
   return NextResponse.json(body);
 }

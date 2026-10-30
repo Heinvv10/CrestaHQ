@@ -203,6 +203,57 @@ const styles = StyleSheet.create({
     color: "#9a9aa3",
     textAlign: "center",
   },
+  certTitle: {
+    fontSize: 16,
+    fontFamily: "Helvetica-Bold",
+    fontWeight: 700,
+    marginBottom: 4,
+  },
+  certSubtitle: {
+    fontSize: 9,
+    color: "#6b6b75",
+    marginBottom: 24,
+  },
+  certRow: {
+    flexDirection: "row",
+    paddingVertical: 7,
+    borderBottomWidth: 0.5,
+    borderBottomColor: "#e8e8ec",
+  },
+  certLabel: {
+    width: 150,
+    fontSize: 9,
+    color: "#6b6b75",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  certValue: {
+    flex: 1,
+    fontSize: 10,
+  },
+  certValueBold: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: "Helvetica-Bold",
+    fontWeight: 700,
+  },
+  certHash: {
+    flex: 1,
+    fontSize: 8.5,
+    fontFamily: "Courier",
+  },
+  certNote: {
+    marginTop: 20,
+    fontSize: 9,
+    lineHeight: 1.5,
+    color: "#1a1a22",
+  },
+  certSmall: {
+    marginTop: 10,
+    fontSize: 8,
+    lineHeight: 1.5,
+    color: "#6b6b75",
+  },
 });
 
 interface InvoicePdfProps {
@@ -215,6 +266,12 @@ interface InvoicePdfProps {
   recipientName: string;
   /** ISO date string for "Issued" line. Defaults to today. */
   issuedDateLabel?: string;
+  /**
+   * "recipient" (the default) leaves the signer's email, IP and browser off the
+   * certificate, since that copy travels (public link, forwarded email). Only an
+   * authenticated operator or the business's own copy opts into "full".
+   */
+  certificateDetail?: "full" | "recipient";
 }
 
 export function InvoicePdfDocument({
@@ -223,6 +280,7 @@ export function InvoicePdfDocument({
   businessLogoUrl,
   recipientName,
   issuedDateLabel,
+  certificateDetail = "recipient",
 }: InvoicePdfProps) {
   const safeLogoUrl =
     typeof businessLogoUrl === "string" &&
@@ -232,11 +290,14 @@ export function InvoicePdfDocument({
   const isInvoice = quote.kind === "invoice";
   const docLabel = isInvoice ? "INVOICE" : "QUOTE";
   const totals = computeQuoteTotals(quote);
-  const issued = issuedDateLabel ?? new Date().toLocaleDateString("en-GB", {
-    day: "numeric",
-    month: "short",
-    year: "numeric",
-  });
+  // The document's own date, never the render date: a signed copy rendered
+  // later must not say it was issued today.
+  const issuedAt = toDate(quote.sentAt) ?? toDate(quote.createdAt);
+  const issued =
+    issuedDateLabel ??
+    (issuedAt
+      ? issuedAt.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric", timeZone: "UTC" })
+      : "—");
 
   const dueLine = isInvoice
     ? formatPaymentDueLabel(quote.paymentDueDays)
@@ -378,8 +439,113 @@ export function InvoicePdfDocument({
           {businessName} · {docLabel.toLowerCase()} {quote.quoteNumber}
         </Text>
       </Page>
+      {/* Signature certificate: who agreed, when, from where, and the fingerprint
+          of the exact content they agreed to. */}
+      {quote.signature && (
+        <Page size="A4" style={styles.page}>
+          <Text style={styles.certTitle}>Signature certificate</Text>
+          <Text style={styles.certSubtitle}>
+            {docLabel} {quote.quoteNumber} · {businessName} ·{" "}
+            {formatCurrency(totals.total, quote.currency)}
+          </Text>
+
+          <View style={styles.certRow}>
+            <Text style={styles.certLabel}>Signed by</Text>
+            <Text style={styles.certValueBold}>
+              {quote.signature.signerName}
+            </Text>
+          </View>
+          {quote.signature.signedAsNumber !== quote.quoteNumber && (
+            <View style={styles.certRow}>
+              <Text style={styles.certLabel}>Signed as</Text>
+              <Text style={styles.certValue}>
+                Quote {quote.signature.signedAsNumber}
+              </Text>
+            </View>
+          )}
+          {certificateDetail === "full" && (
+            <View style={styles.certRow}>
+              <Text style={styles.certLabel}>Email</Text>
+              <Text style={styles.certValue}>
+                {quote.signature.signerEmail ?? "—"}
+              </Text>
+            </View>
+          )}
+          <View style={styles.certRow}>
+            <Text style={styles.certLabel}>Signed at</Text>
+            <Text style={styles.certValue}>
+              {timestampLabel(quote.signature.signedAt)}
+            </Text>
+          </View>
+          {certificateDetail === "full" && (
+            <View style={styles.certRow}>
+              <Text style={styles.certLabel}>IP address</Text>
+              <Text style={styles.certValue}>
+                {quote.signature.ipAddress ?? "—"}
+              </Text>
+            </View>
+          )}
+          {certificateDetail === "full" && (
+            <View style={styles.certRow}>
+              <Text style={styles.certLabel}>Browser</Text>
+              <Text style={styles.certValue}>
+                {quote.signature.userAgent ?? "—"}
+              </Text>
+            </View>
+          )}
+          <View style={styles.certRow}>
+            <Text style={styles.certLabel}>Document fingerprint</Text>
+            <Text style={styles.certHash}>
+              SHA-256 {quote.signature.documentHash}
+            </Text>
+          </View>
+
+          <Text style={styles.certNote}>
+            By typing their name and ticking the agreement box, the signer
+            indicated their intent to be bound by the terms of this document
+            (electronic signature).
+          </Text>
+          <Text style={styles.certSmall}>
+            The fingerprint identifies the exact content that was signed: the
+            line items, amounts, terms, parties and validity. Any later change
+            to the document produces a different fingerprint. Record version{" "}
+            {quote.signature.hashVersion}.
+          </Text>
+
+          <Text style={styles.footer} fixed>
+            {businessName} · {docLabel.toLowerCase()} {quote.quoteNumber} ·
+            signature certificate
+          </Text>
+        </Page>
+      )}
     </Document>
   );
+}
+
+function toDate(value: unknown): Date | null {
+  if (value instanceof Date) return value;
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    "toDate" in value &&
+    typeof (value as { toDate: () => Date }).toDate === "function"
+  ) {
+    return (value as { toDate: () => Date }).toDate();
+  }
+  // A timestamp that lost its prototype (serialized) still carries seconds.
+  if (
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { seconds?: unknown }).seconds === "number"
+  ) {
+    return new Date((value as { seconds: number }).seconds * 1000);
+  }
+  return null;
+}
+
+function timestampLabel(value: unknown): string {
+  const d = toDate(value);
+  return d ? `${d.toUTCString()} (UTC)` : "—";
 }
 
 function formatPaymentDueLabel(days: number | null): string | null {

@@ -27,6 +27,12 @@ const lifecycle = vi.hoisted(() => ({
   applyDealOutcomeForAcceptedQuote: vi.fn(async (..._a: unknown[]) => undefined),
 }));
 vi.mock("@/lib/quotes/lifecycle", () => lifecycle);
+const mail = vi.hoisted(() => ({ sendEmail: vi.fn(async (..._a: unknown[]) => ({ id: "m1" })) }));
+vi.mock("@/lib/comms/resend", () => ({
+  emailIsConfigured: () => true,
+  sendEmail: mail.sendEmail,
+  tenantFrom: () => undefined,
+}));
 
 const SECRET = "test-secret-quote-signature-fixture";
 process.env.AUTOMATIONS_TOKEN_SECRET = SECRET;
@@ -130,7 +136,7 @@ describe("a quote that requires a signature", () => {
       "user-agent": "Mozilla/5.0 test",
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true, status: "accepted", signed: true });
+    expect(await res.json()).toEqual({ ok: true, status: "accepted", signed: true, copyEmailed: true });
 
     const q = quote();
     expect(q.status).toBe("accepted");
@@ -190,6 +196,21 @@ describe("a quote that requires a signature", () => {
     expect((quote().signature as { documentHash: string }).documentHash).toBe(documentHash);
   });
 
+  it("the signed copies go out once: a double-submit and a replay add none", async () => {
+    seed();
+    mem.seed("subAccounts/sa1", { name: "Acme" });
+    mem.seed("users/u1", { email: "owner@example.com" });
+    const [a, b] = await Promise.all([respond(SIGN), respond(SIGN)]);
+    expect([a.status, b.status].sort()).toEqual([200, 409]);
+    expect((await respond(SIGN)).status).toBe(409);
+    await flushAfterResponse();
+    expect(mail.sendEmail).toHaveBeenCalledTimes(2);
+    expect(mail.sendEmail.mock.calls.map((c) => (c[0] as { to: string }).to).sort()).toEqual([
+      "jane@example.com",
+      "owner@example.com",
+    ]);
+  });
+
   it("caps the stored user agent at 500 characters", async () => {
     seed();
     expect((await respond(SIGN, { "user-agent": "x".repeat(2000) })).status).toBe(200);
@@ -199,6 +220,7 @@ describe("a quote that requires a signature", () => {
   it("a replay of the same signed accept -> 409, the first signature untouched", async () => {
     seed();
     expect((await respond(SIGN)).status).toBe(200);
+    await flushAfterResponse();
     const first = quote();
     vi.clearAllMocks();
 

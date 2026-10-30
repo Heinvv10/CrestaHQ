@@ -1274,7 +1274,9 @@ service cloud.firestore {
       // links and the decline path, so a forged one could hide a decline or a
       // late success.
       // `signature` is written only by the public accept route, in the same
-      // transaction as the accept; once set, the quote's content is frozen
+      // transaction as the accept; `signedCopyEmailedAt` (the once-only claim for
+      // the signed-copy emails) likewise: a forged one would silence the emails.
+      // Once signed, the quote's content is frozen
       // (only the lifecycle keys below may move) so its fingerprint stays true.
       allow create: if canSeeScopedDoc(
         request.resource.data.subAccountId,
@@ -1283,6 +1285,7 @@ service cloud.firestore {
       ) && !("paidVia" in request.resource.data)
         && !("autoCharge" in request.resource.data)
         && !("signature" in request.resource.data)
+        && !("signedCopyEmailedAt" in request.resource.data)
         && linkInTenant("contactId", "contacts")
         && linkInTenant("dealId", "deals");
       allow update: if canSeeScopedDoc(
@@ -1297,6 +1300,7 @@ service cloud.firestore {
         && request.resource.data.get("paidVia", null) == resource.data.get("paidVia", null)
         && request.resource.data.get("autoCharge", null) == resource.data.get("autoCharge", null)
         && request.resource.data.get("signature", null) == resource.data.get("signature", null)
+        && request.resource.data.get("signedCopyEmailedAt", null) == resource.data.get("signedCopyEmailedAt", null)
         && (resource.data.get("signature", null) == null
           || request.resource.data.diff(resource.data).affectedKeys()
             .hasOnly(["updatedAt", "status", "paidAt", "autoCreateDealOnAccept", "dealId", "paymentDueDays"]))
