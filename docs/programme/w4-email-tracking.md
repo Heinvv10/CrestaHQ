@@ -9,7 +9,7 @@ address that hard-bounced or complained is suppressed for that sub-account on ev
 |---|---|---|
 | PR1 | Suppression list per sub-account, enforced in the shared send helper, tested through every send path | this PR |
 | PR2 | Click redirect with signed tokens (no open redirect) and an open pixel. Both off by default for each sub-account | built (upstream port 1.0.54 unit I1); NOT runtime-verified |
-| PR3 | Bounce and complaint ingestion where the provider supports it. Where it doesn't, the UI says so instead of showing zero | not started |
+| PR3 | Bounce and complaint ingestion where the provider supports it. Where it doesn't, the UI says so instead of showing zero | Resend events webhook built (upstream port 1.0.54 unit I2; [broadcasts.md](../features/broadcasts.md)), NOT runtime-verified; the stats UI is unit I3 |
 
 ## PR1: the suppression list
 

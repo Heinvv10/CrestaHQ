@@ -19,6 +19,7 @@ import {
 } from "@/lib/broadcasts/settle-send";
 import { maybeMarkBroadcastCompleted } from "@/lib/broadcasts/completion";
 import { instrumentBroadcastHtml } from "@/lib/broadcasts/email-tracking";
+import { recordBroadcastEmailLookup } from "@/lib/comms/email-events";
 import { editedByAgentSinceApproval, templateFingerprint } from "@/lib/broadcasts/approved";
 import type {
   AgencyDoc,
@@ -305,6 +306,7 @@ async function deliver(
   const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${trackedInner}</body></html>`;
 
   let resendMessageId: string | null = null;
+  let viaResend = false;
   let error: string | null = null;
   let attempted = false;
   progress.providerReached = true;
@@ -321,6 +323,7 @@ async function deliver(
       meter: { subAccountId: broadcast.subAccountId },
     });
     resendMessageId = result.id;
+    viaResend = result.provider === "resend";
   } catch (err) {
     if (isEmailSuppressedError(err)) {
       await markSkipped(row, "suppressed");
@@ -331,6 +334,17 @@ async function deliver(
     attempted = providerAttempted(err);
   }
   if (resendMessageId) {
+    // Resend reports delivery events by its email id; the lookup must exist
+    // before the row reads "sent", or a fast event finds nothing. SMTP: none.
+    if (viaResend) {
+      await recordBroadcastEmailLookup({
+        emailId: resendMessageId,
+        broadcastId,
+        contactId,
+        subAccountId: broadcast.subAccountId,
+        agencyId: broadcast.agencyId,
+      });
+    }
     await settleSend(
       row,
       { status: "sent", resendMessageId, sentAt: FieldValue.serverTimestamp() },

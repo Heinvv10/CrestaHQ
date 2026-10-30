@@ -68,10 +68,11 @@ interface SweepResult {
 async function sweepFlatCollection(
   collectionGroupName: string,
   now: Date,
+  scope: "group" | "top-level" = "group",
 ): Promise<SweepResult> {
   const db = getAdminDb();
-  const snap = await db
-    .collectionGroup(collectionGroupName)
+  const source = scope === "group" ? db.collectionGroup(collectionGroupName) : db.collection(collectionGroupName);
+  const snap = await source
     .where("expiresAt", "<", now)
     .limit(BATCH_LIMIT)
     .get();
@@ -229,6 +230,10 @@ export async function runApiCleanup() {
     [WEBHOOK_EVENTS, () => sweepWebhookEvents(now)],
     [COMMUNITY_MAGIC_LINK_USES, () => sweepFlatCollection(COMMUNITY_MAGIC_LINK_USES, now)],
     [AGENT_CALLS, () => sweepFlatCollection(AGENT_CALLS, now)],
+    // Top-level, so the automatic single-field index serves the range: Resend
+    // email-id lookups (90 days) and processed webhook svix-ids (24 hours).
+    ["emailEvents", () => sweepFlatCollection("emailEvents", now, "top-level")],
+    ["resendWebhookDeliveries", () => sweepFlatCollection("resendWebhookDeliveries", now, "top-level")],
     ["reviewFeedback/pii", () => scrubReviewFeedbackPii(now)],
     // Watchdog run logs older than 30 days (Labs custom agent).
     [

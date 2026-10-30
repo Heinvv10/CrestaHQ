@@ -81,6 +81,16 @@ export function activityVisuals(type: ActivityType): {
         icon: <Mail className="h-3 w-3 text-emerald-600" />,
         label: "Email link clicked",
       };
+    case "email_bounced":
+      return {
+        icon: <Mail className="h-3 w-3 text-rose-500" />,
+        label: "Email bounced",
+      };
+    case "email_complained":
+      return {
+        icon: <Mail className="h-3 w-3 text-rose-600" />,
+        label: "Email marked as spam",
+      };
     case "sms_sent":
       return {
         icon: <MessageSquare className="h-3 w-3 text-violet-500" />,

@@ -108,6 +108,9 @@ export interface Contact {
   // checks these before sending and logs `automation_step_skipped`.
   emailOptedOut: boolean;
   smsOptedOut: boolean;
+  /** Server-only: Resend reported a permanent bounce for this address
+   *  (lib/comms/email-events.ts). The suppression list is what blocks sends. */
+  emailBouncedAt?: Timestamp | FieldValue | null;
   /**
    * A2P 10DLC proof-of-consent audit record, written when a contact opts in
    * to SMS via a form's `sms_consent` field. Carriers / The Campaign Registry
@@ -252,6 +255,10 @@ export type ActivityType =
   // click redirect (lib/broadcasts/engagement.ts). Opens are an estimate.
   | "email_opened"
   | "email_clicked"
+  // Resend reported a bounce / spam complaint for a broadcast email
+  // (lib/comms/email-events.ts).
+  | "email_bounced"
+  | "email_complained"
   // An inbound call was forwarded but went unanswered, so Missed Call Text
   // Back auto-texted the caller. Written by /api/webhooks/twilio/voice/status.
   | "missed_call"

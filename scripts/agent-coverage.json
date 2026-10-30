@@ -192,7 +192,7 @@
     "api/webhooks": {
       "exclude": {
         "category": "public-unauth",
-        "reason": "Inbound provider webhooks (ElevenLabs, gitpage, Meta, Stripe, Paystack, Twilio, Vapi, Webinar1, WhatsApp), authenticated by provider signatures or per-sub-account path secrets."
+        "reason": "Inbound provider webhooks (ElevenLabs, gitpage, Meta, Resend, Stripe, Paystack, Twilio, Vapi, Webinar1, WhatsApp), authenticated by provider signatures or per-sub-account path secrets."
       }
     },
     "api/webhooks-out": {

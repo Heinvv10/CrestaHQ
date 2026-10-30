@@ -25,6 +25,8 @@ const ALL_TYPES = [
   "email_suppressed",
   "email_opened",
   "email_clicked",
+  "email_bounced",
+  "email_complained",
   "messenger_received",
   "instagram_received",
   "webchat_received",

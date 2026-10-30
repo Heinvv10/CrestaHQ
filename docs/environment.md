@@ -101,6 +101,19 @@ the period ends.
 
 Without these two vars, `/api/comms/email/send` returns **503** and the Email button in the contact profile still renders but the send fails cleanly.
 
+## Optional — Resend delivery events (broadcast stats)
+| Var | Source |
+|---|---|
+| `RESEND_WEBHOOK_SECRET` | Resend → Webhooks → Add endpoint `${NEXT_PUBLIC_APP_URL}/api/webhooks/resend/events`, events `email.delivered`, `email.opened`, `email.clicked`, `email.bounced`, `email.complained` → the endpoint's signing secret (`whsec_…`) |
+
+With it set, broadcast emails sent through Resend record delivered / opened / clicked / bounced /
+complained on their send rows, and a permanent bounce or a spam complaint puts the address on the
+sub-account's email suppression list. Opens and clicks are recorded only for sub-accounts with
+broadcast open/click tracking switched on. Without it the endpoint answers **503** to every
+request (a value that isn't `whsec_` + base64 counts as unset). Sub-accounts sending through
+their own SMTP get no delivery events either way. **NOT runtime-verified** — CrestaHQ's own
+deployment sends through SMTP.
+
 ## Optional — system mail mailbox (password resets)
 | Var | Source |
 |---|---|
