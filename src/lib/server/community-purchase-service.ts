@@ -225,29 +225,30 @@ export async function markPurchasePaidServerSide(opts: {
       `subAccounts/${opts.subAccountId}/communityGroups/${opts.groupId}`,
     );
     const memRef = groupRef.collection("memberships").doc(purchase.memberId);
-    const existing = await memRef.get();
-    const wasActive =
-      existing.exists && existing.data()!.status === "active";
-    // One batch, so the member count moves exactly when the membership turns
-    // active — a retry after a failure here sees neither, or both.
-    const batch = db.batch();
-    batch.set(
-      memRef,
-      {
-        subAccountId: opts.subAccountId,
-        agencyId: purchase.agencyId,
-        groupId: opts.groupId,
-        memberId: purchase.memberId,
-        role: "member",
-        status: "active",
-        points: existing.data()?.points ?? 0,
-        level: existing.data()?.level ?? 1,
-        joinedAt: existing.data()?.joinedAt ?? FieldValue.serverTimestamp(),
-      },
-      { merge: true },
-    );
-    if (!wasActive) batch.update(groupRef, { memberCount: FieldValue.increment(1) });
-    await batch.commit();
+    // One transaction: the membership is read and written together with the
+    // count, so two purchases for the same member (overlapping runs, a retry)
+    // cannot both see "not active" and count the member twice.
+    const wasActive = await db.runTransaction(async (tx) => {
+      const existing = await tx.get(memRef);
+      const active = existing.exists && existing.data()!.status === "active";
+      tx.set(
+        memRef,
+        {
+          subAccountId: opts.subAccountId,
+          agencyId: purchase.agencyId,
+          groupId: opts.groupId,
+          memberId: purchase.memberId,
+          role: "member",
+          status: "active",
+          points: existing.data()?.points ?? 0,
+          level: existing.data()?.level ?? 1,
+          joinedAt: existing.data()?.joinedAt ?? FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+      if (!active) tx.update(groupRef, { memberCount: FieldValue.increment(1) });
+      return active;
+    });
     if (!wasActive) {
       runAfterResponse(() => emitWebhookEvent({
         subAccountId: opts.subAccountId,

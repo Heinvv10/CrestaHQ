@@ -1,3 +1,4 @@
+import { oneLine } from "@/lib/ai-suite/capabilities/text-safety";
 import type { OrderDeliverySnapshot } from "@/types/orders";
 
 /**
@@ -7,6 +8,9 @@ import type { OrderDeliverySnapshot } from "@/types/orders";
  */
 
 type Delivery = OrderDeliverySnapshot["delivery"];
+
+/** Header text: one line, no control characters, whatever the seller named the product. */
+const subjectName = (name: string) => oneLine(name) || "your purchase";
 
 function esc(s: string): string {
   return s
@@ -25,14 +29,14 @@ export function renderCommunityAccessEmail(input: {
 }): { subject: string; text: string; html: string } {
   const { productName, business, what, link, loginUrl } = input;
   return {
-    subject: `Your access to ${productName}`,
+    subject: `Your access to ${subjectName(productName)}`,
     text: `Thanks for buying ${productName} from ${business}.
 
 You now have access to ${what}. Use this link to sign in:
 
 ${link}
 
-The link works for 24 hours. After that, sign in at ${loginUrl} with this email address and we'll send you a fresh link.
+The link works once, for up to 24 hours. After that, sign in at ${loginUrl} with this email address and we'll send you a fresh link.
 `,
     html: `<!DOCTYPE html>
 <html><body style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;max-width:560px;margin:32px auto;padding:0 16px;color:#202124;line-height:1.6;">
@@ -41,7 +45,7 @@ The link works for 24 hours. After that, sign in at ${loginUrl} with this email 
   <p style="margin:0 0 24px;">
     <a href="${esc(link)}" style="display:inline-block;background:#202124;color:#ffffff;padding:12px 20px;border-radius:8px;text-decoration:none;font-weight:500;">Sign in</a>
   </p>
-  <p style="margin:0;font-size:13px;color:#606068;">The button works for 24 hours. After that, sign in at <a href="${esc(loginUrl)}" style="color:#606068;">${esc(loginUrl)}</a> with this email address and we'll send you a fresh link.</p>
+  <p style="margin:0;font-size:13px;color:#606068;">The button works once, for up to 24 hours. After that, sign in at <a href="${esc(loginUrl)}" style="color:#606068;">${esc(loginUrl)}</a> with this email address and we'll send you a fresh link.</p>
 </body></html>`,
   };
 }
@@ -54,7 +58,7 @@ export function renderDownloadEmail(input: {
   const { productName, business, delivery } = input;
   const label = delivery.label?.trim() || "Download";
   return {
-    subject: `Your download: ${productName}`,
+    subject: `Your download: ${subjectName(productName)}`,
     text: `Thanks for buying ${productName} from ${business}.
 
 ${label}: ${delivery.url}

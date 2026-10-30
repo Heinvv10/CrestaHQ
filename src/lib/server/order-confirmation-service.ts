@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { emailIsConfigured, sendEmail, tenantFrom } from "@/lib/comms/resend";
 import { isEmailSuppressedError } from "@/lib/comms/email-suppression";
+import { oneLine } from "@/lib/ai-suite/capabilities/text-safety";
 import { isSafeSocialUrl } from "@/lib/website/premium";
 import type { Order, OrderConfirmationStatus } from "@/types/orders";
 import type { SubAccountDoc } from "@/types/tenancy";
@@ -78,7 +79,7 @@ export function renderOrderConfirmation(
   const main = order.lineItems.find((li) => !li.isBump) ?? order.lineItems[0];
   const test = order.livemode === false ? "[Test] " : "";
 
-  const subject = `${test}Order confirmed: ${main?.name ?? "your order"}`;
+  const subject = `${test}Order confirmed: ${oneLine(main?.name) || "your order"}`;
   // Mailed from the tenant to whatever address the buyer typed, so nothing
   // the buyer typed is echoed back: only our own doc's item names and amounts.
   const text = `Hi,

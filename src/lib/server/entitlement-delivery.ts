@@ -62,6 +62,9 @@ export async function deliverCommunity(input: {
   const saId = order.subAccountId;
   const group = await getGroupById(saId, delivery.communityGroupId);
   if (!group) throw new DeliveryError("The community group no longer exists.");
+  if (group.status !== "published") {
+    throw new DeliveryError("The community group isn't published, so access wasn't granted.");
+  }
   const course = delivery.courseId ? await getCourse(saId, group.id, delivery.courseId) : null;
   if (delivery.courseId && !course) {
     throw new DeliveryError("The course no longer exists in that group.");

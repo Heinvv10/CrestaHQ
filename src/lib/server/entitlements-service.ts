@@ -10,6 +10,12 @@ import {
   deliverDownload,
 } from "@/lib/server/entitlement-delivery";
 import { orderDeliverable, orderDelivers } from "@/lib/products/order-delivery";
+import {
+  deliveredText,
+  reason,
+  withdraw,
+  writeActivity,
+} from "@/lib/server/entitlement-records";
 import { confirmationDownloads } from "@/lib/server/order-confirmation-service";
 import type { Entitlement } from "@/types/entitlements";
 import type { Order, OrderDeliverySnapshot } from "@/types/orders";
@@ -28,19 +34,17 @@ import type { SubAccountDoc } from "@/types/tenancy";
  * hold that lands after the caller read it still stops the grant.
  */
 
-/** A claim older than this is treated as a run that died, and may be retaken. */
-const CLAIM_LEASE_MS = 2 * 60_000;
-
-type Delivery = OrderDeliverySnapshot["delivery"];
+/**
+ * A claim older than this is treated as a run that died, and may be retaken.
+ * Longer than any mail send can take (a slow SMTP server included): a holder
+ * still sending when the lease lapsed would be joined by a second email.
+ */
+const CLAIM_LEASE_MS = 10 * 60_000;
 
 export { orderDeliverable, orderDelivers };
 
 export function entitlementId(orderId: string, productId: string): string {
   return `${orderId}_${productId}`;
-}
-
-function reason(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 export interface GrantSummary {
@@ -235,73 +239,6 @@ async function claimDelivery(
     tx.update(ref, { fulfilment: { ...sending, memberId: f?.memberId ?? null } });
     return "claimed";
   });
-}
-
-/**
- * The order stopped being payable between the claim and the email: nothing
- * was mailed, so the entitlement is revoked and cannot be re-sent. Access
- * already given stays until staff remove it (as for any refund).
- */
-async function withdraw(
-  ref: FirebaseFirestore.DocumentReference,
-  order: Order,
-  productName: string,
-  memberId: string | null,
-): Promise<void> {
-  try {
-    await ref.update({
-      status: "revoked",
-      revokedAt: FieldValue.serverTimestamp(),
-      fulfilment: {
-        state: "failed",
-        error: "The order was refunded, held or flagged before the email went out.",
-        at: Date.now(),
-        memberId,
-      },
-    });
-  } catch (err) {
-    console.error(`[entitlements] withdraw write failed order=${order.id}: ${reason(err)}`);
-  }
-  await writeActivity(
-    order,
-    "delivery_revoked",
-    `${productName} was not delivered: the order was refunded, held or flagged before the email went out.`,
-  );
-}
-
-function deliveredText(
-  productName: string,
-  delivery: Delivery,
-  email: string,
-  inConfirmation: boolean,
-): string {
-  if (delivery.type === "community") {
-    return `Delivered ${productName}: community access granted, sign-in link sent to ${email}.`;
-  }
-  return inConfirmation
-    ? `Delivered ${productName}: download link included in the order confirmation to ${email}.`
-    : `Delivered ${productName}: download link sent to ${email}.`;
-}
-
-async function writeActivity(
-  order: Pick<Order, "id" | "contactId">,
-  type: "product_delivered" | "delivery_failed" | "delivery_revoked",
-  content: string,
-): Promise<void> {
-  if (!order.contactId) return;
-  try {
-    await getAdminDb()
-      .collection(`contacts/${order.contactId}/activities`)
-      .add({
-        type,
-        content: content.slice(0, 500),
-        createdBy: "system",
-        meta: { orderId: order.id },
-        createdAt: FieldValue.serverTimestamp(),
-      });
-  } catch (err) {
-    console.warn(`[entitlements] activity write failed order=${order.id}: ${reason(err)}`);
-  }
 }
 
 /**

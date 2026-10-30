@@ -24,10 +24,11 @@ vi.mock("@/lib/comms/resend", async (orig) => ({
 }));
 
 const { flushAfterResponse } = await import("@/lib/server/after-response");
+const { renderOrderConfirmation } = await import("@/lib/server/order-confirmation-service");
 const { entitlementId, grantForOrder, revokeForOrder } = await import(
   "@/lib/server/entitlements-service"
 );
-const { createPurchaseForOrderServerSide, requestPurchaseServerSide } = await import(
+const { createPurchaseForOrderServerSide, markPurchasePaidServerSide, requestPurchaseServerSide } = await import(
   "@/lib/server/community-purchase-service"
 );
 
@@ -102,6 +103,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.restoreAllMocks();
 });
 
@@ -194,6 +196,57 @@ describe("community grant", () => {
     expect(mem.list(`subAccounts/${SA}/members`)).toHaveLength(1);
     expect(group().memberCount).toBe(1);
     expect(sendEmail).toHaveBeenCalledTimes(1);
+  });
+
+  it("a slow send still pending at +3 minutes keeps its claim: exactly one email goes", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    let finish!: () => void;
+    sendEmail.mockImplementationOnce(() => new Promise((resolve) => { finish = () => resolve({ id: "m1" }); }));
+    const t0 = Date.now();
+
+    const slow = grantForOrder(target);
+    // Let the first run reach the (hung) send.
+    while (sendEmail.mock.calls.length === 0) await new Promise((r) => setImmediate(r));
+    vi.setSystemTime(t0 + 3 * 60_000);
+    const second = await grantForOrder(target);
+    expect(second).toEqual({ delivered: 0, failed: 0, skipped: 1 });
+    finish();
+    expect(await slow).toMatchObject({ delivered: 1 });
+
+    expect(sendEmail).toHaveBeenCalledTimes(1);
+    expect(entitlement()!.sends).toBe(1);
+  });
+
+  it("a claim whose holder died is retaken after the lease", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const t0 = Date.now();
+    mem.seed("entitlements/ord1_p1", {
+      agencyId: AG, subAccountId: SA, orderId: "ord1", productId: "p1", status: "active", sends: 0,
+      delivery: COMMUNITY, fulfilment: { state: "sending", error: null, at: t0 },
+    });
+    vi.setSystemTime(t0 + 5 * 60_000);
+    expect(await grantForOrder(target)).toEqual({ delivered: 0, failed: 0, skipped: 1 });
+    vi.setSystemTime(t0 + 11 * 60_000);
+    expect(await grantForOrder(target)).toMatchObject({ delivered: 1 });
+  });
+
+  it("two purchases for one member in one group count the member once, however they overlap", async () => {
+    const base = { subAccountId: SA, agencyId: AG, groupId: "g1", scope: "group" as const, targetId: "g1", memberId: "m1", currency: "zar" };
+    await createPurchaseForOrderServerSide({ ...base, orderId: "ordA", purchaseId: "order_ordA_p1_g" });
+    await createPurchaseForOrderServerSide({ ...base, orderId: "ordB", purchaseId: "order_ordB_p1_g" });
+    await Promise.all(["order_ordA_p1_g", "order_ordB_p1_g"].map((purchaseId) =>
+      markPurchasePaidServerSide({ subAccountId: SA, groupId: "g1", purchaseId, grantedByUid: "system:product-order" })));
+
+    expect(group().memberCount).toBe(1);
+    expect(memberships()).toEqual([expect.objectContaining({ memberId: "m1", status: "active" })]);
+  });
+
+  it("the sign-in email says the link works once and keeps the fallback sentence", async () => {
+    await grantForOrder(target);
+    const { text, html } = sendEmail.mock.calls[0][0] as unknown as { text: string; html: string };
+    expect(text).toContain("The link works once, for up to 24 hours. After that, sign in at");
+    expect(text).toContain("we'll send you a fresh link");
+    expect(html).toContain("works once, for up to 24 hours");
   });
 
   it("a course product grants its group and a paid course purchase", async () => {
@@ -390,6 +443,26 @@ describe("a delivery that cannot happen is recorded on the order, never thrown",
     expect(sendEmail).not.toHaveBeenCalled();
   });
 
+  it("a draft group is not granted into: a clear DeliveryError, no member, purchase or email", async () => {
+    mem.seed(`subAccounts/${SA}/communityGroups/g1`, { ...group(), status: "draft" });
+    const summary = await grantForOrder(target);
+
+    expect(summary).toEqual({ delivered: 0, failed: 1, skipped: 0 });
+    expect(deliveryError()).toMatch(/isn't published/);
+    expect(mem.list(`subAccounts/${SA}/members`)).toHaveLength(0);
+    expect(memberships()).toHaveLength(0);
+    expect(purchases()).toHaveLength(0);
+    expect(sendEmail).not.toHaveBeenCalled();
+  });
+
+  it("a group with no status (legacy or tampered) is not granted into either", async () => {
+    const { status: _s, ...noStatus } = group();
+    mem.seed(`subAccounts/${SA}/communityGroups/g1`, noStatus);
+    await grantForOrder(target);
+    expect(deliveryError()).toMatch(/isn't published/);
+    expect(purchases()).toHaveLength(0);
+  });
+
   it("a deleted group is recorded, not thrown", async () => {
     mem.clear();
     mem.seed(`subAccounts/${SA}`, { agencyId: AG, name: "Acme Fibre", communityEnabledByAgency: true });
@@ -436,6 +509,44 @@ describe("a delivery that cannot happen is recorded on the order, never thrown",
     expect(error).toMatch(/Re-send delivery/);
     expect(error).not.toContain("hunter2");
     expect(entitlement()!.fulfilment).toMatchObject({ state: "failed" });
+  });
+});
+
+describe("anything that reaches an email subject is one clean line", () => {
+  const EVIL = "Guide\r\nBcc: evil@example.com\u0000\u2028x";
+  const clean = (subject: string) => {
+    expect(subject).not.toMatch(/[\r\n\u0000-\u001f\u2028\u2029]/);
+    expect(subject).toContain("Bcc: evil@example.com");
+  };
+
+  it("community email", async () => {
+    seedOrder({ lineItems: [{ productId: "p1", name: EVIL, description: "", unitPriceCents: 1, quantity: 1, isBump: false }] });
+    await grantForOrder(target);
+    clean(sendEmail.mock.calls[0][0].subject);
+    expect(sendEmail.mock.calls[0][0].subject).toBe("Your access to Guide Bcc: evil@example.com x");
+  });
+
+  it("download email", async () => {
+    seedOrder({
+      lineItems: [{ productId: "p1", name: EVIL, description: "", unitPriceCents: 1, quantity: 1, isBump: false }],
+      deliveries: [{ productId: "p1", delivery: { type: "download", url: DOWNLOAD, label: "Get it" } }],
+    });
+    await grantForOrder(target);
+    clean(sendEmail.mock.calls[0][0].subject);
+  });
+
+  it("order confirmation", () => {
+    const { subject } = renderOrderConfirmation(
+      { ...order(), id: "ord1", lineItems: [{ productId: "p1", name: EVIL, description: "", unitPriceCents: 1, quantity: 1, isBump: false }] } as never,
+      { name: "Acme" },
+    );
+    clean(subject);
+  });
+
+  it("a name that is only control characters falls back to a plain subject", async () => {
+    seedOrder({ lineItems: [{ productId: "p1", name: "\r\n\t", description: "", unitPriceCents: 1, quantity: 1, isBump: false }] });
+    await grantForOrder(target);
+    expect(sendEmail.mock.calls[0][0].subject).toBe("Your access to your purchase");
   });
 });
 
