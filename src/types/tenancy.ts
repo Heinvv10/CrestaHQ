@@ -122,6 +122,14 @@ export interface AgencyDoc {
   /** When the master switch last turned on (same rule as the client switch). */
   usageRebillingSince?: Date | null;
   /**
+   * Lets an overdue usage charge wall a client workspace once the grace period
+   * ends. Read `=== true`, default off: with it off the client only ever sees a
+   * banner. Written by PATCH /api/agency (owner only).
+   */
+  usagePaywallEnabled?: boolean;
+  /** When the paywall setting last turned on; the wall waits 7 days from then. Server-written. */
+  usagePaywallEnabledAt?: Date | null;
+  /**
    * Agency Agent API kill switch. OFF by default — read `=== true`. While
    * off, every agency API key is refused at auth and none can be minted.
    * Written by PATCH /api/agency; shown in the Agency Assistant card.
@@ -206,6 +214,12 @@ export interface SubAccountDoc {
   usageRebillingEnabled?: boolean;
   /** When the switch last turned on; a month is only billed if it was on before the month ended. */
   usageRebillingSince?: Date | null;
+  /**
+   * The oldest overdue usage charge, or null. Server-written only
+   * (`refreshUsageOverdue`; `subAccounts` is `allow write: if false`), and
+   * member-readable on purpose: it drives the client banner and paywall.
+   */
+  usageOverdue?: UsageOverdue | null;
   createdByUid: string;
   createdAt: Date;
   updatedAt: Date;
@@ -923,6 +937,34 @@ export interface GhlImportConfig {
   connectedByUid: string | null;
   connectedAt: Timestamp | FieldValue | null;
   lastValidatedAt: Timestamp | FieldValue | null;
+}
+
+/** Oldest overdue usage charge, as `refreshUsageOverdue` writes it. */
+export interface UsageOverdue {
+  chargeId: string;
+  /** The charge's due date; the grace period runs from here. */
+  since: Timestamp | Date | null;
+  amountCents: number;
+  currency: string;
+  /** "YYYY-MM" the charge covers. */
+  usageMonth: string | null;
+  /**
+   * The agency's `usagePaywallEnabled` when this was written. Only `true`
+   * lets the guard wall the workspace; anything else stays a banner.
+   */
+  paywall: boolean;
+  /**
+   * The agency's `usagePaywallEnabledAt` when this was written. The wall is at
+   * the latest of `since`, this and `rebillingSince`, plus 7 days; without a readable value
+   * the guard shows only the banner.
+   */
+  paywallSince?: Timestamp | Date | null;
+  /**
+   * The client's `usageRebillingSince` when this was written (stamped each time
+   * the client switch turns on). Re-enabling a client starts a fresh 7 days
+   * before the wall; without a readable value the guard shows only the banner.
+   */
+  rebillingSince?: Timestamp | Date | null;
 }
 
 export interface AccountContact {

@@ -12,6 +12,7 @@ import { usageChargeId } from "@/lib/server/billing-service";
 import { recordBillingEvent } from "@/lib/server/billing-lifecycle";
 import { processPendingCharges } from "@/lib/server/usage-billing-dispatch";
 import { sendDueReminders } from "@/lib/server/usage-billing-reminders";
+import { sweepUsageOverdue } from "@/lib/server/usage-overdue";
 import {
   inPool,
   PENDING_COLLECTION,
@@ -116,11 +117,19 @@ export async function runUsageClose(now: Date = new Date()): Promise<{
   });
   const pending = await processPendingCharges(now);
   const reminders = await sendDueReminders(now);
+  // After the reminders, so a charge that has just gone overdue is flagged the same day.
+  // A scan that still fails after its retries counts as a failure: the job answers 500
+  // and QStash retries, rather than walls standing unseen.
+  let sweepFailed = 0;
+  await sweepUsageOverdue(now).catch((err) => {
+    sweepFailed = 1;
+    console.error(`[usage-close] overdue sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+  });
   return {
     closed,
     charged: pending.charged,
     reminded: reminders.sent,
-    failed: freezes.failed + pending.failed + reminders.failed,
+    failed: freezes.failed + pending.failed + reminders.failed + sweepFailed,
     refusals: [...freezes.refusals, ...pending.refusals, ...reminders.refusals],
   };
 }

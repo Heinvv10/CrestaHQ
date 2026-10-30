@@ -96,6 +96,7 @@ export const AUDIT_ALLOWED_VALUES: Record<
   // No changes: the row records THAT a reply was posted, never its text.
   "review.auto_replied": {},
   "usage_rebilling.updated": { usageRebillingEnabled: GATE_VALUES },
+  "usage_paywall.updated": { usagePaywallEnabled: GATE_VALUES },
 };
 
 export function auditValue(

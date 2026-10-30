@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { collection, doc, onSnapshot, query, where } from "firebase/firestore";
 import { toast } from "sonner";
-import { Archive, CreditCard, Pencil, Plus, Receipt } from "lucide-react";
+import { Archive, CreditCard, Lock, Pencil, Plus, Receipt } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
 import { getFirebaseDb } from "@/lib/firebase/client";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,8 @@ import { BillingStatusBadge } from "@/components/agency/billing-status-badge";
 import { UsageQuotaBadge } from "@/components/agency/usage-quota-badge";
 import { SubAccountManageDialog } from "@/components/agency/sub-account-manage-dialog";
 import { ResellingTable } from "@/components/agency/reselling-table";
+import { AgencyInvoicesPanel } from "@/components/agency/agency-invoices-panel";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { AttentionList } from "@/components/billing/attention-list";
 import {
   effectiveBillingState,
@@ -53,6 +55,9 @@ export default function AgencyBillingPage() {
   const managing = subs.find((s) => s.id === managingId) ?? null;
   const [rebillingOn, setRebillingOn] = useState<boolean | null>(null);
   const [rebillingBusy, setRebillingBusy] = useState(false);
+  const [paywallOn, setPaywallOn] = useState<boolean | null>(null);
+  const [paywallBusy, setPaywallBusy] = useState(false);
+  const [tab, setTab] = useState<"overview" | "invoices">("overview");
 
   const refreshPlans = useCallback(() => {
     void fetch("/api/agency/plans")
@@ -104,14 +109,20 @@ export default function AgencyBillingPage() {
     if (!agencyId || !isOwner) return;
     return onSnapshot(
       doc(getFirebaseDb(), "agencies", agencyId),
-      (snap) => setRebillingOn(snap.data()?.usageRebillingEnabled === true),
-      () => setRebillingOn(null),
+      (snap) => {
+        setRebillingOn(snap.data()?.usageRebillingEnabled === true);
+        setPaywallOn(snap.data()?.usagePaywallEnabled === true);
+      },
+      () => {
+        setRebillingOn(null);
+        setPaywallOn(null);
+      },
     );
   }, [agencyId, isOwner]);
 
   async function toggleRebilling(next: boolean) {
     const question = next
-      ? "Turn on usage rebilling? No charges are created yet: clients you then switch on show an estimate of their usage charge."
+      ? "Turn on usage rebilling? Clients you then switch on are billed monthly in arrears for usage past their plan allowance, from their first full month."
       : "Turn off usage rebilling? Every client switched on is switched off too, and switching back on won't reactivate them. Charges already sent stay payable.";
     if (!window.confirm(question)) return;
     setRebillingBusy(true);
@@ -123,11 +134,33 @@ export default function AgencyBillingPage() {
       });
       const data = (await res.json().catch(() => ({}))) as { error?: string };
       if (!res.ok) throw new Error(data.error ?? "Couldn't save.");
-      toast.success(next ? "Usage rebilling is on, no charges yet." : "Usage rebilling is off for every client.");
+      toast.success(next ? "Usage rebilling is on." : "Usage rebilling is off for every client.");
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Couldn't save.");
     } finally {
       setRebillingBusy(false);
+    }
+  }
+
+  async function togglePaywall(next: boolean) {
+    const question = next
+      ? "Turn on the usage paywall? A client with an overdue usage invoice loses access to its workspace until it pays, at the later of 7 days after the invoice was due and 7 days from now. Clients already long overdue therefore get a full 7 days from now, with a banner counting down. Data is kept, and you keep full access."
+      : "Turn off the usage paywall? Clients with an overdue usage invoice only see a payment banner, and any workspace currently paused is restored.";
+    if (!window.confirm(question)) return;
+    setPaywallBusy(true);
+    try {
+      const res = await fetch("/api/agency", {
+        method: "PATCH",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ usagePaywallEnabled: next }),
+      });
+      const data = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) throw new Error(data.error ?? "Couldn't save.");
+      toast.success(next ? "Usage paywall is on." : "Usage paywall is off.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Couldn't save.");
+    } finally {
+      setPaywallBusy(false);
     }
   }
 
@@ -234,6 +267,21 @@ export default function AgencyBillingPage() {
         </div>
       )}
 
+      <Tabs value={tab} onValueChange={(v) => setTab(v === "invoices" ? "invoices" : "overview")} className="gap-6">
+        <TabsList>
+          <TabsTrigger value="overview" className="px-4">
+            Plans &amp; clients
+          </TabsTrigger>
+          <TabsTrigger value="invoices" className="px-4">
+            Invoices
+          </TabsTrigger>
+        </TabsList>
+
+        <TabsContent value="invoices">
+          <AgencyInvoicesPanel subs={subs} />
+        </TabsContent>
+
+        <TabsContent value="overview" className="space-y-6">
       {/* Usage rebilling master switch */}
       <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-4">
         <div className="min-w-0">
@@ -248,12 +296,12 @@ export default function AgencyBillingPage() {
                   : "bg-muted text-muted-foreground")
               }
             >
-              {rebillingOn === null ? "…" : rebillingOn ? "On, no charges yet" : "Off"}
+              {rebillingOn === null ? "…" : rebillingOn ? "On" : "Off"}
             </span>
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
-            Estimate what each client owes for usage past their plan
-            allowance, at your own rates. No charges are created yet.
+            Bill each client switched on, monthly in arrears, for usage past
+            their plan allowance at your own rates (Invoices tab).
             {rebillingOn
               ? ` ${rebilledCount} client${rebilledCount === 1 ? "" : "s"} switched on (Manage → Usage rebilling).`
               : " Each client is then switched on individually."}
@@ -269,6 +317,43 @@ export default function AgencyBillingPage() {
           {rebillingOn ? "Turn off" : "Turn on"}
         </Button>
       </section>
+
+      {/* Usage paywall: dark unless the owner turns it on, and only meaningful while rebilling is on. */}
+      {rebillingOn && (
+        <section className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border bg-card p-4">
+          <div className="min-w-0">
+            <p className="flex items-center gap-2 font-semibold">
+              <Lock className="h-4 w-4 text-muted-foreground" />
+              Usage paywall
+              <span
+                className={
+                  "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide " +
+                  (paywallOn
+                    ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-400"
+                    : "bg-muted text-muted-foreground")
+                }
+              >
+                {paywallOn === null ? "…" : paywallOn ? "On" : "Off"}
+              </span>
+            </p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              A client with an overdue usage invoice always sees a payment banner.
+              With this on, a workspace is also paused once the invoice is 7 days
+              past due (or 7 days after you turn this on, if later), until it is paid.
+              Agency users are never locked out, and a waived invoice lifts it.
+            </p>
+          </div>
+          <Button
+            type="button"
+            size="sm"
+            variant={paywallOn ? "outline" : "default"}
+            disabled={paywallOn === null || paywallBusy}
+            onClick={() => togglePaywall(!paywallOn)}
+          >
+            {paywallOn ? "Turn off" : "Turn on"}
+          </Button>
+        </section>
+      )}
 
       <AttentionList
         endpoint="/api/agency/billing-attention"
@@ -453,6 +538,11 @@ export default function AgencyBillingPage() {
                         <span className="inline-flex flex-wrap items-center gap-1.5">
                           <BillingStatusBadge billing={billing} />
                           <UsageQuotaBadge subAccountId={s.id} />
+                          {s.usageOverdue && (
+                            <span className="rounded-full bg-rose-500/10 px-2 py-0.5 text-[11px] font-medium text-rose-600 dark:text-rose-400">
+                              Usage overdue
+                            </span>
+                          )}
                         </span>
                       </td>
                       <td className="px-4 py-3 text-right tabular-nums">
@@ -505,6 +595,8 @@ export default function AgencyBillingPage() {
           stripeConfigured={stripeConfigured}
         />
       )}
+        </TabsContent>
+      </Tabs>
 
       <PlanEditorDialog
         plan={editingPlan}

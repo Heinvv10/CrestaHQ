@@ -269,6 +269,12 @@
         "list_snapshots"
       ]
     },
+    "api/agency/billing/charges:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The agency owner's Invoices table in Client billing: every one-time and usage charge. The per-client list (frozen) is the same data."
+      }
+    },
     "api/agency/sub-accounts/[id]/billing/charges:POST": {
       "tools": [
         "create_one_time_charge"
@@ -509,6 +515,12 @@
       "exclude": {
         "category": "internal",
         "reason": "QStash-signed queue worker (step / fan-out / scheduled fire); its only caller is the queue, and the agent-facing action that enqueues it is a separate route."
+      }
+    },
+    "api/sub-accounts/[id]/billing/usage-charges/[chargeId]/checkout:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "A signed-in sub-account admin paying their own overdue usage charge from the banner or paywall; it opens a payment page, which an agent key must never do for a client."
       }
     },
     "api/sub-accounts/[id]/agent-proposals:GET": {

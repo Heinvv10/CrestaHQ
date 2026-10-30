@@ -22,6 +22,7 @@ import {
   type SubAccountBillingStatus,
 } from "@/types/billing";
 import { runAfterResponse } from "@/lib/server/after-response";
+import { refreshUsageOverdue } from "@/lib/server/usage-overdue";
 
 /**
  * Client Billing's LIFECYCLE — the state changes a payment provider drives:
@@ -702,6 +703,8 @@ export async function markSubAccountChargePaid(input: {
   const { chargeId } = input;
   const ref = chargesCollection().doc(chargeId);
 
+  // A usage charge's client, so its overdue flag is re-checked on a redelivery too.
+  const usage = { subAccountId: null as string | null };
   // Compare-and-set: two deliveries (a redelivery, or the link paid from two
   // tabs) can race, and only the one whose write commits may emit charge.paid.
   const charge = await getAdminDb().runTransaction(async (tx) => {
@@ -711,6 +714,7 @@ export async function markSubAccountChargePaid(input: {
       return null;
     }
     const current = snap.data() as BillingChargeDoc;
+    usage.subAccountId = current.kind === "usage" ? current.subAccountId : null;
     if (current.status === "paid") {
       // A redelivery carries the checkout that paid it — idempotent. A
       // DIFFERENT checkout is a second payment: record it so the agency sees
@@ -740,6 +744,8 @@ export async function markSubAccountChargePaid(input: {
     });
     return current;
   });
+  // Paid (now or on an earlier delivery): lift any banner or paywall it caused.
+  if (usage.subAccountId) await refreshUsageOverdue(usage.subAccountId);
   if (!charge) return;
 
   // The agency cancelled this charge, but the payer completed an already-open

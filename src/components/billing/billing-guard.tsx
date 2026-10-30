@@ -1,7 +1,6 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import Link from "next/link";
 import { toast } from "sonner";
 import { AlertTriangle, CreditCard, Loader2, Lock } from "lucide-react";
 import { useAuth } from "@/hooks/use-auth";
@@ -9,9 +8,10 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { Button } from "@/components/ui/button";
 import {
   billingDateToMillis,
-  effectiveBillingState,
   formatBillingPriceWithInterval,
 } from "@/lib/billing/status";
+import { workspaceBillingState } from "@/lib/billing/usage-debt";
+import { AgencyBillingNotice, UsageBanner, UsagePaywall } from "@/components/billing/billing-guard-views";
 
 /**
  * Client Billing v1 workspace guard. Mounted inside <SubAccountProvider/>
@@ -23,8 +23,15 @@ import {
  *   pending         → activation screen (pay-to-start), GHL "on hold" style
  *   lapsed          → hard paywall (pay-to-continue); data preserved
  *
- * The AGENCY side always passes: the agency owner sees a slim notice instead
- * of the wall, so they can service a delinquent client's workspace.
+ * Unpaid usage follows the same grace-then-paywall path, even for a comped
+ * workspace, but only when the server has flagged it (`usageOverdue`: both
+ * rebilling switches on, the invoice emailed, past due) and the wall itself
+ * only when the agency has turned it on (`usageOverdue.paywall`). Otherwise it
+ * stays a banner. Fails open: see lib/billing/usage-debt.ts.
+ *
+ * The AGENCY side always passes: any agency user (owner or staff) of the
+ * workspace's agency sees a slim notice instead of the wall, so they can
+ * service a delinquent client's workspace.
  */
 
 export function BillingGuard({ children }: { children: ReactNode }) {
@@ -35,20 +42,42 @@ export function BillingGuard({ children }: { children: ReactNode }) {
   // not-found states) let everything through untouched.
   if (loading || !subAccount) return <>{children}</>;
 
-  const state = effectiveBillingState(subAccount.billing);
+  const { state, blockedBy } = workspaceBillingState(
+    subAccount.billing,
+    subAccount.usageOverdue,
+  );
   if (state === "comped" || state === "active") return <>{children}</>;
 
-  const isAgencySide =
-    agencyRole === "owner" && subAccount.agencyId === agencyId;
+  // Any agency user (owner or staff) of the workspace's own agency gets through,
+  // so the agency can always get in to help.
+  const isAgencySide = !!agencyRole && subAccount.agencyId === agencyId;
 
   if (isAgencySide) {
     // Never wall the agency out of their own client's workspace.
     return (
       <>
-        <AgencyBillingNotice state={state} />
+        <AgencyBillingNotice
+          state={state}
+          usage={blockedBy === "usage"}
+          paywall={subAccount.usageOverdue?.paywall === true}
+          isOwner={agencyRole === "owner"}
+        />
         {children}
       </>
     );
+  }
+
+  const overdue = subAccount.usageOverdue ?? null;
+  if (blockedBy === "usage" && overdue) {
+    if (state === "grace") {
+      return (
+        <>
+          <UsageBanner subAccountId={subAccountId} isAdmin={isAdmin} overdue={overdue} />
+          {children}
+        </>
+      );
+    }
+    return <UsagePaywall subAccountId={subAccountId} isAdmin={isAdmin} overdue={overdue} />;
   }
 
   if (state === "grace") {
@@ -77,26 +106,6 @@ export function BillingGuard({ children }: { children: ReactNode }) {
         subAccount.billing?.billingInterval,
       )}
     />
-  );
-}
-
-function AgencyBillingNotice({ state }: { state: "pending" | "grace" | "lapsed" }) {
-  const copy =
-    state === "pending"
-      ? "This client hasn't completed checkout yet — members see an activation screen."
-      : state === "grace"
-        ? "This client's payment failed — members see a payment banner until the grace period ends."
-        : "This client's billing lapsed — members are behind the paywall. You still have full access.";
-  return (
-    <div className="mb-4 flex items-center gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-      <span>
-        {copy}{" "}
-        <Link href="/agency/billing" className="font-medium underline">
-          Manage in Client billing
-        </Link>
-      </span>
-    </div>
   );
 }
 

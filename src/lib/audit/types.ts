@@ -17,6 +17,9 @@ export const AUDIT_ACTIONS = [
   // A usage-rebilling switch flipped: the agency master switch (agency-level
   // event, target "agency") or one client's switch (target "subAccount").
   "usage_rebilling.updated",
+  // The agency-level switch that lets an overdue usage charge wall a client
+  // workspace (target "agency").
+  "usage_paywall.updated",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -58,7 +61,7 @@ export const AUDIT_TARGET_TYPES = [
   "snapshot",
   // An agency billing plan (`agencies/{id}/plans/{planId}`) an agent created (agent.write, agency-level).
   "billingPlan",
-  // The agency doc itself (`agencies/{id}`) — usage_rebilling.updated.
+  // The agency doc itself (`agencies/{id}`) — usage_rebilling.updated, usage_paywall.updated.
   "agency",
 ] as const;
 export type AuditTargetType = (typeof AUDIT_TARGET_TYPES)[number];

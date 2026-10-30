@@ -373,7 +373,7 @@ export function PlanEditorDialog({ plan, open, onOpenChange, onSaved }: Props) {
                   Included / month
                 </span>
                 <span className="hidden text-[11px] font-medium uppercase tracking-wide text-muted-foreground sm:block">
-                  Overage rate ($)
+                  Overage rate ({currency.toUpperCase()})
                 </span>
                 {(
                   [
@@ -444,10 +444,11 @@ export function PlanEditorDialog({ plan, open, onOpenChange, onSaved }: Props) {
                 Blank included = unlimited (nothing enforced). At the limit that
                 channel pauses for the workspace until the month resets —
                 you&apos;re emailed at 80% and 100%. Overage rates are what YOU
-                charge: usage beyond the allowance accrues in dollars in the
-                Manage panel&apos;s Usage section, ready to invoice with a
-                one-time charge. A rate without an included limit bills
-                nothing. Per-workspace overrides live in the Manage panel.
+                charge, but only to clients you rebill (Client billing → Usage
+                rebilling, then each client&apos;s Manage → Billing &amp; usage
+                tab): they are invoiced on the 1st for the month before. A rate
+                without an included limit bills nothing. Per-workspace
+                overrides live in the Manage panel.
               </p>
             </TabsContent>
           </div>

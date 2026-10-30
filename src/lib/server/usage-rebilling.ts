@@ -3,6 +3,7 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { recordAuditEvent } from "@/lib/audit/record";
+import { refreshAgencyUsageOverdue, refreshUsageOverdue } from "@/lib/server/usage-overdue";
 
 /**
  * The two usage-rebilling switches (`agencies/{id}.usageRebillingEnabled`,
@@ -76,6 +77,8 @@ export async function setClientUsageRebilling(
   });
   if (result.changed) {
     await auditFlip(actorUid, result.agencyId, subAccountId, !on, on);
+    // A switch is part of what makes a usage flag valid, so it may lift one.
+    await refreshUsageOverdue(subAccountId);
   }
   return { changed: result.changed };
 }
@@ -135,5 +138,47 @@ export async function setAgencyUsageRebilling(
     if (step.cleared.length < REBILLING_CASCADE_CHUNK) break;
   }
 
+  // Switched-off clients (and the master itself) can no longer be walled for usage.
+  if (changed || switchedOff.length > 0) await refreshAgencyUsageOverdue(agencyId);
+
   return { changed, clientsSwitchedOff: switchedOff };
+}
+
+/**
+ * The agency's paywall setting (`agencies/{id}.usagePaywallEnabled`): whether an
+ * overdue usage charge may wall a client workspace once the grace period ends.
+ * Off, a client only ever sees a banner. Read, flip and audit as one change;
+ * flagged clients are re-checked afterwards so a flip takes effect at once.
+ */
+export async function setAgencyUsagePaywall(
+  agencyId: string,
+  on: boolean,
+  actorUid: string,
+): Promise<{ changed: boolean; refreshed: boolean }> {
+  const db = getAdminDb();
+  const agencyRef = db.doc(`agencies/${agencyId}`);
+  const changed = await db.runTransaction(async (tx) => {
+    const before = (await tx.get(agencyRef)).data()?.usagePaywallEnabled === true;
+    if (before === on) return false;
+    tx.update(agencyRef, {
+      usagePaywallEnabled: on,
+      // Each off-to-on starts a fresh 7 days before anyone is walled.
+      ...(on ? { usagePaywallEnabledAt: FieldValue.serverTimestamp() } : {}),
+      updatedAt: FieldValue.serverTimestamp(),
+    });
+    return true;
+  });
+  if (changed) {
+    await recordAuditEvent(db, {
+      action: "usage_paywall.updated",
+      actor: { type: "user", id: actorUid },
+      target: { type: "agency", id: agencyId },
+      agencyId,
+      subAccountId: null,
+      changes: [{ field: "usagePaywallEnabled", before: !on, after: on }],
+    });
+  }
+  // Also when nothing changed: a retry after a failed re-check must be able to finish it.
+  const refreshed = await refreshAgencyUsageOverdue(agencyId);
+  return { changed, refreshed };
 }
