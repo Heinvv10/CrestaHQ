@@ -122,7 +122,7 @@ describe("an abandoned buy", () => {
     verifyAnswer = (reference) => verified({ reference, status: "ongoing" });
     await expireStalePaystackOrders(NOW);
     verifyAnswer = () => "network-error";
-    await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/failed/);
+    await expect(expireStalePaystackOrders(NOW)).resolves.toMatchObject({ checked: 1, errors: 1 });
     expect(order(1)).toMatchObject({ status: "pending" });
     expect(attempt(1)).toMatchObject({ state: "open" });
   });
@@ -198,7 +198,7 @@ describe("one workspace cannot starve the others", () => {
     expect(attempt(100)).toMatchObject({ state: "refused" });
     // The revoked key cost three calls, not twenty-five.
     expect(calls.filter((c) => c.auth === `Bearer ${KEY}`)).toHaveLength(3);
-    expect(summary).toMatchObject({ checked: 4, errors: 3, expired: 1, skipped: 22 });
+    expect(summary).toMatchObject({ checked: 4, errors: 0, keyRejected: [SA], expired: 1, skipped: 22 });
     expect(order(1)).toMatchObject({ status: "pending" });
   });
 
@@ -249,12 +249,53 @@ describe("the run's summary", () => {
     expect(await expireStalePaystackOrders(NOW)).toMatchObject({ checked: 2, errors: 1, expired: 1 });
   });
 
-  it("every ask failing throws, so the housekeeping route answers 500", async () => {
-    seedBuy(1);
-    seedBuy(2);
-    verifyAnswer = () => "network-error";
-    await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/all 2 Paystack ask\(s\) failed/);
-    expect(order(1)).toMatchObject({ status: "pending" });
+  describe("what makes the job fail", () => {
+    const B = { sa: OTHER_SA, key: OTHER_KEY };
+    beforeEach(() => seedSub(OTHER_SA, OTHER_KEY));
+
+    it("a lone revoked-key workspace is reported in keyRejected, not thrown: the job stays 200", async () => {
+      seedBuy(1);
+      seedBuy(2);
+      verifyAnswer = () => refused(401, "Invalid key");
+      const summary = await expireStalePaystackOrders(NOW);
+      expect(summary).toMatchObject({ errors: 0, keyRejected: [SA] });
+      expect(order(1)).toMatchObject({ status: "pending" });
+    });
+
+    it("a 403 is a key refusal too", async () => {
+      seedBuy(1);
+      verifyAnswer = () => refused(403, "Forbidden");
+      await expect(expireStalePaystackOrders(NOW)).resolves.toMatchObject({ errors: 0, keyRejected: [SA] });
+    });
+
+    it("every ask failing on the network across two workspaces is a Paystack outage: it throws", async () => {
+      seedBuy(1);
+      seedBuy(2, OLD, {}, B);
+      verifyAnswer = () => "network-error";
+      await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/all 2 Paystack ask\(s\) failed across 2 workspaces/);
+      expect(order(1)).toMatchObject({ status: "pending" });
+    });
+
+    it("so is a run of 5xx answers", async () => {
+      seedBuy(1);
+      seedBuy(2, OLD, {}, B);
+      verifyAnswer = () => refused(503, "Service unavailable");
+      await expect(expireStalePaystackOrders(NOW)).rejects.toThrow(/failed across 2 workspaces/);
+    });
+
+    it("the same outage seen by one workspace only is reported, not thrown", async () => {
+      seedBuy(1);
+      seedBuy(2);
+      verifyAnswer = () => "network-error";
+      await expect(expireStalePaystackOrders(NOW)).resolves.toMatchObject({ checked: 2, errors: 2 });
+    });
+
+    it("one workspace's revoked key beside another's network failure is not an outage", async () => {
+      seedBuy(1);
+      seedBuy(2, OLD, {}, B);
+      verifyAnswer = (_ref, auth) => (auth === `Bearer ${KEY}` ? refused(401, "Invalid key") : "network-error");
+      await expect(expireStalePaystackOrders(NOW)).resolves.toMatchObject({ errors: 1, keyRejected: [SA] });
+    });
   });
 
   it("nothing to ask is not a failure", async () => {

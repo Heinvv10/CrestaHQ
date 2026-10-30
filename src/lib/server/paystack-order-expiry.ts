@@ -2,6 +2,7 @@ import "server-only";
 
 import { FieldValue, type QueryDocumentSnapshot } from "firebase-admin/firestore";
 
+import { BillingError } from "@/lib/billing/errors";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { verifyPaystackTransaction } from "@/lib/paystack/billing-api";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
@@ -39,8 +40,11 @@ import type { PaymentAttempt } from "@/types/payment-attempts";
  * workspace's attempts that never resolve cannot use up the run's calls: after
  * three unresolved asks the rest of its attempts wait for the next run.
  *
- * Throws (so the housekeeping route answers 500 and QStash retries) when every
- * ask of a run failed: Paystack or Firestore is down, not "nothing to do".
+ * Throws (so the housekeeping route answers 500 and QStash retries) only when
+ * every ask of a run failed with a network, timeout or 5xx error across at
+ * least two workspaces: Paystack is down. A workspace whose key Paystack rejects
+ * (401/403) is listed in `keyRejected`; one workspace's trouble never fails the
+ * job.
  */
 
 export const PAYSTACK_ORDER_LIFETIME_MS = 24 * 60 * 60 * 1000;
@@ -78,8 +82,10 @@ export interface PaystackOrderExpirySummary {
   /** Orders this run actually moved pending → expired. */
   expired: number;
   reconciled: number;
-  /** Asks that got no answer, or whose follow-up write failed. */
+  /** Asks that got no answer (network, timeout, 5xx), or whose follow-up write failed. */
   errors: number;
+  /** Workspaces whose key Paystack rejected (401/403) this run: reported, not an error. */
+  keyRejected: string[];
   /** Skipped for a key the workspace no longer holds, or no connection. */
   skipped: number;
   /** Not started because the run's time budget was spent. */
@@ -102,6 +108,7 @@ export async function expireStalePaystackOrders(
     expired: 0,
     reconciled: 0,
     errors: 0,
+    keyRejected: [],
     skipped: 0,
     overBudget: 0,
   };
@@ -111,6 +118,7 @@ export async function expireStalePaystackOrders(
   // at most UNRESOLVED_PER_TENANT unresolved asks a run (the rest of its
   // attempts are skipped), and the read continues past the first page.
   const unresolved = new Map<string, number>();
+  const askedWorkspaces = new Set<string>();
   const connections = new Map<string, PaystackConnectionSecret | null>();
   let cursor: QueryDocumentSnapshot | null = null;
   pages: for (let page = 0; page < MAX_PAGES; page += 1) {
@@ -139,8 +147,13 @@ export async function expireStalePaystackOrders(
       summary.checked += 1;
       let resolved = false;
       try {
-        const status = await paystackStatus(attempt.id, conn.secretKey);
-        if (status === null) {
+        askedWorkspaces.add(sa);
+        const answer = await paystackStatus(attempt.id, conn.secretKey);
+        const status = answer && "status" in answer ? answer.status : null;
+        if (answer && "rejected" in answer) {
+          // This workspace's own key: its problem, not Paystack's. Reported.
+          if (!summary.keyRejected.includes(sa)) summary.keyRejected.push(sa);
+        } else if (status === null) {
           summary.errors += 1;
         } else if (status === "success") {
           const result = await reconcilePaystackCharge({ subAccountId: sa, secretKey: conn.secretKey, reference: attempt.id });
@@ -163,18 +176,32 @@ export async function expireStalePaystackOrders(
     if (snap.size < PAGE) break;
     cursor = snap.docs[snap.docs.length - 1];
   }
-  if (summary.checked > 0 && summary.errors >= summary.checked) {
-    throw new Error(`paystack-order-expiry: all ${summary.checked} Paystack ask(s) failed`);
+  // A real Paystack outage: every ask failed (network, timeout, 5xx), across
+  // more than one workspace. One workspace's trouble is reported, not thrown:
+  // a 500 makes QStash retry ALL of daily-housekeeping.
+  if (summary.checked > 0 && summary.errors >= summary.checked && askedWorkspaces.size >= 2) {
+    throw new Error(`paystack-order-expiry: all ${summary.checked} Paystack ask(s) failed across ${askedWorkspaces.size} workspaces`);
   }
   return summary;
 }
 
-/** Paystack's status for `reference`, "not_found" for an unknown one, null when it can't be asked. */
-async function paystackStatus(reference: string, secretKey: string): Promise<string | null> {
+/**
+ * Paystack's status for `reference` ("not_found" for an unknown one), `rejected`
+ * when it refused this workspace's key (401/403), null when it can't be asked
+ * (network, timeout, 5xx, 429).
+ */
+async function paystackStatus(
+  reference: string,
+  secretKey: string,
+): Promise<{ status: string } | { rejected: true } | null> {
   try {
-    return (await verifyPaystackTransaction(reference, secretKey)).status;
+    return { status: (await verifyPaystackTransaction(reference, secretKey)).status };
   } catch (err) {
-    if (isNotFound(err)) return "not_found";
+    if (isNotFound(err)) return { status: "not_found" };
+    if (err instanceof BillingError && (err.providerStatus === 401 || err.providerStatus === 403)) {
+      console.warn(`[paystack/order-expiry] ref=${reference} Paystack rejected the workspace's key`);
+      return { rejected: true };
+    }
     console.error(`[paystack/order-expiry] ref=${reference} verify failed: ${err instanceof Error ? err.message : String(err)}`);
     return null;
   }
