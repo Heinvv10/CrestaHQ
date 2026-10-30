@@ -3,6 +3,12 @@ import "server-only";
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
+import {
+  aiOutboundSmsGateOn,
+  aiOutboundSmsReadiness,
+  firstUnmet,
+} from "@/lib/comms/ai/outbound-sms";
+import { templateProblem } from "@/lib/comms/ai/outbound-sms-text";
 import type { AgentActor } from "@/lib/workflows/agent-hold";
 import type {
   WorkflowDoc,
@@ -13,6 +19,7 @@ import type {
   WorkflowStatus,
   WorkflowTrigger,
 } from "@/types/workflows";
+import type { SubAccountDoc } from "@/types";
 
 /** Admin-SDK CRUD for the Workflow Builder. All reads/writes are sub-account
  *  scoped — every helper re-checks the doc's `subAccountId`. */
@@ -430,6 +437,33 @@ export async function updateWorkflowServerSide(opts: {
   }
   await ref.update(workflowPatchWrite(opts.patch));
   return { previousStatus: snap.data()!.status as WorkflowStatus };
+}
+
+/**
+ * Why a workflow with a "Send AI text" step can't be active here, or null. A
+ * pre-flight so the builder says it up front; the step itself re-checks the
+ * gate and readiness on every send.
+ */
+export async function aiSmsActivationBlock(
+  subAccountId: string,
+  nodes: Record<string, WorkflowNode> | null | undefined,
+): Promise<string | null> {
+  const aiNodes = Object.values(nodes ?? {}).filter((n) => n?.type === "send_ai_sms");
+  if (aiNodes.length === 0) return null;
+  for (const n of aiNodes) {
+    const problem = templateProblem(n.config?.template ?? "");
+    if (problem) return `Send AI text: ${problem}`;
+  }
+  const snap = await getAdminDb().doc(`subAccounts/${subAccountId}`).get();
+  const sub = snap.data() as SubAccountDoc | undefined;
+  if (!sub) return "Workspace not found.";
+  if (!aiOutboundSmsGateOn(sub)) {
+    return "This workflow has a Send AI text step, which is switched off for this workspace. Ask your agency owner to enable AI texts, or remove the step.";
+  }
+  const unmet = firstUnmet(await aiOutboundSmsReadiness(subAccountId, sub));
+  return unmet
+    ? `Send AI text isn't ready: ${unmet.label.toLowerCase()} is missing. ${unmet.fix}`
+    : null;
 }
 
 export interface RunView {

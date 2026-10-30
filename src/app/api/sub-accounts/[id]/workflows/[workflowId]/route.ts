@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import {
+  aiSmsActivationBlock,
   deleteWorkflowServerSide,
   getWorkflow,
   updateWorkflowServerSide,
@@ -10,6 +11,7 @@ import {
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isFolderId } from "@/lib/workflows/folders";
 import { sanitizeNodes } from "@/lib/workflows/sanitize-nodes";
+import { templateProblem } from "@/lib/comms/ai/outbound-sms-text";
 
 export const dynamic = "force-dynamic";
 
@@ -65,6 +67,14 @@ export async function PATCH(
       return NextResponse.json({ error: "Invalid nodes" }, { status: 400 });
     }
     patch.nodes = nodes;
+    // A Send AI text template that can never work is refused as it is saved;
+    // an empty one may sit in a draft (activation and the send refuse it).
+    for (const n of Object.values(nodes)) {
+      const template = n.type === "send_ai_sms" ? n.config.template : undefined;
+      const empty = template === undefined || template === null || (typeof template === "string" && !template.trim());
+      const problem = empty ? null : templateProblem(template);
+      if (problem) return NextResponse.json({ error: `Send AI text: ${problem}` }, { status: 400 });
+    }
   }
   // Move between folders. The folder is looked up under THIS sub-account's
   // path, so another sub-account's folder id is simply not found — 404, with
@@ -81,6 +91,17 @@ export async function PATCH(
       return NextResponse.json({ error: "Folder not found" }, { status: 404 });
     }
     patch.folderId = folder.id;
+  }
+
+  // A workflow that will be active with a Send AI text step needs AI texts
+  // enabled and ready here.
+  if (patch.status === "active" || patch.nodes !== undefined) {
+    const existing = await getWorkflow(subAccountId, workflowId);
+    if (!existing) return NextResponse.json({ error: "Not found" }, { status: 404 });
+    if ((patch.status ?? existing.status) === "active") {
+      const block = await aiSmsActivationBlock(subAccountId, patch.nodes ?? existing.nodes);
+      if (block) return NextResponse.json({ error: block }, { status: 400 });
+    }
   }
 
   const updated = await updateWorkflowServerSide({ subAccountId, workflowId, patch });

@@ -20,6 +20,7 @@ import {
   PencilLine,
   Plus,
   Reply,
+  Sparkles,
   Tag,
   Trash2,
   Webhook,
@@ -100,6 +101,7 @@ const MESSAGE_CHANNELS: { value: string; label: string }[] = [
 const ICONS: Record<WorkflowNodeType, typeof Mail> = {
   send_email: Mail,
   send_sms: MessageSquare,
+  send_ai_sms: Sparkles,
   whatsapp_template: MessageCircle,
   send_whatsapp: MessageCircle,
   wait: Clock,
@@ -151,6 +153,10 @@ export interface ReadinessDetail {
   whatsappSender: boolean;
   /** At least one Meta-approved WhatsApp template. */
   whatsappTemplate: boolean;
+  /** The agency has enabled AI texts for this sub-account. */
+  aiSmsGate: boolean;
+  /** The first unmet AI texts prerequisite and its fix; null when ready. */
+  aiSmsMissing: string | null;
 }
 
 /** Which send-integrations can actually run, so doomed steps get flagged. */
@@ -158,6 +164,7 @@ export interface BuilderReadiness {
   emailReady: boolean;
   smsReady: boolean;
   whatsappReady: boolean;
+  aiSmsReady: boolean;
   detail: ReadinessDetail;
 }
 
@@ -169,6 +176,7 @@ const ReadinessContext = createContext<BuilderReadiness>({
   emailReady: true,
   smsReady: true,
   whatsappReady: true,
+  aiSmsReady: true,
   detail: {
     smsSub: false,
     smsAgency: false,
@@ -177,6 +185,8 @@ const ReadinessContext = createContext<BuilderReadiness>({
     whatsappGate: false,
     whatsappSender: false,
     whatsappTemplate: false,
+    aiSmsGate: false,
+    aiSmsMissing: null,
   },
 });
 
@@ -254,12 +264,15 @@ export function WorkflowBuilder({
           }),
         }
       );
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const b = (await res.json().catch(() => ({}))) as { error?: string };
+        throw new Error(b.error || "Couldn't save workflow");
+      }
       setStatus(effective);
       toast.success("Workflow saved");
       router.refresh();
-    } catch {
-      toast.error("Couldn't save workflow");
+    } catch (err) {
+      toast.error(err instanceof Error && err.message ? err.message : "Couldn't save workflow");
     } finally {
       setSaving(false);
     }
@@ -478,6 +491,12 @@ export function WorkflowBuilder({
                 </option>
               ))}
             </select>
+            {(trigger.type === "message.received" || reentry === "every_time") &&
+              Object.values(flattenTree(steps).nodes).some((n) => n.type === "send_ai_sms") && (
+                <p className="mt-1.5 text-xs text-amber-700 dark:text-amber-400">
+                  This can reach the same contact again and again, but a Send AI text step texts each contact at most once every 30 days; later runs skip it.
+                </p>
+              )}
           </div>
         </div>
 
@@ -610,6 +629,8 @@ const REQUIREMENT_WARNING: Record<string, string> = {
     "WhatsApp isn't ready for this sub-account. Ask your agency to enable WhatsApp and connect a sender in Settings → SMS.",
   whatsapp:
     "WhatsApp isn't ready for this sub-account, so this step will be skipped. It needs all three: your agency to enable WhatsApp, a WhatsApp sender configured in Settings → SMS, and at least one Meta-approved template.",
+  ai_sms:
+    "AI texts aren't ready for this sub-account, so this workflow can't be activated with this step.",
 };
 
 /**
@@ -641,6 +662,13 @@ function ReadinessChips({
         code: "A",
         title:
           "Agency sender — the shared, deployment-wide Twilio sender is available to this sub-account.",
+      });
+  } else if (requirement === "ai_sms") {
+    if (detail.aiSmsGate && !detail.aiSmsMissing)
+      badges.push({
+        code: "SA",
+        title:
+          "Ready: AI texts are enabled and the workspace's own Twilio number, SMS AI agent and persona are set up.",
       });
   } else if (requirement === "email") {
     if (detail.emailSub)
@@ -706,10 +734,14 @@ function StepCard({
           ? step.type === "send_whatsapp"
             ? !(readiness.detail.whatsappGate && readiness.detail.whatsappSender)
             : !readiness.whatsappReady
-          : false;
-  const warning = unmet
-    ? REQUIREMENT_WARNING[step.type === "send_whatsapp" ? "whatsappFreeform" : requirement!]
-    : null;
+          : requirement === "ai_sms"
+            ? !readiness.aiSmsReady
+            : false;
+  const warning = !unmet
+    ? null
+    : requirement === "ai_sms" && readiness.detail.aiSmsMissing
+      ? `${REQUIREMENT_WARNING.ai_sms} ${readiness.detail.aiSmsMissing}`
+      : REQUIREMENT_WARNING[step.type === "send_whatsapp" ? "whatsappFreeform" : requirement!];
 
   const Icon = ICONS[step.type];
   return (
@@ -770,6 +802,11 @@ function StepCard({
 }
 
 function AddMenu({ onAdd }: { onAdd: (t: WorkflowNodeType) => void }) {
+  // AI texts are offered only where the agency has enabled them.
+  const readiness = useContext(ReadinessContext);
+  const types = ADDABLE_TYPES.filter(
+    (t) => t !== "send_ai_sms" || readiness.detail.aiSmsGate
+  );
   return (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -783,7 +820,7 @@ function AddMenu({ onAdd }: { onAdd: (t: WorkflowNodeType) => void }) {
         align="center"
         className="max-h-80 w-56 overflow-y-auto"
       >
-        {ADDABLE_TYPES.map((t) => {
+        {types.map((t) => {
           const Icon = ICONS[t];
           return (
             <DropdownMenuItem key={t} onClick={() => onAdd(t)}>

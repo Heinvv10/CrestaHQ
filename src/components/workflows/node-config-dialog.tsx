@@ -15,6 +15,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { AssigneeSelect } from "@/components/assignee-select";
 import { PipelineTriggerConfig } from "@/components/workflows/pipeline-trigger-config";
 import { NODE_LABELS } from "@/lib/workflows/catalog";
+import { AI_SLOT_MAX_CHARS, templateProblem } from "@/lib/comms/ai/outbound-sms-text";
 import { ConditionsEditor } from "./conditions-editor";
 import type { BuilderStep } from "@/lib/workflows/builder-tree";
 import type { ConditionGroup, NotifyRecipient } from "@/types/workflows";
@@ -72,6 +73,8 @@ export function NodeConfigDialog({
   const defaultSender =
     whatsappSenders.find((s) => s.isDefault) ?? whatsappSenders[0] ?? null;
   const str = (k: string) => (cfg[k] as string) ?? "";
+  const templateError =
+    step.type === "send_ai_sms" ? templateProblem(str("template")) : null;
   // The template step always sends a template, so only approved ones. The
   // free-form step can also carry a button template in-window, unapproved.
   const approvedTemplates = whatsappTemplates.filter((t) => t.approved);
@@ -124,6 +127,59 @@ export function NodeConfigDialog({
                 onChange={(e) => set({ body: e.target.value })}
               />
             </Field>
+          )}
+
+          {step.type === "send_ai_sms" && (
+            <>
+              <Field
+                label="Message"
+                hint={`Sent as you write it. Put {{ai}} where the AI's short personal line goes (letters only, up to ${AI_SLOT_MAX_CHARS} characters); {{firstName}} and {{business}} are filled in. "Reply STOP to opt out." is added at the end.`}
+              >
+                <Textarea
+                  rows={4}
+                  value={str("template")}
+                  onChange={(e) => set({ template: e.target.value })}
+                  placeholder="Hi {{firstName}}, it's {{business}}. {{ai}} Shall we send you a quote?"
+                />
+              </Field>
+              {templateError && (
+                <p className="text-xs text-red-600 dark:text-red-400">{templateError}</p>
+              )}
+              <Field
+                label="What should the AI's line do?"
+                hint="The AI writes only the {{ai}} line, from your agent's persona and the contact's first name. When they reply, the SMS AI agent carries on the conversation."
+              >
+                <Textarea
+                  rows={3}
+                  maxLength={1000}
+                  value={str("instruction")}
+                  onChange={(e) => set({ instruction: e.target.value })}
+                  placeholder="A friendly line about fibre now being available in their area."
+                />
+              </Field>
+              <label className="flex cursor-pointer items-start gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 h-4 w-4 cursor-pointer"
+                  checked={cfg.sendWithoutAiLine !== false}
+                  onChange={(e) => set({ sendWithoutAiLine: e.target.checked })}
+                />
+                <span>
+                  Send without the AI line if it fails
+                  <span className="text-muted-foreground block text-xs">
+                    The AI gets two tries. Off: the step is skipped instead.
+                  </span>
+                </span>
+              </label>
+              <p className="rounded-md border border-amber-500/30 bg-amber-500/5 p-2 text-xs text-amber-700 dark:text-amber-400">
+                Only text people who agreed to hear from this business. Texts
+                due in the workspace&apos;s quiet hours wait until they end.
+                Contacts who opted out of SMS, or whose conversation a team
+                member has taken over, are skipped, and each contact gets at
+                most one AI text every 30 days. If the conversation is set to
+                Suggest, the text is saved as a draft for a person to approve.
+              </p>
+            </>
           )}
 
           {step.type === "send_whatsapp" && (
@@ -548,6 +604,7 @@ export function NodeConfigDialog({
             Cancel
           </Button>
           <Button
+            disabled={!!templateError}
             onClick={() => {
               onSave(cfg);
               onClose();

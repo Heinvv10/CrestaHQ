@@ -34,6 +34,7 @@ export const TRIGGER_LABELS: Record<WorkflowTriggerType, string> = {
 export const NODE_LABELS: Record<WorkflowNodeType, string> = {
   send_email: "Send email",
   send_sms: "Send SMS",
+  send_ai_sms: "Send AI text",
   whatsapp_template: "Send WhatsApp template",
   send_whatsapp: "Send WhatsApp",
   wait: "Wait",
@@ -55,12 +56,13 @@ export const NODE_LABELS: Record<WorkflowNodeType, string> = {
  * dedicated Twilio) so the operator sees a doomed step before activating.
  * Node types not listed have no external dependency.
  */
-export type NodeRequirement = "email" | "sms" | "whatsapp";
+export type NodeRequirement = "email" | "sms" | "whatsapp" | "ai_sms";
 export const NODE_REQUIREMENT: Partial<Record<WorkflowNodeType, NodeRequirement>> =
   {
     send_email: "email",
     notify: "email",
     send_sms: "sms",
+    send_ai_sms: "ai_sms",
     whatsapp_template: "whatsapp",
     send_whatsapp: "whatsapp",
   };
@@ -69,6 +71,7 @@ export const NODE_REQUIREMENT: Partial<Record<WorkflowNodeType, NodeRequirement>
 export const ADDABLE_TYPES: WorkflowNodeType[] = [
   "send_email",
   "send_sms",
+  "send_ai_sms",
   "send_whatsapp",
   "whatsapp_template",
   "wait",
@@ -116,6 +119,12 @@ export function defaultConfig(type: WorkflowNodeType): Record<string, unknown> {
       return { subject: "", body: "" };
     case "send_sms":
       return { body: "" };
+    case "send_ai_sms":
+      return {
+        template: "Hi {{firstName}}, it's {{business}}. {{ai}}",
+        instruction: "",
+        sendWithoutAiLine: true,
+      };
     case "whatsapp_template":
       // Empty senderId = the sub-account's default sender.
       return { templateId: "", manualValues: {}, senderId: "" };
@@ -153,6 +162,8 @@ export function nodeSummary(step: BuilderStep): string {
       return (c.subject as string) || "No subject yet";
     case "send_sms":
       return (c.body as string)?.slice(0, 60) || "No message yet";
+    case "send_ai_sms":
+      return (c.template as string)?.slice(0, 60) || "No message yet";
     case "whatsapp_template":
       return (c.templateId as string) ? "WhatsApp template" : "Choose a template";
     case "send_whatsapp":

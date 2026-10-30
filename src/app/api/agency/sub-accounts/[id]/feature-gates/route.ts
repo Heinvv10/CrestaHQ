@@ -358,7 +358,12 @@ export async function PATCH(
   // AI outbound SMS can only be switched on once its readiness check passes.
   // Disabling is always allowed.
   if (body.aiOutboundSmsEnabled === true) {
-    const block = await aiOutboundSmsEnableBlock(subSnap.data() ?? {});
+    const block = await aiOutboundSmsEnableBlock(subAccountId, {
+      ...subSnap.data(),
+      ...(typeof body.smsAgentEnabled === "boolean"
+        ? { smsAgentEnabledByAgency: body.smsAgentEnabled }
+        : {}),
+    });
     if (block) {
       return NextResponse.json({ error: block }, { status: 409 });
     }

@@ -130,6 +130,7 @@ export interface WorkflowTrigger {
 export type WorkflowNodeType =
   | "send_email"
   | "send_sms"
+  | "send_ai_sms"
   | "whatsapp_template"
   | "send_whatsapp"
   | "wait"
@@ -271,6 +272,18 @@ export interface SendEmailConfig {
 }
 export interface SendSmsConfig {
   body: string;
+}
+/** A first text whose one `{{ai}}` line the AI writes (lib/comms/ai/
+ *  outbound-sms-text.ts). Always ends with the opt-out line. */
+export interface SendAiSmsConfig {
+  /** The operator's message, sent verbatim around the AI's line: one
+   *  `{{ai}}`, optionally `{{firstName}}` and `{{business}}`. */
+  template: string;
+  /** What the AI's line should do. */
+  instruction: string;
+  /** Send the template without the AI's line when the line fails twice.
+   *  Absent = on. */
+  sendWithoutAiLine?: boolean;
 }
 export interface WhatsappTemplateConfig {
   /** Approved WhatsApp template doc id (subAccounts/{id}/whatsappTemplates). */

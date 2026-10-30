@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { ADDABLE_TYPES } from "@/lib/workflows/catalog";
 import { MAX_DEPTH, MAX_ENTITIES, MAX_NODES, parseSnapshotFile } from "./snapshot-file";
 
 const nested = (depth: number) => {
@@ -34,6 +35,11 @@ describe("parseSnapshotFile", () => {
       products: [{ sourceId: "p", name: "A", description: "", unitPriceCents: "1", currency: "USD", active: true }],
     }));
     expect(out).toEqual({ ok: false, error: "That snapshot file is malformed." });
+  });
+
+  it("accepts every step type the builder offers, so an exported workflow imports", () => {
+    const nodes = Object.fromEntries(ADDABLE_TYPES.map((type, i) => [`n${i}`, { id: `n${i}`, type, config: {} }]));
+    expect(parseSnapshotFile(file({ workflows: [workflowWith(nodes)] })).ok).toBe(true);
   });
 
   it("refuses a node whose key and id disagree", () => {

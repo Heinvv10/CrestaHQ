@@ -6,8 +6,11 @@ import { readPipelineStages } from "@/lib/pipelines/server";
 import { dealOutcome, dealPipelineId, dealStage } from "@/lib/pipelines/stages";
 import type { Deal, PipelineStage } from "@/types/deals";
 import type { Contact } from "@/types/contacts";
+import { promptSafe } from "@/lib/comms/ai/prompt-safe";
 
 const MAX_DEALS_INCLUDED = 3;
+/** Every free-text value below is untrusted (forms, imports, the API): one line, capped. */
+const safe = (v: string | null | undefined) => promptSafe(v, 120);
 
 /**
  * Pulls a compact context block about a contact for injection into the
@@ -80,20 +83,20 @@ export async function buildContactContextBlock(
 
   // ---- Identity ----
   const identityBits: string[] = [];
-  if (contact.name?.trim()) identityBits.push(`Name: ${contact.name.trim()}`);
-  if (contact.company?.trim())
-    identityBits.push(`Company: ${contact.company.trim()}`);
+  if (safe(contact.name)) identityBits.push(`Name: ${safe(contact.name)}`);
+  if (safe(contact.company))
+    identityBits.push(`Company: ${safe(contact.company)}`);
   // The truthy check already excludes the empty-string fallback; "website"
   // is the default for un-attributed form submissions so it's noise here.
   if (contact.source && contact.source !== "website") {
-    identityBits.push(`Source: ${contact.source}`);
+    identityBits.push(`Source: ${safe(contact.source)}`);
   }
 
   // Marketing attribution — only mention the campaign, not all UTMs (too
   // much noise for the bot, and most UTMs aren't useful conversationally).
   const attribution = contact.attribution;
   if (attribution?.utmCampaign) {
-    identityBits.push(`Ad campaign: ${attribution.utmCampaign}`);
+    identityBits.push(`Ad campaign: ${safe(attribution.utmCampaign)}`);
   }
 
   if (identityBits.length > 0) {
@@ -110,10 +113,10 @@ export async function buildContactContextBlock(
       const stage = dealStage(d, pipelines)!;
       const ageDays = ageInDays(d.stageChangedAt ?? d.createdAt);
       const value = d.value
-        ? `${d.currency || "USD"} ${d.value.toLocaleString()}`
+        ? `${safe(d.currency) || "USD"} ${d.value.toLocaleString()}`
         : "no value set";
       const age = ageDays !== null ? `${ageDays}d in stage` : "";
-      return `  - "${d.title}" — ${stage.label}${age ? `, ${age}` : ""}, ${value}`;
+      return `  - "${safe(d.title)}" — ${safe(stage.label)}${age ? `, ${age}` : ""}, ${value}`;
     });
     lines.push("Active deals:");
     lines.push(...dealLines);
@@ -123,7 +126,7 @@ export async function buildContactContextBlock(
   const lastWon = deals.find((d) => dealOutcome(d, pipelines) === "won");
   if (lastWon) {
     lines.push(
-      `Past sale: "${lastWon.title}" (${lastWon.currency || "USD"} ${lastWon.value.toLocaleString()})`,
+      `Past sale: "${safe(lastWon.title)}" (${safe(lastWon.currency) || "USD"} ${lastWon.value.toLocaleString()})`,
     );
   }
 

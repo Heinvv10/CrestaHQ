@@ -298,6 +298,12 @@
         "create_one_time_charge"
       ]
     },
+    "api/agency/sub-accounts/[id]/ai-outbound-sms-readiness:GET": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "The Manage dialog's prerequisite checklist for the agency owner's AI texts toggle; agents may never switch that gate on (set_feature_gate refuses it), so the checklist has no agent use."
+      }
+    },
     "api/agency/sub-accounts/[id]/apply-snapshot:POST": {
       "tools": [
         "apply_snapshot"
