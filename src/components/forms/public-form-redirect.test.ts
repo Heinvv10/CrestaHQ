@@ -25,4 +25,10 @@ describe("resolveSafeFormRedirect", () => {
     expect(resolveSafeFormRedirect(undefined)).toBeNull();
     expect(resolveSafeFormRedirect("")).toBeNull();
   });
+
+  it("passes a relative path and refuses protocol-relative ones", () => {
+    expect(resolveSafeFormRedirect("/thanks")).toBe("/thanks");
+    expect(resolveSafeFormRedirect("//evil.com")).toBeNull();
+    expect(resolveSafeFormRedirect("/\\evil.com")).toBeNull();
+  });
 });
