@@ -24,6 +24,7 @@ import {
   Cpu,
   Radar,
   Send,
+  ShoppingCart,
   Share2,
   GraduationCap,
   Sparkles,
@@ -134,6 +135,9 @@ function ManageDialogBody({
     subAccount.googleCalendarEnabledByAgency === true;
   const initialWebVoice = subAccount.webVoiceEnabledByAgency === true;
   const initialDialer = subAccount.dialerEnabledByAgency === true;
+  const initialAgents = subAccount.agentsEnabledByAgency === true;
+  const initialSellOnline = subAccount.sellOnlineEnabledByAgency === true;
+  const initialAiOutboundSms = subAccount.aiOutboundSmsEnabledByAgency === true;
   const initialEmailAiDrafts =
     subAccount.emailAiDraftsEnabledByAgency === true;
   const initialReviewsAi = subAccount.reviewsAiEnabledByAgency === true;
@@ -205,6 +209,11 @@ function ManageDialogBody({
   );
   const [webVoiceEnabled, setWebVoiceEnabled] = useState(initialWebVoice);
   const [dialerEnabled, setDialerEnabled] = useState(initialDialer);
+  const [agentsEnabled, setAgentsEnabled] = useState(initialAgents);
+  const [sellOnlineEnabled, setSellOnlineEnabled] = useState(initialSellOnline);
+  const [aiOutboundSmsEnabled, setAiOutboundSmsEnabled] = useState(
+    initialAiOutboundSms
+  );
   const [emailAiDraftsEnabled, setEmailAiDraftsEnabled] = useState(
     initialEmailAiDrafts
   );
@@ -285,6 +294,9 @@ function ManageDialogBody({
   const googleCalendarDirty = googleCalendarEnabled !== initialGoogleCalendar;
   const webVoiceDirty = webVoiceEnabled !== initialWebVoice;
   const dialerDirty = dialerEnabled !== initialDialer;
+  const agentsDirty = agentsEnabled !== initialAgents;
+  const sellOnlineDirty = sellOnlineEnabled !== initialSellOnline;
+  const aiOutboundSmsDirty = aiOutboundSmsEnabled !== initialAiOutboundSms;
   const emailAiDraftsDirty = emailAiDraftsEnabled !== initialEmailAiDrafts;
   const reviewsAiDirty = reviewsAiEnabled !== initialReviewsAi;
   const reviewsAutoReplyDirty =
@@ -331,6 +343,9 @@ function ManageDialogBody({
     googleCalendarDirty ||
     webVoiceDirty ||
     dialerDirty ||
+    agentsDirty ||
+    sellOnlineDirty ||
+    aiOutboundSmsDirty ||
     emailAiDraftsDirty ||
     reviewsAiDirty ||
     reviewsAutoReplyDirty ||
@@ -402,6 +417,9 @@ function ManageDialogBody({
         googleCalendarEnabled?: boolean;
         webVoiceEnabled?: boolean;
         dialerEnabled?: boolean;
+        agentsEnabled?: boolean;
+        sellOnlineEnabled?: boolean;
+        aiOutboundSmsEnabled?: boolean;
         emailAiDraftsEnabled?: boolean;
         reviewsAiEnabled?: boolean;
         reviewsAutoReplyEnabled?: boolean;
@@ -454,6 +472,15 @@ function ManageDialogBody({
       }
       if (dialerDirty) {
         payload.dialerEnabled = dialerEnabled;
+      }
+      if (agentsDirty) {
+        payload.agentsEnabled = agentsEnabled;
+      }
+      if (sellOnlineDirty) {
+        payload.sellOnlineEnabled = sellOnlineEnabled;
+      }
+      if (aiOutboundSmsDirty) {
+        payload.aiOutboundSmsEnabled = aiOutboundSmsEnabled;
       }
       if (emailAiDraftsDirty) {
         payload.emailAiDraftsEnabled = emailAiDraftsEnabled;
@@ -642,6 +669,21 @@ function ManageDialogBody({
           dialerEnabled
             ? "Phone dialer enabled."
             : "Phone dialer disabled. The stored dialer setup is preserved; re-enabling resumes instantly."
+        );
+      }
+      if (agentsDirty) {
+        parts.push(
+          agentsEnabled ? "Agent monitors enabled." : "Agent monitors disabled."
+        );
+      }
+      if (sellOnlineDirty) {
+        parts.push(
+          sellOnlineEnabled ? "Sell online enabled." : "Sell online disabled."
+        );
+      }
+      if (aiOutboundSmsDirty) {
+        parts.push(
+          aiOutboundSmsEnabled ? "AI texts enabled." : "AI texts disabled."
         );
       }
       if (emailAiDraftsDirty) {
@@ -1219,6 +1261,53 @@ function ManageDialogBody({
             needs its Twilio credentials connected). Calls are billed to the
             client&apos;s Twilio account. The dialer is not available in this
             build yet, so the switch only takes effect once it ships.
+          </GateToggle>
+
+          <GateToggle
+            checked={agentsEnabled}
+            onChange={setAgentsEnabled}
+            disabled={saving}
+            icon={
+              <Radar className="h-3.5 w-3.5 text-violet-600 dark:text-violet-400" />
+            }
+            title="Agent monitors"
+          >
+            When enabled, this sub-account can run AI monitors that watch for
+            stalled deals and unanswered threads. Every judgment spends your AI
+            credits. The monitors are not available in this build yet, so the
+            switch only takes effect once they ship.
+          </GateToggle>
+
+          <GateToggle
+            checked={sellOnlineEnabled}
+            onChange={setSellOnlineEnabled}
+            disabled={saving}
+            icon={
+              <ShoppingCart className="h-3.5 w-3.5 text-emerald-600 dark:text-emerald-400" />
+            }
+            title="Sell online"
+          >
+            When enabled, this sub-account can sell its products online through
+            its own payment connection. Money lands with the client, not you.
+            Orders already paid are always fulfilled. Selling online is not
+            available in this build yet, so the switch only takes effect once
+            it ships.
+          </GateToggle>
+
+          <GateToggle
+            checked={aiOutboundSmsEnabled}
+            onChange={setAiOutboundSmsEnabled}
+            // Enabling is refused until readiness lands (J1): only allow
+            // switching it off when it is stored on.
+            disabled={saving || !initialAiOutboundSms}
+            icon={
+              <MessageSquareText className="h-3.5 w-3.5 text-sky-600 dark:text-sky-400" />
+            }
+            title="AI texts"
+          >
+            When enabled, workflows can send AI-written texts to contacts. It
+            can only be switched on once AI outbound SMS readiness passes, which
+            is not available in this build yet, so enabling is refused for now.
           </GateToggle>
 
           <GateToggle

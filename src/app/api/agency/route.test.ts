@@ -101,3 +101,12 @@ describe("agentApiEnabled (Agency Agent API kill switch)", () => {
     expect(db().read("agencies/ag1")).not.toHaveProperty("agentApiEnabled");
   });
 });
+
+describe("logoUrl", () => {
+  // The Branding card's Save posts the field back after an upload.
+  it("keeps an uploaded logo URL", async () => {
+    const url = "https://crm.example.com/api/brand/logo/agency/ag1?v=1730000000000";
+    expect((await patch("owner1", { logoUrl: url })).status).toBe(200);
+    expect(db().read("agencies/ag1")).toMatchObject({ logoUrl: url });
+  });
+});
