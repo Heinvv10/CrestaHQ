@@ -16,7 +16,7 @@ jobs:
   # unlike the fast helpers, never interrupts an active browser teardown.
   cancel_ci_on_draft:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: ubuntu-latest
     concurrency:
       group: ci-fast-${{ github.ref }}
       cancel-in-progress: true
@@ -25,16 +25,19 @@ jobs:
 
   cancel_secrets_on_draft:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: ubuntu-latest
     concurrency:
       group: ci-secrets-${{ github.ref }}
       cancel-in-progress: true
     steps:
       - run: echo "cancelled superseded secret scan for draft PR"
 
+  # Hosted on purpose: a concurrency group cancels pending work whatever runner
+  # it was queued for, so this still displaces a pending E2E job, and a fork
+  # PR's draft event never reaches the self-hosted box (same-repo guard).
   replace_pending_e2e_on_draft:
-    if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
-    runs-on: [self-hosted, linux, velo, crestahq]
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
     concurrency:
       group: ci-e2e-${{ github.ref }}
       cancel-in-progress: false
@@ -56,7 +59,7 @@ jobs:
   # rather than softening it.
   ci:
     name: Lint, typecheck, test, build
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
       group: ci-fast-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
@@ -68,29 +71,29 @@ jobs:
     # deliberately crafted PR.
     #
     # The real control is that this repo is private and single-author, so
-    # opening a PR at all requires access this machine's owner controls.
-    # Residual risk accepted on that basis. If a collaborator is ever added,
-    # this needs revisiting — self-hosted runners execute PR code on a
-    # workstation that also hosts four other repos' runners.
+    # opening a PR at all requires access its owner controls. Residual risk
+    # accepted on that basis. If a collaborator is ever added, this needs
+    # revisiting — same-repo PR code runs here with the repo's secrets.
     # Draft PRs are still changing rapidly. Run the full gate once they are
     # marked ready, and on every later update, instead of spending runner time
     # on work the author has explicitly said is not reviewable yet.
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
-      # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
-      # self-hosted runner an action runs with this machine's filesystem in
-      # reach — the same reasoning that made the gitleaks download not worth
-      # it applies to anything else fetched at run time, first-party or not.
+      # SHA-pinned, not tag-pinned. A floating tag is mutable, and an action
+      # runs with this job's secrets in reach — anything fetched at run time,
+      # first-party or not, is pinned to an immutable ref.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # Version comes from package.json `packageManager`. Must precede
+      # setup-node, whose `cache: pnpm` shells out to pnpm.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       # Pinned to .nvmrc so CI and a developer's shell cannot disagree about
-      # the runtime. The box's system node is v20; this project needs 22.
+      # the runtime. The runner image's system node is not necessarily 22.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
-
-      - name: Enable pnpm
-        run: corepack enable
+          cache: pnpm
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -111,9 +114,10 @@ jobs:
       # Chromium (src/lib/prospecting/mystery-shop/form/*.test.ts). A no-op
       # when the runner's cache already has this revision. Without it those
       # tests FAIL under CI (they only skip on a developer box without it).
-      # No --with-deps: same reason as the E2E job's install.
+      # --with-deps: a fresh GitHub-hosted runner lacks Chromium's shared
+      # libraries; it has passwordless sudo for the apt step.
       - name: Install Chromium (form-engine tests)
-        run: pnpm exec playwright-core install chromium
+        run: pnpm exec playwright-core install --with-deps chromium
 
       - name: Tests
         run: pnpm test
@@ -144,37 +148,30 @@ jobs:
 
   secrets:
     name: Secret scan
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
       group: ci-secrets-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
-      # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
-      # self-hosted runner an action runs with this machine's filesystem in
-      # reach — the same reasoning that made the gitleaks download not worth
-      # it applies to anything else fetched at run time, first-party or not.
+      # SHA-pinned, not tag-pinned (see the ci job above).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Full history: a secret committed earlier and reverted is still in
           # the objects, and still needs rotating.
           fetch-depth: 0
 
-      # Uses the gitleaks binary installed on the runner host, NOT
-      # gitleaks/gitleaks-action.
+      # Uses a pinned gitleaks release binary, NOT gitleaks/gitleaks-action.
       #
-      # The action downloads a release tarball through /tmp/gitleaks.tmp. On
-      # this box several repos' runners share /tmp under the sticky bit, so
-      # that path is owned by whichever runner user got there first — and no
-      # other runner user can delete it. ApexGEO hit this and cleans the file
-      # up in a pre-step, which works only because it owns it. From here the
-      # cleanup silently no-ops and the download then fails with
-      # "Destination file path already exists", which reads like a scan
-      # failure but is a collision with an unrelated repo's CI.
-      #
-      # Invoking the installed binary removes the download, the shared path
-      # and the cross-repo coupling in one go, and is faster.
+      # The action downloads a release tarball through /tmp/gitleaks.tmp and
+      # failed with "Destination file path already exists" on the old
+      # self-hosted box, where /tmp was shared between repos' runners. The
+      # binary below is fetched from the release page, checked against a
+      # SHA-256 pinned in this file (it matches the release's own
+      # checksums.txt) and run directly. 8.24.3 is the version this gate ran
+      # on the self-hosted runner, so findings do not shift with the move;
+      # bump version and hash together.
       #
       # This repo holds Firebase admin keys, Stripe secrets, Twilio auth
       # tokens, a Meta app secret and WhatsApp WABA tokens. FibreFlow carried
@@ -224,11 +221,15 @@ jobs:
       # reproducible: the printed SHA plus the command below is the whole input.
       - name: gitleaks
         run: |
-          command -v gitleaks >/dev/null || {
-            echo "::error::gitleaks is not installed on this runner host."
-            echo "Install it once: curl -sSL <release>.tar.gz | sudo tar -C /usr/local/bin -xz gitleaks"
-            exit 1
-          }
+          GITLEAKS_VERSION=8.24.3
+          GITLEAKS_SHA256=9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c
+          GITLEAKS_DIR="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$GITLEAKS_DIR"
+          curl -sSfL --retry 3 -o "$GITLEAKS_DIR/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $GITLEAKS_DIR/gitleaks.tgz" | sha256sum -c -
+          tar -C "$GITLEAKS_DIR" -xzf "$GITLEAKS_DIR/gitleaks.tgz" gitleaks
+          export PATH="$GITLEAKS_DIR:$PATH"
           gitleaks version
           git --version
           echo "scanning HEAD=$(git rev-parse HEAD)"
@@ -252,9 +253,8 @@ jobs:
   #
   # Pinned to the one runner labelled crestahq-e2e. Every run binds
   # 127.0.0.1:3100 and seeds + purges the same fixture sub-accounts, so two
-  # E2E jobs on two runners would collide on both. The other jobs share no
-  # port or tenant; they do share the runner user's pnpm store and Go caches,
-  # which both tools lock for concurrent use.
+  # E2E jobs on two runners would collide on both. The other jobs run on
+  # GitHub-hosted runners and share no port, tenant or cache with this one.
   #
   # e2e-smoke.yml's "smoke" job runs on the SAME runner label for the same
   # reason (same fixture tenants, same port 3100). The single labelled runner

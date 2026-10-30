@@ -2,9 +2,9 @@ import { cert } from "firebase-admin/app";
 
 /**
  * The network calls the rules tests (`pnpm test:rules`) make: the Google
- * OAuth token and the Rules test API evaluation. The self-hosted CI box's
- * egress to Google intermittently fails to connect (ETIMEDOUT to
- * oauth2.googleapis.com, UND_ERR_CONNECT_TIMEOUT to
+ * OAuth token and the Rules test API evaluation. Egress from CI to Google
+ * intermittently failed to connect (observed from the then self-hosted CI
+ * box; ETIMEDOUT to oauth2.googleapis.com, UND_ERR_CONNECT_TIMEOUT to
  * firebaserules.googleapis.com, ~10% of connects on 2026-10-05), so both go
  * through one retry policy: a network error, or an attempt still unanswered
  * after ATTEMPT_MS, is retried with backoff. Anything else fails at once: a
