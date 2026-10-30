@@ -7,6 +7,7 @@ import { applyFeatureGates } from "@/lib/server/feature-gates-service";
 import {
   buildChargeCheckoutUrl,
   buildCheckoutUrl,
+  chargeTokenSecretConfigured,
   issueChargeToken,
   issueCheckoutToken,
 } from "@/lib/billing/token";
@@ -63,7 +64,7 @@ export { SUB_ACCOUNT_CHARGE_KIND, SUB_ACCOUNT_PLAN_KIND };
 
 /** Stripe's practical floor for a recurring charge, in cents. */
 const MIN_PRICE_CENTS = 100;
-const MAX_PRICE_CENTS = 100_000_000;
+export const MAX_PRICE_CENTS = 100_000_000;
 
 /**
  * Whether Client Billing can talk to its payment provider. Named for Stripe
@@ -1047,6 +1048,8 @@ export async function createUsageCharge(input: {
       503,
     );
   }
+  // Before anything is written: without it no pay link can ever be signed.
+  if (!chargeTokenSecretConfigured()) throw new BillingError(TOKEN_SECRET_MISSING, 503);
   const valid = validateChargeInput(input.description, input.amountCents, input.currency);
   if (provider.id === "paystack" && !input.payerEmail) {
     throw new BillingError(
@@ -1130,6 +1133,9 @@ async function getChargeInAgencyOrThrow(
   return { ref, data: { ...(snap.data() as BillingChargeDoc), id: snap.id } };
 }
 
+const TOKEN_SECRET_MISSING =
+  "token secret not configured: AUTOMATIONS_TOKEN_SECRET is unset or shorter than 16 characters, so no pay link can be signed.";
+
 /**
  * Make `hash` the charge's live token, in one transaction that refuses a charge
  * that is no longer payable: a paid or cancelled charge must never get a live
@@ -1176,6 +1182,7 @@ export async function mintChargeCheckoutLink(input: {
  * already out there if it then fails to send.
  */
 export function stageChargeLink(chargeId: string): { url: string; hash: string } {
+  if (!chargeTokenSecretConfigured()) throw new BillingError(TOKEN_SECRET_MISSING, 503);
   const { token, hash } = issueChargeToken(chargeId);
   const url = buildChargeCheckoutUrl(token);
   if (!url) throw new BillingError("NEXT_PUBLIC_APP_URL isn't configured, so no pay link can be built.", 503);

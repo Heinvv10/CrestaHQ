@@ -332,7 +332,7 @@ describe("a switch turned off after the freeze", () => {
       expect.objectContaining({ chargeId: CHARGE, reason: "rebilling_switched_off_before_invoice" }),
     ]);
     expect(await events("usage.withheld")).toEqual([
-      expect.objectContaining({ detail: { month: "2026-09", chargeId: CHARGE, chargeCanceled: true, reason: "rebilling_switched_off_before_invoice" } }),
+      expect.objectContaining({ detail: { month: "2026-09", chargeId: CHARGE, chargeCanceled: true, reason: "rebilling_switched_off_before_invoice", carryBackCents: 0 } }),
     ]);
   });
 
@@ -674,6 +674,77 @@ describe("pay-link writes refuse a charge that is no longer payable", () => {
   });
 });
 
+describe("the pay-link token secret", () => {
+  it.each([["unset", ""], ["too short", "short"]])("%s: the charge is not even created, it is a refusal, and nothing is a daily 500", async (_l, value) => {
+    spyBillingProvider("stripe");
+    vi.stubEnv("AUTOMATIONS_TOKEN_SECRET", value);
+    const out = await runUsageClose(NOW);
+    expect(out).toMatchObject({ failed: 0, refusals: [{ subAccountId: "sa1", reason: expect.stringMatching(/token secret not configured/) }] });
+    expect(charges()).toHaveLength(0);
+    expect(queue()).toHaveLength(1);
+    vi.stubEnv("AUTOMATIONS_TOKEN_SECRET", "x".repeat(32));
+    expect((await runUsageClose(NOW)).charged).toBe(1);
+  });
+
+  it("a reminder with the secret gone is a refusal that keeps its stage", async () => {
+    spyBillingProvider("stripe");
+    await runUsageClose(NOW);
+    mem.seed(`billingCharges/${CHARGE}`, { ...mem.read(`billingCharges/${CHARGE}`)!, dueAt: new Date(2026, 9, 15, 12, 0) });
+    vi.stubEnv("AUTOMATIONS_TOKEN_SECRET", "");
+    const out = await runUsageClose(new Date(2026, 9, 12, 5, 0));
+    expect(out).toMatchObject({ failed: 0, reminded: 0, refusals: [{ reason: expect.stringMatching(/token secret not configured/) }] });
+    expect(mem.read(`billingCharges/${CHARGE}`)?.remindedAt).toEqual({});
+  });
+});
+
+describe("a withheld month keeps the carry that was folded into it", () => {
+  /** Aug carried 300c; September (600 emails = 5,000c) is frozen with it, then it cannot be billed. */
+  const frozenWithCarry = async () => {
+    spyBillingProvider("stripe");
+    mem.seed("subAccounts/sa1/usage/2026-08", {
+      closed: { totalCents: 300, currency: "zar", lineItems: [], chargeId: null, carryOutCents: 300 },
+    });
+    await freezeMonthForSubAccount({ sub: { ...SUB, id: "sa1" } as never, month: "2026-09" });
+    expect(frozen()).toMatchObject({ carriedInCents: 300, totalCents: 5300, carryOutCents: 0 });
+  };
+  /** October (150 emails = 500c over... 130 = 300c) closes afterwards, picking up what is owed. */
+  const closeOctober = async () => {
+    mem.seed("subAccounts/sa1", SUB);
+    mem.seed("agencies/ag1", AGENCY);
+    mem.seed("subAccounts/sa1/usage/2026-10", { emailsSent: 130 });
+    await runUsageClose(new Date(2026, 10, 1, 5, 0));
+    return frozen("2026-10");
+  };
+
+  it("withheld because a switch went off before the invoice", async () => {
+    await frozenWithCarry();
+    mem.seed("subAccounts/sa1", { ...SUB, usageRebillingEnabled: false });
+    await runUsageClose(NOW);
+    expect(frozen()).toMatchObject({ withheldReason: "rebilling_switched_off_before_invoice", carryOutCents: 300 });
+    expect(await closeOctober()).toMatchObject({ carriedInCents: 300, totalCents: 600 });
+  });
+
+  it("withheld because the invoice could not be sent in 7 days", async () => {
+    await frozenWithCarry();
+    mem.seed("subAccounts/sa1", { ...SUB, accountContact: null });
+    await runUsageClose(NOW);
+    await runUsageClose(new Date(Date.now() + 8 * 86_400_000));
+    expect(frozen()).toMatchObject({ withheldReason: "invoice could not be sent", carryOutCents: 300 });
+    expect(await closeOctober()).toMatchObject({ carriedInCents: 300 });
+  });
+
+  it("withheld as over the ceiling", async () => {
+    await frozenWithCarry();
+    mem.seed("subAccounts/sa1/usage/2026-09", {
+      closed: { ...(frozen() as object), totalCents: 100_000_001 },
+    });
+    mem.seed(`usagePendingCharges/${CHARGE}`, { subAccountId: "sa1", month: "2026-09", createdAt: new Date(2026, 8, 20) });
+    await runUsageClose(NOW);
+    expect(frozen()).toMatchObject({ withheldReason: "over ceiling", carryOutCents: 300 });
+    expect(await closeOctober()).toMatchObject({ carriedInCents: 300 });
+  });
+});
+
 describe("a recipient that is not a string", () => {
   it("is treated as absent: no crash, the next real address is used", async () => {
     spyBillingProvider("stripe");
@@ -891,6 +962,24 @@ describe("a charge that cannot be created", () => {
     // (The charge doc itself was already created before the failure, so this run mints nothing new.)
     expect((await runUsageClose(NOW)).charged).toBe(0);
     expect(charges()).toHaveLength(1);
+  });
+
+  it("still over the ceiling after 7 days queued: the month is withheld as 'over ceiling', audited, and reported once", async () => {
+    spyBillingProvider("stripe");
+    mem.seed("subAccounts/sa1/usage/2026-09", {
+      closed: { totalCents: 100_000_001, currency: "zar", lineItems: [], chargeId: CHARGE, carryOutCents: 0, carriedInCents: 0 },
+    });
+    mem.seed(`usagePendingCharges/${CHARGE}`, { subAccountId: "sa1", month: "2026-09", createdAt: new Date(2026, 8, 20) });
+    const out = await runUsageClose(NOW);
+    expect(out).toMatchObject({ failed: 0, refusals: [{ reason: expect.stringMatching(/^over ceiling:/) }] });
+    expect(charges()).toHaveLength(0);
+    expect(queue()).toHaveLength(0);
+    expect(frozen()).toMatchObject({ withheldReason: "over ceiling" });
+    expect(frozen()?.withheldAt).toBeDefined();
+    expect(await events("usage.withheld")).toEqual([
+      expect.objectContaining({ detail: expect.objectContaining({ reason: "over ceiling", chargeCanceled: false }) }),
+    ]);
+    expect((await runUsageClose(NOW)).refusals).toEqual([]);
   });
 
   it("the ceiling itself is accepted", async () => {

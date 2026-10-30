@@ -6,6 +6,7 @@ import {
   BillingError,
   commitChargeLink,
   createUsageCharge,
+  MAX_PRICE_CENTS,
   stageChargeLink,
 } from "@/lib/server/billing-service";
 import { recordBillingEvent } from "@/lib/server/billing-lifecycle";
@@ -37,7 +38,12 @@ const claimFresh = (c: Charge, now: Date) => {
   return claimedMs !== null && now.getTime() - claimedMs < CLAIM_TIMEOUT_MS;
 };
 
-/** The month is not billed: stamp the ledger and audit it (and the cancel, when a charge was). */
+/**
+ * The month is not billed: stamp the ledger and audit it (and the cancel, when
+ * a charge was). The amount carried INTO this month stays owed: it is put back
+ * on the ledger as `carryOutCents`, so the next billed month (within the
+ * 2-month rule) picks it up. The month's own usage is the part that is dropped.
+ */
 async function recordWithheld(input: {
   sub: SubAccountDoc;
   month: string;
@@ -45,12 +51,14 @@ async function recordWithheld(input: {
   ledgerRef: FirebaseFirestore.DocumentReference;
   charge: "none" | "canceled";
   why: string;
+  carryBackCents: number;
 }): Promise<void> {
-  const { sub, month, chargeId, ledgerRef, charge, why } = input;
+  const { sub, month, chargeId, ledgerRef, charge, why, carryBackCents } = input;
   console.warn(`[usage-close] month withheld sa=${sub.id} month=${month} charge=${charge}: ${why}`);
   await ledgerRef.update({
     "closed.withheldAt": FieldValue.serverTimestamp(),
     "closed.withheldReason": why,
+    "closed.carryOutCents": carryBackCents,
   });
   if (charge === "canceled") {
     recordBillingEvent({
@@ -64,7 +72,7 @@ async function recordWithheld(input: {
     agencyId: sub.agencyId,
     subAccountId: sub.id,
     event: "usage.withheld",
-    detail: { month, chargeId, chargeCanceled: charge === "canceled", reason: why },
+    detail: { month, chargeId, chargeCanceled: charge === "canceled", reason: why, carryBackCents },
   });
 }
 
@@ -81,8 +89,9 @@ async function withholdUnsent(input: {
   chargeId: string;
   now: Date;
   ledgerRef: FirebaseFirestore.DocumentReference;
+  carryBackCents: number;
 }): Promise<"withheld" | "stands" | "busy"> {
-  const { sub, month, chargeId, now, ledgerRef } = input;
+  const { sub, month, chargeId, now, ledgerRef, carryBackCents } = input;
   const chargeRef = getAdminDb().doc(`billingCharges/${chargeId}`);
   const verdict = await getAdminDb().runTransaction(async (tx) => {
     const c = (await tx.get(chargeRef)).data();
@@ -94,7 +103,7 @@ async function withholdUnsent(input: {
   });
   if (verdict === "stands" || verdict === "busy") return verdict;
   await recordWithheld({
-    sub, month, chargeId, ledgerRef, charge: verdict, why: "rebilling_switched_off_before_invoice",
+    sub, month, chargeId, ledgerRef, charge: verdict, why: "rebilling_switched_off_before_invoice", carryBackCents,
   });
   return "withheld";
 }
@@ -135,12 +144,28 @@ export async function processPendingCharges(
     // Nothing is billed unless the invoice already went out.
     const agencyDoc = (await db.doc(`agencies/${sub.agencyId}`).get()).data();
     if (unbillableReason(agencyDoc, sub as unknown as Record<string, unknown>, p.month)) {
-      const verdict = await withholdUnsent({ sub, month: p.month, chargeId, now, ledgerRef });
+      const verdict = await withholdUnsent({
+        sub, month: p.month, chargeId, now, ledgerRef, carryBackCents: frozen.carriedInCents ?? 0,
+      });
       if (verdict === "withheld") {
         await q.ref.delete();
         return;
       }
       if (verdict === "busy") return;
+    }
+
+    // An amount over the ceiling can never be created as a charge. It is held
+    // (reported daily) for the retry window, then withheld rather than repeated forever.
+    if (frozen.totalCents > MAX_PRICE_CENTS) {
+      const queuedMs = toMillis(p.createdAt) ?? now.getTime();
+      if (now.getTime() - queuedMs > INVOICE_EMAIL_RETRY_DAYS * DAY_MS) {
+        const why = "over ceiling";
+        await recordWithheld({
+          sub, month: p.month, chargeId, ledgerRef, charge: "none", why, carryBackCents: frozen.carriedInCents ?? 0,
+        });
+        await q.ref.delete();
+        return refuse(`${why}: ${frozen.totalCents} exceeds ${MAX_PRICE_CENTS} minor units for ${INVOICE_EMAIL_RETRY_DAYS} days; the month was withheld`);
+      }
     }
 
     const to = await billingRecipient(sub);
@@ -182,7 +207,9 @@ export async function processPendingCharges(
     if (claim.state === "busy") return;
     if (claim.state === "expired") {
       const why = "invoice could not be sent";
-      await recordWithheld({ sub, month: p.month, chargeId, ledgerRef, charge: "canceled", why });
+      await recordWithheld({
+        sub, month: p.month, chargeId, ledgerRef, charge: "canceled", why, carryBackCents: frozen.carriedInCents ?? 0,
+      });
       await q.ref.delete();
       return refuse(`${why} within ${INVOICE_EMAIL_RETRY_DAYS} days; the charge was cancelled and the month withheld`);
     }
