@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { territoryGate } from "@/lib/auth/territory-filter";
 import { removeBookingFromGoogleBeforeDelete } from "@/lib/google-calendar/push";
+import { isImportedEvent, type EventSource } from "@/types/events";
 
 /**
  * Delete a calendar event that is mirrored in a host's Google Calendar.
@@ -23,11 +24,14 @@ export async function DELETE(request: Request, ctx: { params: Promise<{ id: stri
   const ref = getAdminDb().collection("events").doc(id);
   const snap = await ref.get();
   if (!snap.exists) return NextResponse.json({ error: "Event not found" }, { status: 404 });
-  const event = snap.data() as { subAccountId: string; territoryId?: string | null };
+  const event = snap.data() as { subAccountId: string; territoryId?: string | null; source?: EventSource };
   const access = await requireSubAccountMember(request, event.subAccountId);
   if (access instanceof NextResponse) return access;
   const gate = await territoryGate(access, event.territoryId ?? null);
   if (gate) return gate;
+  if (isImportedEvent(event)) {
+    return NextResponse.json({ error: "Imported Google events are read-only." }, { status: 400 });
+  }
 
   const removal = await removeBookingFromGoogleBeforeDelete(id);
   if (!removal.ok) {

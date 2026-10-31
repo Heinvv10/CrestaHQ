@@ -16,7 +16,7 @@ jobs:
   # unlike the fast helpers, never interrupts an active browser teardown.
   cancel_ci_on_draft:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: ubuntu-latest
     concurrency:
       group: ci-fast-${{ github.ref }}
       cancel-in-progress: true
@@ -25,16 +25,19 @@ jobs:
 
   cancel_secrets_on_draft:
     if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: ubuntu-latest
     concurrency:
       group: ci-secrets-${{ github.ref }}
       cancel-in-progress: true
     steps:
       - run: echo "cancelled superseded secret scan for draft PR"
 
+  # A concurrency group cancels pending work whatever runner it was queued
+  # for, so this displaces a pending E2E job. Same-repo guard: a fork PR's
+  # draft event never enters the E2E group.
   replace_pending_e2e_on_draft:
-    if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' }}
-    runs-on: [self-hosted, linux, velo, crestahq]
+    if: ${{ github.event_name == 'pull_request' && github.event.action == 'converted_to_draft' && github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ubuntu-latest
     concurrency:
       group: ci-e2e-${{ github.ref }}
       cancel-in-progress: false
@@ -56,7 +59,7 @@ jobs:
   # rather than softening it.
   ci:
     name: Lint, typecheck, test, build
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: ubuntu-latest
     timeout-minutes: 20
     concurrency:
       group: ci-fast-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
@@ -68,29 +71,29 @@ jobs:
     # deliberately crafted PR.
     #
     # The real control is that this repo is private and single-author, so
-    # opening a PR at all requires access this machine's owner controls.
-    # Residual risk accepted on that basis. If a collaborator is ever added,
-    # this needs revisiting — self-hosted runners execute PR code on a
-    # workstation that also hosts four other repos' runners.
+    # opening a PR at all requires access its owner controls. Residual risk
+    # accepted on that basis. If a collaborator is ever added, this needs
+    # revisiting — same-repo PR code runs here with the repo's secrets.
     # Draft PRs are still changing rapidly. Run the full gate once they are
     # marked ready, and on every later update, instead of spending runner time
     # on work the author has explicitly said is not reviewable yet.
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
-      # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
-      # self-hosted runner an action runs with this machine's filesystem in
-      # reach — the same reasoning that made the gitleaks download not worth
-      # it applies to anything else fetched at run time, first-party or not.
+      # SHA-pinned, not tag-pinned. A floating tag is mutable, and an action
+      # runs with this job's secrets in reach — anything fetched at run time,
+      # first-party or not, is pinned to an immutable ref.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # Version comes from package.json `packageManager`. Must precede
+      # setup-node, whose `cache: pnpm` shells out to pnpm.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       # Pinned to .nvmrc so CI and a developer's shell cannot disagree about
-      # the runtime. The box's system node is v20; this project needs 22.
+      # the runtime. The runner image's system node is not necessarily 22.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
-
-      - name: Enable pnpm
-        run: corepack enable
+          cache: pnpm
 
       - name: Install
         run: pnpm install --frozen-lockfile
@@ -111,9 +114,10 @@ jobs:
       # Chromium (src/lib/prospecting/mystery-shop/form/*.test.ts). A no-op
       # when the runner's cache already has this revision. Without it those
       # tests FAIL under CI (they only skip on a developer box without it).
-      # No --with-deps: same reason as the E2E job's install.
+      # --with-deps: a fresh GitHub-hosted runner lacks Chromium's shared
+      # libraries; it has passwordless sudo for the apt step.
       - name: Install Chromium (form-engine tests)
-        run: pnpm exec playwright-core install chromium
+        run: pnpm exec playwright-core install --with-deps chromium
 
       - name: Tests
         run: pnpm test
@@ -144,37 +148,30 @@ jobs:
 
   secrets:
     name: Secret scan
-    runs-on: [self-hosted, linux, velo, crestahq]
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     concurrency:
       group: ci-secrets-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
     steps:
-      # SHA-pinned, not tag-pinned. A floating tag is mutable, and on a
-      # self-hosted runner an action runs with this machine's filesystem in
-      # reach — the same reasoning that made the gitleaks download not worth
-      # it applies to anything else fetched at run time, first-party or not.
+      # SHA-pinned, not tag-pinned (see the ci job above).
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           # Full history: a secret committed earlier and reverted is still in
           # the objects, and still needs rotating.
           fetch-depth: 0
 
-      # Uses the gitleaks binary installed on the runner host, NOT
-      # gitleaks/gitleaks-action.
+      # Uses a pinned gitleaks release binary, NOT gitleaks/gitleaks-action.
       #
-      # The action downloads a release tarball through /tmp/gitleaks.tmp. On
-      # this box several repos' runners share /tmp under the sticky bit, so
-      # that path is owned by whichever runner user got there first — and no
-      # other runner user can delete it. ApexGEO hit this and cleans the file
-      # up in a pre-step, which works only because it owns it. From here the
-      # cleanup silently no-ops and the download then fails with
-      # "Destination file path already exists", which reads like a scan
-      # failure but is a collision with an unrelated repo's CI.
-      #
-      # Invoking the installed binary removes the download, the shared path
-      # and the cross-repo coupling in one go, and is faster.
+      # The action downloads a release tarball through /tmp/gitleaks.tmp and
+      # failed with "Destination file path already exists" on the old
+      # self-hosted box, where /tmp was shared between repos' runners. The
+      # binary below is fetched from the release page, checked against a
+      # SHA-256 pinned in this file (it matches the release's own
+      # checksums.txt) and run directly. 8.24.3 is the version this gate ran
+      # on the self-hosted runner, so findings do not shift with the move;
+      # bump version and hash together.
       #
       # This repo holds Firebase admin keys, Stripe secrets, Twilio auth
       # tokens, a Meta app secret and WhatsApp WABA tokens. FibreFlow carried
@@ -224,11 +221,15 @@ jobs:
       # reproducible: the printed SHA plus the command below is the whole input.
       - name: gitleaks
         run: |
-          command -v gitleaks >/dev/null || {
-            echo "::error::gitleaks is not installed on this runner host."
-            echo "Install it once: curl -sSL <release>.tar.gz | sudo tar -C /usr/local/bin -xz gitleaks"
-            exit 1
-          }
+          GITLEAKS_VERSION=8.24.3
+          GITLEAKS_SHA256=9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c
+          GITLEAKS_DIR="$RUNNER_TEMP/gitleaks"
+          mkdir -p "$GITLEAKS_DIR"
+          curl -sSfL --retry 3 -o "$GITLEAKS_DIR/gitleaks.tgz" \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $GITLEAKS_DIR/gitleaks.tgz" | sha256sum -c -
+          tar -C "$GITLEAKS_DIR" -xzf "$GITLEAKS_DIR/gitleaks.tgz" gitleaks
+          export PATH="$GITLEAKS_DIR:$PATH"
           gitleaks version
           git --version
           echo "scanning HEAD=$(git rev-parse HEAD)"
@@ -250,34 +251,109 @@ jobs:
   # Blocking, like every other step in this file. NOT continue-on-error. If it
   # ever becomes too flaky to block, delete it rather than soften it.
   #
-  # Pinned to the one runner labelled crestahq-e2e. Every run binds
-  # 127.0.0.1:3100 and seeds + purges the same fixture sub-accounts, so two
-  # E2E jobs on two runners would collide on both. The other jobs share no
-  # port or tenant; they do share the runner user's pnpm store and Go caches,
-  # which both tools lock for concurrent use.
+  # GitHub-hosted: each job gets its own VM, so port 3100 is never shared.
+  # The fixture sub-accounts in the production Firestore still ARE shared —
+  # every run seeds them and e2e/global-setup.ts purges them — so the E2E job
+  # runs under scripts/ci/fixture-lock.mjs, a cross-run mutex held as a git
+  # ref (refs/ci-locks/e2e-fixtures). e2e-smoke.yml takes the same lock. It
+  # WAITS for the holder instead of cancelling anything, and a crashed holder
+  # (run completed without releasing, or held > 150 min) is taken over, so it
+  # cannot wedge the queue. Waiting is polled, not FIFO.
   #
-  # e2e-smoke.yml's "smoke" job runs on the SAME runner label for the same
-  # reason (same fixture tenants, same port 3100). The single labelled runner
-  # is what serialises different PRs. This job's concurrency group is per ref:
-  # it coalesces superseded pending heads of ONE PR, but never cancels an
+  # The lock lives in its own jobs (e2e-lock, e2e-unlock) because writing the
+  # ref needs `contents: write`, and the E2E job runs the PR's code, its
+  # dependencies and the suite. Those two jobs check out the repo and run the
+  # lock script with node built-ins only: no install, no secrets, no app code.
+  # The E2E job itself gets a read-only token.
+  #
+  # Not a concurrency group across PRs: GitHub keeps one pending run per
+  # group and cancels the rest, which would cancel other PRs' required check.
+  # The lock job's concurrency group is per ref: it coalesces superseded
+  # pending heads of ONE PR. The E2E job is in no group, so nothing cancels an
   # active browser run — cancellation before `finally` strands shared
-  # Firestore fixtures and makes later, unrelated runs fail.
-  e2e:
-    name: E2E (Playwright)
+  # Firestore fixtures and makes later, unrelated runs fail. A lock job starts
+  # at once and waits inside the acquire step, where the group cannot replace
+  # it, so the acquire step itself gives up (failing that superseded commit's
+  # check) once the PR has a newer head or is closed.
+  e2e-lock:
+    name: E2E fixture lock
     # Do not spend ~11 minutes exercising a revision that already failed a
     # faster blocking gate. The fixture runner remains serialised exactly as
     # before; this only changes when it enters that queue.
     needs: [ci, secrets]
-    runs-on: [self-hosted, linux, velo, crestahq, crestahq-e2e]
+    runs-on: ubuntu-latest
+    # contents: write creates the lock ref; actions: read checks whether a
+    # lock holder's run is still alive; pull-requests: read sees a newer head.
+    # The lock script itself comes from the default branch (below). A
+    # same-repo PR can still edit this workflow file; that is not a boundary
+    # against the PR's author (who already has write access; fork PRs never
+    # run this job).
+    permissions:
+      contents: write
+      actions: read
+      pull-requests: read
     concurrency:
       group: ci-e2e-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}
       cancel-in-progress: false
-    # ~11 min on a quiet box, but the runner shares velo-server with every
-    # other CI and dev session: at load avg 45+ the 93 specs ran past 30 min
-    # three times on 2026-09-24/25 with nothing failing (58–76 specs done,
-    # all green) — a timeout there is noise, not a verdict.
-    timeout-minutes: 45
+    # The wait is the step's 220 min; a wait that runs out means ~4 runs were
+    # queued ahead, and fails the E2E check.
+    timeout-minutes: 230
     if: ${{ github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository) }}
+    steps:
+      # This job holds contents: write, so it runs the lock script from the
+      # default branch, never this commit's copy (node built-ins only: no
+      # install, no app code). Everything the lock needs from the run (PR
+      # number, head sha, run id) comes from env, not from the checkout.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      # One-time BOOTSTRAP: the PR that adds the lock script runs before the
+      # default branch has it, so only then fall back to this commit's copy.
+      # Once it is on the default branch this step never runs; delete it (and
+      # the fallback below) in a follow-up.
+      - name: Bootstrap the lock script from this commit
+        if: ${{ hashFiles('scripts/ci/fixture-lock.mjs') == '' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: .bootstrap-lock
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      - name: Acquire fixture lock
+        timeout-minutes: 220
+        run: |
+          LOCK=scripts/ci/fixture-lock.mjs
+          if [ ! -f "$LOCK" ]; then
+            echo "::warning::$LOCK is not on the default branch yet; one-time bootstrap, running this commit's copy (possible only until the PR adding it merges)"
+            LOCK=.bootstrap-lock/$LOCK
+          fi
+          node "$LOCK" acquire
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          LOCK_PR_NUMBER: ${{ github.event.pull_request.number }}
+          LOCK_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+
+  e2e:
+    name: E2E (Playwright)
+    needs: [e2e-lock]
+    runs-on: ubuntu-latest
+    # Read-only: the held-lock check below only reads the ref.
+    permissions:
+      contents: read
+    # The lock is held for this whole job, so its budget bounds how long a
+    # live holder holds it (a live holder is never taken over by age).
+    # Setup (~15 min) + the Playwright step's 90 + margin. On a hosted runner
+    # the 186 specs take ~55-60 min (18 min on velo-server; the
+    # Firestore-heavy specs are 2-4x slower).
+    timeout-minutes: 120
+    # always(), not success() or !cancelled(): this is the required check, and
+    # a SKIPPED required check counts as passing. When e2e-lock fails, is
+    # skipped (ci or secrets failed), times out or is cancelled, this job still
+    # runs and its first step fails it.
+    if: ${{ always() && (github.event_name != 'pull_request' || (github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository)) }}
     env:
       # The build bakes NEXT_PUBLIC_* in, so they must be present at build
       # time, not just at runtime — hence job-level env rather than step-level.
@@ -371,22 +447,39 @@ jobs:
       # app URL: instrumentation.ts.)
       GITPAGE_API_URL: http://127.0.0.1:9
     steps:
+      - name: Require the fixture lock job
+        if: ${{ needs.e2e-lock.result != 'success' }}
+        run: |
+          echo "E2E fixture lock job result: ${{ needs.e2e-lock.result }}; not running E2E" >&2
+          exit 1
+
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      # A "re-run failed jobs" reruns this job but not e2e-lock, whose lock the
+      # first attempt's e2e-unlock already released: refuse to run unlocked.
+      - name: Check this run attempt holds the fixture lock
+        run: node scripts/ci/fixture-lock.mjs held
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+
+      # Same pnpm + node setup as the `ci` job (version from package.json
+      # `packageManager`; must precede setup-node's `cache: pnpm`).
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version-file: .nvmrc
-
-      - name: Enable pnpm
-        run: corepack enable
+          cache: pnpm
 
       - name: Install
         run: pnpm install --frozen-lockfile
 
-      # No --with-deps: the runner user has no sudo, and the apt step it runs
-      # would fail. The shared OS libraries are a host prerequisite.
+      # --with-deps: a fresh GitHub-hosted runner lacks Chromium's shared
+      # libraries; it has passwordless sudo for the apt step.
       - name: Install Chromium
-        run: pnpm exec playwright install chromium
+        run: pnpm exec playwright install --with-deps chromium
 
       - name: Build
         run: pnpm build
@@ -405,6 +498,7 @@ jobs:
           echo "GITPAGE_API_KEY=$KEY" >> "$GITHUB_ENV"
 
       - name: Playwright
+        timeout-minutes: 90
         run: pnpm exec playwright test
 
       # login.spec.ts opts its own trace/screenshot off, but Playwright still
@@ -431,3 +525,49 @@ jobs:
           name: playwright-report
           path: playwright-report/
           retention-days: 7
+
+  # always(): runs after a failure, timeout or cancellation of either job too.
+  # Frees the lock (compare-and-swap) only if its recorded holder is this run
+  # attempt; a no-op otherwise. Skipped only when e2e-lock was (draft, fork, failed gate), in
+  # which case this run never touched the lock.
+  e2e-unlock:
+    name: E2E fixture unlock
+    needs: [e2e-lock, e2e]
+    if: ${{ always() && needs.e2e-lock.result != 'skipped' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    timeout-minutes: 10
+    steps:
+      # This job holds contents: write, so it runs the lock script from the
+      # default branch, never this commit's copy (node built-ins only: no
+      # install, no app code). Everything the lock needs from the run (PR
+      # number, head sha, run id) comes from env, not from the checkout.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      # One-time BOOTSTRAP: the PR that adds the lock script runs before the
+      # default branch has it, so only then fall back to this commit's copy.
+      # Once it is on the default branch this step never runs; delete it (and
+      # the fallback below) in a follow-up.
+      - name: Bootstrap the lock script from this commit
+        if: ${{ hashFiles('scripts/ci/fixture-lock.mjs') == '' }}
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: .bootstrap-lock
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      - name: Release fixture lock
+        run: |
+          LOCK=scripts/ci/fixture-lock.mjs
+          if [ ! -f "$LOCK" ]; then
+            echo "::warning::$LOCK is not on the default branch yet; one-time bootstrap, running this commit's copy (possible only until the PR adding it merges)"
+            LOCK=.bootstrap-lock/$LOCK
+          fi
+          node "$LOCK" release
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

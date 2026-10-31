@@ -154,6 +154,8 @@ export function emitDealEvents(opts: {
   deal: DealApiObject;
   events: { type: WebhookEventType; extra?: Record<string, unknown> }[];
   contact?: DealContactSummary | null;
+  /** Who made the write (see `EmitWebhookEventInput.actorUid`). */
+  actorUid?: string;
 }): void {
   runAfterResponse(async () => {
     try {
@@ -168,6 +170,7 @@ export function emitDealEvents(opts: {
           mode: opts.mode,
           type: e.type,
           payload: { deal: opts.deal, contact, ...(e.extra ?? {}) },
+          ...(opts.actorUid ? { actorUid: opts.actorUid } : {}),
         });
       }
     } catch (err) {
@@ -300,6 +303,7 @@ export async function createDealServerSide(
     mode: input.mode,
     deal,
     events: [{ type: "deal.created" }],
+    actorUid: input.createdByUid,
   });
   const held = await heldFrom([
     fireDealTrigger({
@@ -600,6 +604,7 @@ export async function updateDealServerSide(opts: {
     mode,
     deal,
     events,
+    actorUid: opts.userId,
   });
 
   // Workflow triggers — a stage move enrols the deal's contact (workflow
@@ -646,6 +651,8 @@ export async function updateDealServerSide(opts: {
 export async function deleteDealServerSide(opts: {
   dealId: string;
   mode?: Mode;
+  /** Who deleted it (see `EmitWebhookEventInput.actorUid`). */
+  actorUid?: string;
 }): Promise<boolean> {
   const db = getAdminDb();
   const ref = db.doc(`deals/${opts.dealId}`);
@@ -663,6 +670,7 @@ export async function deleteDealServerSide(opts: {
     mode,
     deal,
     events: [{ type: "deal.deleted" }],
+    actorUid: opts.actorUid,
   });
   return true;
 }

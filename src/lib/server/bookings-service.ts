@@ -18,7 +18,7 @@ import {
 } from "@/lib/booking/lifecycle";
 import { renderBookingConfirmationEmail } from "@/lib/booking/email";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
-import { eventStatus } from "@/types/events";
+import { eventStatus, isImportedEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { Contact } from "@/types/contacts";
@@ -98,6 +98,10 @@ export async function markBookingPaidServerSide(input: {
         return { ok: false, code: "not_found", message: "Event not found" } as const;
       }
       const event = eventSnap.data() as CalendarEvent;
+      // A member's own Google event is never a booking anyone pays for.
+      if (isImportedEvent(event)) {
+        return { ok: false, code: "not_found", message: "Event not found" } as const;
+      }
 
       if (event.subAccountId !== input.expectSubAccountId) {
         return {

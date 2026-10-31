@@ -30,6 +30,11 @@ export interface HostBusy extends BusyEvent {
   hostUids: string[];
   /** Page that booked it — a class page counts its own bookings as seats. */
   bookingPageSlug: string | null;
+  /**
+   * An imported Google event: busy for the hosts in `hostUids` (its owner)
+   * only — never on the shared schedule of a hostless page or booking.
+   */
+  ownerOnly?: boolean;
 }
 
 export interface PageSlot extends SlotCandidate {
@@ -188,7 +193,7 @@ export function computePageSlots(input: PageSlotsInput): PageSlot[] {
   if (pageHosts.length === 0 || moving?.hostUids.length === 0) {
     // Hostless page, or a hostless booking being moved (see `MovingEvent`):
     // the legacy single shared schedule, where every event blocks.
-    slots = run(busy).map((s) => ({ ...s, hostUids: [] }));
+    slots = run(busy.filter((b) => !b.ownerOnly)).map((s) => ({ ...s, hostUids: [] }));
   } else {
     const hosts: Array<Pick<BookingHost, "uid" | "workingHours" | "dateOverrides">> = moving
       ? moving.hostUids.map((uid) => pageHosts.find((h) => h.uid === uid) ?? { uid })

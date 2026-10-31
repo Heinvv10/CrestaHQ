@@ -2,13 +2,14 @@ import "server-only";
 
 import { FieldValue } from "firebase-admin/firestore";
 
-import { BillingError } from "@/lib/billing/errors";
 import { getAdminDb } from "@/lib/firebase/admin";
 import {
   verifyPaystackTransaction,
   type PaystackVerifiedTransaction,
 } from "@/lib/paystack/billing-api";
 import { reconcileAutoCharge } from "@/lib/paystack/auto-charge-reconciler";
+import { reconcileProductOrderCharge } from "@/lib/paystack/product-order-reconciler";
+import { isNotFound, requestedAmount } from "@/lib/paystack/verify-answer";
 import { paystackKeyFingerprint } from "@/lib/paystack/key-fingerprint";
 import { flagPaymentAttempt, loadPaymentAttempt } from "@/lib/server/payment-attempts";
 import { planMandate, prepareMandate } from "@/lib/server/payment-mandates";
@@ -17,13 +18,15 @@ import {
   parsePaymentLinkReference,
 } from "@/lib/server/payment-links-service";
 import { markQuotePaidServerSide } from "@/lib/server/quotes-service";
+import { parseProductOrderReference } from "@/lib/server/product-order-reference";
 import { parseAutoChargeReference } from "@/lib/server/recurring-auto-charge";
 import type { PaymentLink } from "@/types/payment-links";
 import type { Quote } from "@/types/quotes";
 
 /**
  * Paystack `charge.success` → payment link paid. The ONLY writer of
- * `paymentLinks.status = "paid"`.
+ * `paymentLinks.status = "paid"`. Recurring card cycles (`ra-…`) and express
+ * buy-page orders (`po-…`) have their own reconcilers, dispatched below.
  *
  * The caller (`/api/webhooks/paystack/sa/[subAccountId]`) has verified the
  * signature with this sub-account's key. That proves the event came from the
@@ -53,25 +56,7 @@ export interface PaymentLinkReconcileResult {
   detail: string;
 }
 
-/**
- * The amount the link asked for. With customer-borne fees Paystack's `amount`
- * is the request PLUS fees, so `requested_amount` is the figure that must
- * equal the link. Source: PaystackOSS/openapi `dist/paystack.yaml`,
- * `VerifyResponse.data.requested_amount` (integer, required). Falls back to
- * `amount` only if a response ever omits it.
- */
-export function requestedAmount(tx: PaystackVerifiedTransaction): number {
-  return typeof tx.requested_amount === "number" ? tx.requested_amount : tx.amount;
-}
-
-/** Paystack answered that the reference does not exist on this account. */
-export function isNotFound(err: unknown): boolean {
-  if (!(err instanceof BillingError)) return false;
-  return (
-    err.providerStatus === 404 ||
-    (err.providerStatus === 400 && /not found/i.test(err.message))
-  );
-}
+export { isNotFound, requestedAmount };
 
 export async function reconcilePaystackCharge(input: {
   subAccountId: string;
@@ -82,6 +67,7 @@ export async function reconcilePaystackCharge(input: {
   const tag = `[paystack/payment-links] sa=${subAccountId} ref=${reference}`;
 
   if (parseAutoChargeReference(reference)) return reconcileAutoCharge(input);
+  if (parseProductOrderReference(reference)) return reconcileProductOrderCharge(input);
   const linkId = parsePaymentLinkReference(reference);
   // Another integration on the same Paystack account. Not ours to judge.
   if (!linkId) return { handled: false, detail: "not a payment-link reference" };

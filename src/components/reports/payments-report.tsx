@@ -34,6 +34,7 @@ const SOURCE_LABELS: Record<OrderSource, string> = {
   quote: "Invoice",
   booking_deposit: "Booking deposit",
   community: "Community",
+  product_link: "Buy link",
 };
 
 const SOURCE_COLORS: Record<OrderSource, string> = {
@@ -41,6 +42,7 @@ const SOURCE_COLORS: Record<OrderSource, string> = {
   quote: "#10b981",
   booking_deposit: "#f59e0b",
   community: "#a855f7",
+  product_link: "#0ea5e9",
 };
 
 const STATUS_STYLES: Record<OrderStatus, string> = {
@@ -49,6 +51,7 @@ const STATUS_STYLES: Record<OrderStatus, string> = {
   refunded: "bg-rose-500/10 text-rose-700 dark:text-rose-400",
   partially_refunded: "bg-amber-500/10 text-amber-700 dark:text-amber-400",
   failed: "bg-rose-500/10 text-rose-700 dark:text-rose-400",
+  expired: "bg-muted text-muted-foreground",
 };
 
 /** Revenue actually retained: paid minus anything refunded back. */
@@ -56,7 +59,10 @@ function netCents(o: Order): number {
   return Math.max(0, (o.totalCents ?? 0) - (o.refundedCents ?? 0));
 }
 
-function countsAsRevenue(o: Order): boolean {
+/** A held buy-link order (its payment didn't match it) is never revenue,
+ *  even once part of it is refunded. */
+export function countsAsRevenue(o: Order): boolean {
+  if (o.heldAt) return false;
   return o.status === "paid" || o.status === "partially_refunded";
 }
 

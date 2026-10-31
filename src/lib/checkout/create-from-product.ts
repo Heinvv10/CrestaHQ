@@ -4,7 +4,7 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { CheckoutPageError } from "@/lib/checkout/sanitize";
-import { slugifyCheckoutSlug } from "@/types/checkout-pages";
+import { checkoutSlugError, slugifyCheckoutSlug } from "@/types/checkout-pages";
 import { defaultFormAppearance } from "@/types/forms";
 import type { Product } from "@/types/products";
 
@@ -74,12 +74,15 @@ export async function ensureCheckoutPageForProduct(input: {
     return doc.id;
   }
 
-  // Unique slug — append a counter rather than failing on a clash.
+  // Unique slug — append a counter rather than failing on a clash. A reserved
+  // slug ("buy" is the products' /co/[sa]/buy route) counts as a clash.
   const base = slugifyCheckoutSlug(input.label || product.name) || "offer";
   let slug = base;
   for (let i = 2; i <= 20; i++) {
-    const clash = await col.where("slug", "==", slug).limit(1).get();
-    if (clash.empty) break;
+    const clash = checkoutSlugError(slug)
+      ? null
+      : await col.where("slug", "==", slug).limit(1).get();
+    if (clash?.empty) break;
     slug = `${base}-${i}`.slice(0, 60);
   }
 

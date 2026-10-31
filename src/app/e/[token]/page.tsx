@@ -10,7 +10,7 @@ import {
 import { validateSlug } from "@/lib/booking/validation";
 import { isDocId } from "@/lib/server/doc-id";
 import type { BookingPage } from "@/types/booking";
-import type { CalendarEvent } from "@/types/events";
+import { isImportedEvent, type CalendarEvent } from "@/types/events";
 import type { SubAccountDoc } from "@/types/tenancy";
 
 export const dynamic = "force-dynamic";
@@ -44,6 +44,8 @@ export default async function PublicEventPage({ params }: PageProps) {
   const eventSnap = await db.collection("events").doc(verified.eventId).get();
   if (!eventSnap.exists) notFound();
   const event = eventSnap.data() as CalendarEvent;
+  // A member's own Google event never has a visitor page.
+  if (isImportedEvent(event)) notFound();
   const presentedHash = hashEventToken(token);
   // Stripe returns the visitor to the token the pay button was pressed on,
   // which confirming the payment rotated. That one token gets a read-only

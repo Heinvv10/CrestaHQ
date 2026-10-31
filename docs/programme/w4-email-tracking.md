@@ -8,7 +8,7 @@ address that hard-bounced or complained is suppressed for that sub-account on ev
 | PR | Scope | State |
 |---|---|---|
 | PR1 | Suppression list per sub-account, enforced in the shared send helper, tested through every send path | this PR |
-| PR2 | Click redirect with signed tokens (no open redirect) and an open pixel. Both off by default for each sub-account | not started |
+| PR2 | Click redirect with signed tokens (no open redirect) and an open pixel. Both off by default for each sub-account | built (upstream port 1.0.54 unit I1); NOT runtime-verified |
 | PR3 | Bounce and complaint ingestion where the provider supports it. Where it doesn't, the UI says so instead of showing zero | not started |
 
 ## PR1: the suppression list
@@ -44,6 +44,50 @@ PR body.
 **Management.** Settings → Messaging → Email suppression list, for sub-account admins and the
 agency owner. `GET/POST/DELETE /api/sub-accounts/[id]/email-suppressions`. In PR1 the list is
 filled by hand only. PR3 adds automatic entries.
+
+## PR2: open pixel and click redirect
+
+Built as unit I1 of the 1.0.54 upstream port. Our sends go through per-sub-account SMTP, which
+reports no engagement, so the app measures it itself.
+
+- **Switches.** `subAccounts/{id}.emailTracking.opens` / `.clicks`, both absent = off. Settings →
+  Messaging → *Broadcast open & click tracking* (admin-only; carries the POPIA note). Read when the
+  step renders the email and again on every open or click, so switching off stops collection for
+  emails already sent.
+- **Tokens.** [`lib/broadcasts/tracking-token.ts`](../../src/lib/broadcasts/tracking-token.ts):
+  the `lib/tracked-links/token.ts` construction (HMAC-SHA256 hex, timing-safe compare) over
+  `broadcastId.contactId` (open) or `broadcastId.contactId.linkKey` (click), with a purpose prefix
+  in the HMAC input so an open token, a click token and an `/l/` token never verify as each other.
+- **Links.** The step rewrites `<a href>` values only (quoted, single-quoted or unquoted, any case or
+  attribute order, entities decoded), in one linear tokenizer-style pass that skips comments,
+  raw-text elements (`<style>`, `<script>`, …) and other tags' attribute values; the replacement is
+  attribute-escaped. It stores each destination at `broadcasts/{id}/links/{linkKey}` before sending;
+  a failed write releases the claim, so nothing goes out with links that would 404. `linkKey` is a
+  hash of the URL rather than a position, so a merge tag in an href creates one doc per distinct
+  rendered URL — per recipient, at worst. Bogus comments (`<?…>`, `<!…>`, `</` + non-letter) end at
+  their first `>`, and end-tag attributes are parsed, as the HTML tokenizer does. Caps: 50 tracked links per email, 500 link docs per
+  broadcast (`trackedLinkCount`, counted in the creating transaction), and a body over 500,000
+  characters goes out untracked; past a cap, links stay direct — so once a broadcast has 500 link
+  docs, later recipients whose links are new get ordinary, untracked links.
+- **Unsubscribe.** Never wrapped: the recipient's own unsubscribe URL (exact match), and any `/u/…`
+  path on this deployment's host, with the path decoded, `//` collapsed and the first segment
+  lower-cased before the check. A `/u/` page on another host is an ordinary link.
+- **Routes.** `/t/c/{token}` 302s to the stored destination only, re-validated as http(s), and
+  404s otherwise, including when the lookup fails (same rule as `/l/`). `/t/o/{token}` always
+  answers 200 with a no-store GIF. Neither response waits on a limiter; only the record step is
+  limited, 20/min per verified token. The `/t/c/` lookup itself is capped at 30/min per token; past
+  it the redirect comes from an in-memory cache of destinations already resolved, or a 429. Signatures must be 64 lower-case hex before the timing-safe
+  compare. Middleware opens exactly `/t/o/{one segment}` and `/t/c/{one segment}`.
+- **Data.** Upstream's send-row fields (`openedAt`, `clickedAt`, `opens`, `clicks`; parent
+  `totals.opened` / `totals.clicked`), first occurrence decided in one transaction, counters capped
+  at 100. First open / click writes an `email_opened` / `email_clicked` activity; its link is origin
+  + path only (no query or fragment, which often carry tokens). A click with no open stamps the open
+  too, as upstream does — but only while open tracking is on.
+- **Known gap.** The step persists no "provider accepted" state between the SMTP accept and the
+  settle that marks the row `sent`. An open or click in that window (normally under a second), or on
+  a row later failed as "delivery unknown" after a stale claim, is not recorded.
+- **Not in PR2:** the stats display and `email.opened` / `email.clicked` workflow triggers (unit
+  I3), and Resend's own events webhook (unit I2).
 
 ## Decisions
 

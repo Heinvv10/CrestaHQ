@@ -1273,12 +1273,16 @@ service cloud.firestore {
       // `autoCharge` (a recurring card charge's state) likewise: it gates pay
       // links and the decline path, so a forged one could hide a decline or a
       // late success.
+      // `signature` is written only by the public accept route, in the same
+      // transaction as the accept; once set, the quote's content is frozen
+      // (only the lifecycle keys below may move) so its fingerprint stays true.
       allow create: if canSeeScopedDoc(
         request.resource.data.subAccountId,
         request.resource.data.agencyId,
         request.resource.data.get("territoryId", null)
       ) && !("paidVia" in request.resource.data)
         && !("autoCharge" in request.resource.data)
+        && !("signature" in request.resource.data)
         && linkInTenant("contactId", "contacts")
         && linkInTenant("dealId", "deals");
       allow update: if canSeeScopedDoc(
@@ -1292,13 +1296,20 @@ service cloud.firestore {
         )
         && request.resource.data.get("paidVia", null) == resource.data.get("paidVia", null)
         && request.resource.data.get("autoCharge", null) == resource.data.get("autoCharge", null)
+        && request.resource.data.get("signature", null) == resource.data.get("signature", null)
+        && (resource.data.get("signature", null) == null
+          || request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(["updatedAt", "status", "paidAt", "autoCreateDealOnAccept", "dealId", "paymentDueDays"]))
         && linkInTenant("contactId", "contacts")
         && linkInTenant("dealId", "deals");
+      // A signed document is a record of what was agreed: no client deletes it
+      // (the converted invoice included). No server path removes one either:
+      // contact delete and sub-account delete refuse while quotes remain.
       allow delete: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
-      );
+      ) && resource.data.get("signature", null) == null;
     }
 
     // Product catalog used by the Quotes + Invoices builder. Reads from
@@ -1384,7 +1395,10 @@ service cloud.firestore {
     match /events/{eventId} {
       // Territory inherited from the linked contact. Standalone events
       // (no contact) have territoryId null → admin-triage when scoping
-      // is on, same as null-territory deals/contacts.
+      // is on, same as null-territory deals/contacts. Imported Google events
+      // are territory "global" and stored times-only ("Busy") unless their
+      // owner chose to share titles, so reading one needs no extra condition
+      // (a per-doc read condition would also break the calendar's list queries).
       allow read: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
@@ -1411,11 +1425,17 @@ service cloud.firestore {
         // decides v1 exposure and whether status changes fire side effects.
         && !request.resource.data.keys().hasAny(["hostUids", "serviceId", "serviceName", "mode", "googleEventIds", "googleSyncError", "googleSyncRetryAt", "assignedToUid", "assignedToName", "source", "bookingPageSlug", "icsSequence", "paidFromTokenHash"])
         && linkInTenant("contactId", "contacts");
+      // source "google" = imported from a member's Google Calendar
+      // (lib/google-calendar/import.ts): a copy the import owns, so no
+      // client may edit or delete one — it would block or free the owner's
+      // time, or come straight back on the next sync. (`source` itself is
+      // already server-set only, so no client can create one either.)
       allow update: if canSeeScopedDoc(
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
-      ) && tenantFieldsLockedOnUpdate()
+      ) && resource.data.get("source", "manual") != "google"
+        && tenantFieldsLockedOnUpdate()
         && territoryIdUnchangedOrAdmin(
           resource.data.subAccountId,
           resource.data.agencyId
@@ -1431,7 +1451,8 @@ service cloud.firestore {
         resource.data.subAccountId,
         resource.data.agencyId,
         resource.data.get("territoryId", null)
-      ) && resource.data.get("googleEventIds", {}).size() == 0;
+      ) && resource.data.get("source", "manual") != "google"
+        && resource.data.get("googleEventIds", {}).size() == 0;
     }
 
     match /forms/{formId} {
