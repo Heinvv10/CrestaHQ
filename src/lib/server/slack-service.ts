@@ -160,7 +160,9 @@ export async function connectSlack(opts: {
       channelLabel:
         opts.channelLabel === undefined
           ? existing?.channelLabel ?? null
-          : opts.channelLabel?.trim().slice(0, 60) || null,
+          : // Redacted before the cut: a hook URL pasted into the label would
+            // otherwise sit in `slackMeta`, which every member can read.
+            redactSlackUrls(opts.channelLabel?.trim() ?? "", url).slice(0, 60) || null,
       urlTail: url.slice(-4),
       events,
       // A reconnect keeps the choice; a first connect starts with it off.

@@ -77,6 +77,8 @@ const CHAT_ONLY_ARGS: Record<string, Record<string, unknown>> = {
   add_course: { groupId: "g1", groupName: "Club", title: "Basics" },
   add_lesson: { groupId: "g1", courseId: "co1", courseTitle: "Basics", title: "Welcome" },
   configure_watchdog: { enabled: true, instructions: "Flag refunds" },
+  configure_slack_events: { events: ["contact.created"] },
+  connect_slack: {},
   comp_client: { subAccountId: "sa1", subAccountName: "W" },
   set_usage_limits: { subAccountId: "sa1", subAccountName: "W", smsSegmentsPerMonth: 500 },
   deployment_setup_status: {},

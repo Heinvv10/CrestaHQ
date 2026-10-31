@@ -114,6 +114,7 @@ approver must hold. See [agent-api.md](agent-api.md) for the model.
 | `create_broadcast` | `outbound` | admin | Send an email template to every contact matching an audience (all; a tag; or a pipeline stage), skipping opted-out contacts. | channel, audience and matched count, exact subject and message, merge tags, what is checked at send |
 | `start_voice_call` | `outbound` | member | Have the Voice channel's AI assistant phone a contact now, as the contact card's Call button does. | the number, assistant, the number it rings from, first words, greeting name, the script, consent, cost, what is checked at dial time |
 | `watchdog_status` | read | admin | Show the Labs Inbox Follow-up Watchdog's settings (on/off, waiting threshold, quiet hours, extra criteria) and its recent runs: how many conversations it scanned, which contacts it flagged and why. |  |
+| `slack_status` | read | admin | Show whether this workspace posts notifications to a Slack channel (Settings Sub-Account → Admin tab → Slack notifications): connected or not, the channel name the admin noted, which events are ticked, whether inbound-message posts carry the message text, when the last post went out, and any error (e.g. a revoked webhook URL that needs reconnecting). |  |
 
 ## Agency-key tools
 

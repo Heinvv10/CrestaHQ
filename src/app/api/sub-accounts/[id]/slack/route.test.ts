@@ -58,6 +58,19 @@ describe("connect", () => {
     expect(await res.text()).not.toContain(TOKEN);
   });
 
+  it("stores no webhook URL in the channel label, even a different hook's", async () => {
+    const other = "https://hooks.slack.com/services/T0002/B0002/bbbbbbbbbbbbbbbbbbbbbbbb";
+    for (const channelLabel of [URL_A, other, `#sales ${URL_A}`]) {
+      const res = await route.POST(req("POST", { webhookUrl: URL_A, channelLabel }), ctx());
+      expect(res.status).toBe(200);
+      const meta = JSON.stringify(mem.read("subAccounts/sa1")!.slackMeta);
+      expect(meta).not.toContain("bbbbbbbb");
+      expect(meta).not.toContain("aaaaaaaa");
+      expect(meta).not.toContain("hooks.slack.com");
+      pastCooldown();
+    }
+  });
+
   it.each([
     "https://hooks.slack.com.evil.test/services/T0001/B0001/aaaa",
     "http://hooks.slack.com/services/T0001/B0001/aaaa",
