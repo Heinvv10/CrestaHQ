@@ -51,27 +51,9 @@ jobs:
           persist-credentials: false
           sparse-checkout: scripts/ci
 
-      # One-time BOOTSTRAP: the PR that adds the lock script runs before the
-      # default branch has it, so only then fall back to this commit's copy.
-      # Once it is on the default branch this step never runs; delete it (and
-      # the fallback below) in a follow-up.
-      - name: Bootstrap the lock script from this commit
-        if: ${{ hashFiles('scripts/ci/fixture-lock.mjs') == '' }}
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          path: .bootstrap-lock
-          persist-credentials: false
-          sparse-checkout: scripts/ci
-
       - name: Acquire fixture lock
         timeout-minutes: 220
-        run: |
-          LOCK=scripts/ci/fixture-lock.mjs
-          if [ ! -f "$LOCK" ]; then
-            echo "::warning::$LOCK is not on the default branch yet; one-time bootstrap, running this commit's copy (possible only until the PR adding it merges)"
-            LOCK=.bootstrap-lock/$LOCK
-          fi
-          node "$LOCK" acquire
+        run: node scripts/ci/fixture-lock.mjs acquire
         env:
           GITHUB_TOKEN: ${{ github.token }}
 
@@ -183,25 +165,7 @@ jobs:
           persist-credentials: false
           sparse-checkout: scripts/ci
 
-      # One-time BOOTSTRAP: the PR that adds the lock script runs before the
-      # default branch has it, so only then fall back to this commit's copy.
-      # Once it is on the default branch this step never runs; delete it (and
-      # the fallback below) in a follow-up.
-      - name: Bootstrap the lock script from this commit
-        if: ${{ hashFiles('scripts/ci/fixture-lock.mjs') == '' }}
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          path: .bootstrap-lock
-          persist-credentials: false
-          sparse-checkout: scripts/ci
-
       - name: Release fixture lock
-        run: |
-          LOCK=scripts/ci/fixture-lock.mjs
-          if [ ! -f "$LOCK" ]; then
-            echo "::warning::$LOCK is not on the default branch yet; one-time bootstrap, running this commit's copy (possible only until the PR adding it merges)"
-            LOCK=.bootstrap-lock/$LOCK
-          fi
-          node "$LOCK" release
+        run: node scripts/ci/fixture-lock.mjs release
         env:
           GITHUB_TOKEN: ${{ github.token }}
