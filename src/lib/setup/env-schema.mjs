@@ -209,6 +209,8 @@ export const GROUPS = [
       ["RESEND_API_KEY", "req", startsWith("re_")],
       ["EMAIL_FROM", "req", (v) =>
         v.includes("@") ? null : "should contain a sender email, e.g. Brand <hi@yourdomain.com>"],
+      // Signing secret of the Resend events webhook (broadcast delivery stats).
+      ["RESEND_WEBHOOK_SECRET", "opt", startsWith("whsec_")],
     ],
     deep(add, env) {
       if (env.has("EMAIL_FROM") && env.val("EMAIL_FROM").includes("resend.dev"))

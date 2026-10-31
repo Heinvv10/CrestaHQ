@@ -170,7 +170,13 @@ export async function sendEmail({
    * plain text — matches Resend's `attachments` contract.
    */
   attachments?: { filename: string; content: string; contentType?: string }[];
-}): Promise<{ id: string; saved?: boolean; warning?: string }> {
+}): Promise<{
+  id: string;
+  /** "resend" when Resend accepted it: `id` is a Resend email id, which its events webhook reports. */
+  provider?: "resend";
+  saved?: boolean;
+  warning?: string;
+}> {
   // A bare address only: "Name <x@y>" would hash differently from x@y and
   // slip past the suppression lookup.
   if (!validEmail(to)) throw new SmtpError("Invalid recipient email address.");
@@ -269,7 +275,7 @@ export async function sendEmail({
       qty: 1,
     }));
   }
-  return { id: result.data.id };
+  return { id: result.data.id, provider: "resend" };
 }
 
 /**

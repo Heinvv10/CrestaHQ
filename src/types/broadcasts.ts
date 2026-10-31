@@ -56,6 +56,11 @@ export interface BroadcastTotals {
   // absent on older docs = 0. Each counts recipients once, not events.
   opened?: number;
   clicked?: number;
+  // Resend delivery events (lib/comms/email-events.ts); never set for SMTP
+  // sends, which report no delivery events. Recipients, counted once.
+  delivered?: number;
+  bounced?: number;
+  complained?: number;
 }
 
 export interface BroadcastDoc {
@@ -157,6 +162,37 @@ export interface BroadcastSendDoc {
   /** Capped at ENGAGEMENT_COUNT_CAP. */
   opens?: number;
   clicks?: number;
+  // Resend delivery events, absent until reported (lib/comms/email-events.ts).
+  deliveredAt?: Timestamp | FieldValue | null;
+  /** A bounced row takes no further events. */
+  bouncedAt?: Timestamp | FieldValue | null;
+  /** Resend's bounce type · subtype · message, capped at 300 characters. */
+  bounceReason?: string;
+  /** A permanent bounce (also one reported after a transient bounce). */
+  hardBounce?: boolean;
+  complainedAt?: Timestamp | FieldValue | null;
+  /** Set once a complaint's opt-out landed; the opt-out is never re-applied. */
+  optOutAppliedAt?: Timestamp | FieldValue | null;
+  /** Set once a bounce or complaint put the address on the suppression list; never re-added. */
+  suppressedAt?: Timestamp | FieldValue | null;
+}
+
+/**
+ * `emailEvents/{resendEmailId}` — written by the send step when Resend (not
+ * SMTP) accepted a broadcast email, in the transaction that stamps the id on
+ * the row, so the events webhook resolves an event to its send row in one read. Server-only; pruned by api-cleanup after
+ * `expiresAt`.
+ */
+export interface EmailEventLookupDoc {
+  kind: "broadcast";
+  broadcastId: string;
+  contactId: string;
+  subAccountId: string;
+  agencyId: string;
+  /** The address the step actually sent to (the live contact email, not the fan-out snapshot). */
+  toEmail: string;
+  sentAt: Timestamp | FieldValue | null;
+  expiresAt: Timestamp | FieldValue | Date;
 }
 
 /**

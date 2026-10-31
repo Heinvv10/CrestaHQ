@@ -1,6 +1,6 @@
 import "server-only";
 
-import { FieldValue } from "firebase-admin/firestore";
+import { FieldValue, type Timestamp } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import type { BroadcastSendDoc, SubAccountDoc } from "@/types";
@@ -28,9 +28,50 @@ import type { BroadcastSendDoc, SubAccountDoc } from "@/types";
  *
  * On the first occurrence only, an `email_opened` / `email_clicked` activity
  * lands on the contact. No workflow trigger fires here (I3 adds those).
+ *
+ * Resend's own open / click events (lib/comms/email-events.ts) come through
+ * here too, with `provider` set. Both sources count: `opens` / `clicks` add
+ * up events from either, `totals.*` still count the recipient once, and
+ * `openedAt` / `clickedAt` keep the EARLIEST time — a provider event carries
+ * the time Resend saw it and replaces a later stamp. The same switches
+ * govern both. A provider event only lands on the row that recorded its
+ * Resend id, in the lookup's sub-account, and waits (throws) while that row
+ * is still queued. A bounced row takes neither.
  */
 
 export const ENGAGEMENT_COUNT_CAP = 100;
+
+/**
+ * A provider event for a row the step has not settled yet (the Resend id is
+ * stamped, the row still `queued`). The webhook answers 5xx so the provider
+ * retries once the row reads `sent`.
+ */
+export class ProviderEventNotReadyError extends Error {
+  constructor(path: string) {
+    super(`send row not settled yet: ${path}`);
+    this.name = "ProviderEventNotReadyError";
+  }
+}
+
+/**
+ * Whether a provider event for `emailId` may land on `send`: `ready` (sent,
+ * with this id, in this sub-account), `pending` (still queued with this id
+ * or none yet: retry later), `unconfirmed` (failed as "delivery unknown"
+ * after the provider took it: bounce and complaint effects only), or
+ * `foreign` (ignore).
+ */
+export function providerRowState(
+  send: BroadcastSendDoc,
+  emailId: string,
+  subAccountId: string,
+): "ready" | "pending" | "unconfirmed" | "foreign" {
+  if (send.subAccountId !== subAccountId) return "foreign";
+  if (send.status === "queued" && (send.resendMessageId == null || send.resendMessageId === emailId)) {
+    return "pending";
+  }
+  if (send.resendMessageId !== emailId) return "foreign";
+  return send.status === "sent" ? "ready" : send.status === "failed" ? "unconfirmed" : "foreign";
+}
 
 export type EngagementKind = "opened" | "clicked";
 
@@ -45,6 +86,8 @@ export async function recordBroadcastEngagement(input: {
   kind: EngagementKind;
   /** The clicked destination, for the activity row. */
   link?: string;
+  /** A Resend event: binds it to its row, and the time it happened. */
+  provider?: { emailId: string; subAccountId: string; at: Timestamp };
 }): Promise<void> {
   const db = getAdminDb();
   const broadcastRef = db.collection("broadcasts").doc(input.broadcastId);
@@ -55,18 +98,26 @@ export async function recordBroadcastEngagement(input: {
     const snap = await tx.get(sendRef);
     if (!snap.exists) return { first: false, send: null };
     const send = snap.data() as BroadcastSendDoc;
-    if (send.status !== "sent" || !send.subAccountId) return { first: false, send: null };
+    const provider = input.provider;
+    if (provider) {
+      const state = providerRowState(send, provider.emailId, provider.subAccountId);
+      if (state === "pending") throw new ProviderEventNotReadyError(sendRef.path);
+      if (state !== "ready") return { first: false, send: null };
+    }
+    if (send.status !== "sent" || !send.subAccountId || send.bouncedAt) return { first: false, send: null };
     const sub = (await tx.get(db.collection("subAccounts").doc(send.subAccountId))).data() as
       | SubAccountDoc
       | undefined;
     if (sub?.emailTracking?.[trackingKey] !== true) return { first: false, send: null };
 
+    const at = provider?.at;
     if (input.kind === "opened") {
       const first = !send.openedAt;
+      const openedAt = stampFor(send.openedAt, at);
       const room = (send.opens ?? 0) < ENGAGEMENT_COUNT_CAP;
-      if (!first && !room) return { first: false, send };
+      if (!openedAt && !room) return { first: false, send };
       tx.update(sendRef, {
-        ...(first ? { openedAt: FieldValue.serverTimestamp() } : {}),
+        ...(openedAt ? { openedAt } : {}),
         ...(room ? { opens: FieldValue.increment(1) } : {}),
       });
       if (first) tx.update(broadcastRef, { "totals.opened": FieldValue.increment(1) });
@@ -74,12 +125,14 @@ export async function recordBroadcastEngagement(input: {
     }
 
     const first = !send.clickedAt;
-    const impliedOpen = !send.openedAt && sub.emailTracking?.opens === true;
+    const clickedAt = stampFor(send.clickedAt, at);
+    const openedAt = sub.emailTracking?.opens === true ? stampFor(send.openedAt, at) : null;
+    const impliedOpen = !send.openedAt && openedAt !== null;
     const room = (send.clicks ?? 0) < ENGAGEMENT_COUNT_CAP;
-    if (!first && !room) return { first: false, send };
+    if (!clickedAt && !openedAt && !room) return { first: false, send };
     tx.update(sendRef, {
-      ...(first ? { clickedAt: FieldValue.serverTimestamp() } : {}),
-      ...(impliedOpen ? { openedAt: FieldValue.serverTimestamp() } : {}),
+      ...(clickedAt ? { clickedAt } : {}),
+      ...(openedAt ? { openedAt } : {}),
       ...(room ? { clicks: FieldValue.increment(1) } : {}),
     });
     const bump: Record<string, FieldValue> = {};
@@ -126,6 +179,19 @@ async function writeActivity(
       err instanceof Error ? err.message : String(err),
     );
   }
+}
+
+/**
+ * The stamp to write: the first one (the provider's time, or now), or a
+ * provider time earlier than the one stored; null to leave it.
+ */
+function stampFor(stored: unknown, at: Timestamp | undefined): Timestamp | FieldValue | null {
+  if (!stored) return at ?? FieldValue.serverTimestamp();
+  if (!at) return null;
+  const toMillis = (stored as { toMillis?: unknown }).toMillis;
+  const storedMs =
+    stored instanceof Date ? stored.getTime() : typeof toMillis === "function" ? (toMillis.call(stored) as number) : null;
+  return storedMs !== null && at.toMillis() < storedMs ? at : null;
 }
 
 /**

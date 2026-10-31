@@ -31,8 +31,10 @@ Settings → Messaging → **Email suppression list** (admins only) holds addres
 this sub-account never emails. `sendEmail` refuses them before any provider call
 on every send that names the sub-account, on both rails, member invites
 included. Agency billing, gitpage and usage mail name no sub-account and are not
-checked. PR1 fills the list by hand
-only; bounce and complaint ingestion is a later PR. Spec and decisions:
+checked. Admins add entries by hand; on a deployment with the Resend events
+webhook configured, a permanent bounce or a spam complaint on a broadcast sent
+through Resend adds one automatically (`hard_bounce` / `complaint`). SMTP sends
+report no bounces. Spec and decisions:
 [w4-email-tracking.md](../programme/w4-email-tracking.md).
 
 ## Email in Conversations

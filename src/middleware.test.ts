@@ -203,6 +203,18 @@ describe("isPublicPath — the gitpage build-settled callback", () => {
   });
 });
 
+describe("isPublicPath — the Resend events webhook", () => {
+  it("lets Resend reach the events endpoint without a session (the Svix signature is its auth)", () => {
+    expect(isPublicPath("/api/webhooks/resend/events")).toBe(true);
+  });
+
+  it("opens exactly that path — nothing under or beside it", () => {
+    expect(isPublicPath("/api/webhooks/resend")).toBe(false);
+    expect(isPublicPath("/api/webhooks/resend/inbound")).toBe(false);
+    expect(isPublicPath("/api/webhooks/resend/events/extra")).toBe(false);
+  });
+});
+
 describe("isPublicPath — the broadcast open pixel and click redirect", () => {
   it("lets a mail client load the pixel and follow a link without a session", () => {
     expect(isPublicPath("/t/o/b1.c1.sig")).toBe(true);

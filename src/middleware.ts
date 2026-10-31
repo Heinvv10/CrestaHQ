@@ -238,6 +238,9 @@ const PUBLIC_PATH_PATTERNS: RegExp[] = [
   // gitpage → LeadStack `build.settled` callback (Website Build v2) —
   // HMAC-signed with GITPAGE_API_KEY inside the route.
   /^\/api\/webhooks\/gitpage\/build-settled$/,
+  // Resend delivery/open/click/bounce/complaint events — Svix-signed with
+  // RESEND_WEBHOOK_SECRET, verified inside the route.
+  /^\/api\/webhooks\/resend\/events$/,
   // Web Voice custom-LLM endpoint (ElevenLabs Web Voice v1):
   // /api/webhooks/elevenlabs/llm/{subAccountId}/{endpointSecret}, plus the
   // `/chat/completions` ElevenLabs appends. Security is inside the route: the
