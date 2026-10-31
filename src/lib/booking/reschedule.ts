@@ -48,8 +48,9 @@ export class RescheduleRejected extends Error {
  * Move a booking-page event's time WITHOUT re-checking slot availability —
  * for the operator route, which trusts the operator to have picked a sane
  * time (GHL lets an operator override availability the same way). The
- * public visitor endpoint does its own availability-checked transaction
- * instead and stamps these same fields inline.
+ * attendee's reschedule (`rescheduleBooking` in booking-changes-service)
+ * does its own availability-checked transaction instead and stamps these
+ * same fields inline.
  *
  * Validates, before anything is written or the token rotated: the event
  * exists, is a booking-page event (manual events have no reschedule

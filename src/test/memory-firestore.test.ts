@@ -82,6 +82,21 @@ describe("runTransaction", () => {
     const won = await Promise.all([claim("x"), claim("y")]);
     expect(won.filter(Boolean)).toHaveLength(1);
   });
+
+  it("re-runs when a doc changed between its read and a later query that matched it", async () => {
+    const mem = createMemoryFirestore();
+    mem.seed("a/1", { n: 0 });
+    const seen: number[] = [];
+    await mem.db.runTransaction(async (tx) => {
+      const snap = (await tx.get(mem.db.doc("a/1"))) as { data: () => { n: number } };
+      seen.push(snap.data().n);
+      if (seen.length === 1) await mem.db.doc("a/1").set({ n: 1 });
+      await tx.get(mem.db.collection("a").where("n", ">=", 0));
+      tx.update(mem.db.doc("a/1"), { n: snap.data().n + 10 });
+    });
+    expect(seen).toEqual([0, 1]);
+    expect(mem.read("a/1")).toEqual({ n: 11 });
+  });
 });
 
 describe("recursiveDelete", () => {

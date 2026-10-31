@@ -416,7 +416,12 @@ export function createMemoryFirestore() {
       for (let attempt = 1; ; attempt++) {
         const reads = new Map<string, number>();
         const writes: Array<() => void> = [];
-        const note = (snap: MemoryDocSnapshot) => reads.set(snap.ref.path, snap.version);
+        // The FIRST version read is the one the transaction's logic used: a
+        // later re-read (e.g. a query matching the same doc) must not
+        // overwrite it, or a write committed in between goes unnoticed.
+        const note = (snap: MemoryDocSnapshot) => {
+          if (!reads.has(snap.ref.path)) reads.set(snap.ref.path, snap.version);
+        };
         const queue = (w: () => void) => (writes.push(w), tx);
         const tx: MemoryTx = {
           get: async (target) => {

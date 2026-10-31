@@ -1,42 +1,16 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
-import { FieldValue } from "firebase-admin/firestore";
 
-import { getAdminDb } from "@/lib/firebase/admin";
-import { loadEventContact } from "@/lib/server/tenant-ref";
-import {
-  emailIsConfigured,
-  sendEmail,
-  tenantFrom,
-} from "@/lib/comms/resend";
-import {
-  hashEventToken,
-  verifyEventToken,
-} from "@/lib/booking/event-token";
-import {
-  emitBookingWebhook,
-  fireBookingTrigger,
-  recordBookingActivity,
-} from "@/lib/booking/lifecycle";
-import { renderBookingCancelledEmail } from "@/lib/booking/email";
-import { bookedEventLabel } from "@/lib/booking/calendar-types";
-import { eventStatus, isImportedEvent } from "@/types/events";
-import type { BookingPage } from "@/types/booking";
-import type { CalendarEvent } from "@/types/events";
-import type { SubAccountDoc } from "@/types/tenancy";
-import { pushBookingToGoogle } from "@/lib/google-calendar/push";
-import { runAfterResponse } from "@/lib/server/after-response";
+import { hashEventToken, verifyEventToken } from "@/lib/booking/event-token";
+import { cancelBooking } from "@/lib/server/booking-changes-service";
 
 /**
  * Public cancel endpoint. The HMAC token IS the credential; we don't
- * need session auth. Transactionally guards against double-flip if the
- * visitor clicks twice fast.
- *
- * Side-effects (best-effort): visitor confirmation email, operator
- * notification email (if `escalationNotifyEmail` would have been the
- * channel, but v1 just emails the sub-account's primary `replyToEmail`),
- * activity row, automation trigger.
+ * need session auth. The cancel itself — the transactional flip (a fast
+ * double-click cancels once), the visitor email, activity row, automation
+ * trigger, webhook and Google push — is `cancelBooking`; the guard here
+ * accepts only the event this token is the live link for.
  */
 export async function POST(
   request: Request,
@@ -49,155 +23,21 @@ export async function POST(
     return NextResponse.json({ error: "Invalid link" }, { status: 404 });
   }
 
-  const db = getAdminDb();
-  const ref = db.collection("events").doc(verified.eventId);
-
-  // Transactional read + flip so concurrent cancels collapse.
-  let cancelledEvent: CalendarEvent | null = null;
-  try {
-    cancelledEvent = await db.runTransaction(async (txn) => {
-      const eventSnap = await txn.get(ref);
-      if (!eventSnap.exists) throw new TokenInvalid();
-      const event = eventSnap.data() as CalendarEvent;
-      if (event.publicTokenHash !== hashEventToken(token) || isImportedEvent(event)) {
-        throw new TokenInvalid();
-      }
-      const status = eventStatus(event);
-      if (status === "cancelled") {
-        // Idempotent — a repeat cancel answers success and does nothing:
-        // the email, workflows and webhook ran on the first one.
-        return null;
-      }
-      if (status === "completed" || status === "no_show") {
-        throw new BadState("This meeting has already taken place.");
-      }
-      txn.update(ref, {
-        status: "cancelled",
-        cancelledAt: FieldValue.serverTimestamp(),
-        cancelledByVisitor: true,
-        cancelReason: "by_visitor",
-        updatedAt: FieldValue.serverTimestamp(),
-      });
-      return event;
-    });
-  } catch (err) {
-    if (err instanceof TokenInvalid) {
-      return NextResponse.json({ error: "Invalid link" }, { status: 404 });
-    }
-    if (err instanceof BadState) {
-      return NextResponse.json({ error: err.message }, { status: 409 });
-    }
-    console.error("[events/cancel] txn failed", err);
-    return NextResponse.json(
-      { error: "Couldn't cancel. Try again." },
-      { status: 500 },
-    );
+  const tokenHash = hashEventToken(token);
+  const result = await cancelBooking({
+    eventId: verified.eventId,
+    guard: (event) => event.publicTokenHash === tokenHash,
+    note: "by attendee",
+  });
+  if (result.ok) return NextResponse.json({ ok: true });
+  if (result.code === "invalid") {
+    return NextResponse.json({ error: "Invalid link" }, { status: 404 });
   }
-
-  if (cancelledEvent) {
-    await runSideEffects(cancelledEvent);
-    await pushBookingToGoogle(ref.id);
+  if (result.code === "bad_state") {
+    return NextResponse.json({ error: result.message }, { status: 409 });
   }
-
-  return NextResponse.json({ ok: true });
-}
-
-class TokenInvalid extends Error {}
-class BadState extends Error {}
-
-async function runSideEffects(event: CalendarEvent): Promise<void> {
-  if (!event.contactId) return;
-  const db = getAdminDb();
-  try {
-    const [contact, subSnap, pageSnap] = await Promise.all([
-      loadEventContact(event),
-      db.doc(`subAccounts/${event.subAccountId}`).get(),
-      event.bookingPageSlug
-        ? db
-            .doc(
-              `subAccounts/${event.subAccountId}/bookingPages/${event.bookingPageSlug}`,
-            )
-            .get()
-        : Promise.resolve(null),
-    ]);
-    if (contact && subSnap.exists && emailIsConfigured(subSnap.data() as SubAccountDoc)) {
-      const sub = subSnap.data() as SubAccountDoc;
-      const page = (pageSnap?.data() ?? null) as BookingPage | null;
-      const startAt = (
-        event.startAt as { toDate?: () => Date } | null
-      )?.toDate?.();
-      const endAt = (
-        event.endAt as { toDate?: () => Date } | null
-      )?.toDate?.();
-      if (
-        contact.email &&
-        !contact.emailOptedOut &&
-        startAt instanceof Date &&
-        endAt instanceof Date
-      ) {
-        const rendered = renderBookingCancelledEmail(
-          {
-            recipientName: contact.name ?? "",
-            businessName: sub.name ?? "Booking",
-            businessLogoUrl: sub.logoUrl,
-            page: {
-              ...bookedEventLabel(page, event, startAt, endAt),
-              timezone: page?.timezone ?? "UTC",
-              payment: page?.payment ?? null,
-              confirmationMessage: page?.confirmationMessage ?? "",
-            },
-            startAt,
-            endAt,
-            publicEventUrl: "",
-          },
-          "by_visitor",
-        );
-        try {
-          await sendEmail({
-            to: contact.email,
-            subject: rendered.subject,
-            text: rendered.text,
-            html: rendered.html,
-            replyTo: sub.replyToEmail ?? undefined,
-            from: tenantFrom(sub),
-            subAccount: sub,
-            meter: { subAccountId: event.subAccountId },
-          });
-        } catch (err) {
-          console.warn("[events/cancel] confirmation send failed", err);
-        }
-      }
-    }
-  } catch (err) {
-    console.warn("[events/cancel] side-effect read failed", err);
-  }
-
-  await recordBookingActivity(
-    {
-      id: event.id,
-      title: event.title || "Meeting",
-      contactId: event.contactId,
-      bookingPageSlug: event.bookingPageSlug ?? null,
-      subAccountId: event.subAccountId,
-    },
-    "booking_cancelled",
-    { extra: "by attendee" },
+  return NextResponse.json(
+    { error: "Couldn't cancel. Try again." },
+    { status: 500 },
   );
-  await fireBookingTrigger(
-    {
-      id: event.id,
-      agencyId: event.agencyId,
-      subAccountId: event.subAccountId,
-      contactId: event.contactId,
-      bookingPageSlug: event.bookingPageSlug ?? null,
-    },
-    "event_cancelled",
-  );
-  runAfterResponse(() => emitBookingWebhook({
-    eventId: event.id,
-    agencyId: event.agencyId,
-    subAccountId: event.subAccountId,
-    type: "booking_cancelled",
-    cancelReason: "by attendee",
-  }));
 }
