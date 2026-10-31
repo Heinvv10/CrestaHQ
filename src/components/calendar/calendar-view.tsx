@@ -6,8 +6,12 @@ import { cn } from "@/lib/utils";
 import { toDate } from "@/lib/format";
 import { Button } from "@/components/ui/button";
 import { EventDialog } from "@/components/calendar/event-dialog";
+import { CalendarEventChip } from "@/components/calendar/calendar-event-chip";
+import { useSubAccount } from "@/context/sub-account-context";
+import { useSubAccountMembers } from "@/hooks/use-sub-account-members";
+import { importedEventDays, importedOwnerName } from "@/lib/calendar/imported-event";
 import { shownEvent } from "@/lib/calendar/event-overrides-view";
-import type { CalendarEvent, EventStatus } from "@/types/events";
+import { isImportedEvent, type CalendarEvent, type EventStatus } from "@/types/events";
 import type { Contact } from "@/types/contacts";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -36,16 +40,6 @@ function startOfGrid(monthStart: Date): Date {
   return d;
 }
 
-function formatTime(d: Date): string {
-  return d
-    .toLocaleTimeString("en-US", {
-      hour: "numeric",
-      minute: d.getMinutes() === 0 ? undefined : "2-digit",
-    })
-    .toLowerCase()
-    .replace(" ", "");
-}
-
 export function CalendarView({
   events,
   contacts,
@@ -56,6 +50,9 @@ export function CalendarView({
   onDeleted,
   onCreated,
 }: CalendarViewProps) {
+  const { subAccountId } = useSubAccount();
+  // The roster names the owner of an imported event; only fetched when one is on screen.
+  const { members } = useSubAccountMembers(events.some(isImportedEvent) ? subAccountId : null);
   const today = useMemo(() => {
     const d = new Date();
     d.setHours(0, 0, 0, 0);
@@ -88,22 +85,32 @@ export function CalendarView({
   }, [gridStart]);
 
   const eventsByDay = useMemo(() => {
+    const shown = { from: days[0], to: days[days.length - 1] };
     const map = new Map<string, CalendarEvent[]>();
     for (const ev of events) {
       const start = toDate(ev.startAt);
       if (!start) continue;
-      const key = dayKey(start);
-      const bucket = map.get(key);
-      if (bucket) bucket.push(ev);
-      else map.set(key, [ev]);
+      // An imported busy block marks every day it covers; other events sit on their first day.
+      const covered = isImportedEvent(ev)
+        ? importedEventDays(start, toDate(ev.endAt), ev.allDay === true, shown)
+        : [start];
+      for (const day of covered) {
+        const key = dayKey(day);
+        const bucket = map.get(key);
+        if (bucket) bucket.push(ev);
+        else map.set(key, [ev]);
+      }
     }
     for (const bucket of map.values()) {
+      // Real events first: imported busy blocks must never push one behind "+N more".
       bucket.sort(
-        (a, b) => (toDate(a.startAt)?.getTime() ?? 0) - (toDate(b.startAt)?.getTime() ?? 0),
+        (a, b) =>
+          Number(isImportedEvent(a)) - Number(isImportedEvent(b)) ||
+          (toDate(a.startAt)?.getTime() ?? 0) - (toDate(b.startAt)?.getTime() ?? 0),
       );
     }
     return map;
-  }, [events]);
+  }, [events, days]);
 
   const contactById = useMemo(() => {
     const m = new Map<string, Contact>();
@@ -240,33 +247,21 @@ export function CalendarView({
 
                 <div className="space-y-1">
                   {visible.map((ev) => {
-                    const start = toDate(ev.startAt);
                     const contact = ev.contactId
                       ? contactById.get(ev.contactId)
                       : null;
+                    // An imported event shows whose Google Calendar it is from.
+                    const who = isImportedEvent(ev)
+                      ? importedOwnerName(members, ev.importOwnerUid)?.split(" ")[0]
+                      : contact?.name?.split(" ")[0];
                     return (
-                      <button
+                      <CalendarEventChip
                         key={ev.id}
-                        type="button"
-                        onClick={(e) => openEdit(ev, e)}
-                        className="group/event flex w-full items-center gap-1 truncate rounded-md border border-transparent bg-gradient-to-r from-indigo-500/10 via-violet-500/10 to-pink-500/10 px-1.5 py-1 text-left text-[11px] font-medium leading-tight transition-colors hover:border-primary/30"
-                      >
-                        <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-gradient-to-br from-indigo-500 via-violet-500 to-pink-500" />
-                        {start && (
-                          <span className="shrink-0 text-muted-foreground">
-                            {formatTime(start)}
-                          </span>
-                        )}
-                        <span className="truncate">
-                          {ev.title}
-                          {contact && (
-                            <span className="text-muted-foreground">
-                              {" · "}
-                              {contact.name?.split(" ")[0] ?? ""}
-                            </span>
-                          )}
-                        </span>
-                      </button>
+                        event={ev}
+                        day={d}
+                        who={who}
+                        onOpen={(e) => openEdit(ev, e)}
+                      />
                     );
                   })}
                   {overflow > 0 && (
@@ -283,6 +278,7 @@ export function CalendarView({
 
       <EventDialog
         open={dialogOpen}
+        members={members}
         onOpenChange={setDialogOpen}
         contacts={contacts}
         event={shownEvent(events, editEvent)}

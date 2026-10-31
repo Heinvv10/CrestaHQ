@@ -37,6 +37,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import { updateEvent, deleteEvent } from "@/lib/firestore/events";
 import { BookingReassign } from "@/components/calendar/booking-reassign";
 import { GoogleSyncNotice } from "@/components/calendar/google-sync-notice";
+import { ImportedEventSheet } from "@/components/calendar/imported-event-sheet";
 import {
   changedFields,
   notifySkipDetail,
@@ -44,18 +45,21 @@ import {
   type TimeBaseline,
 } from "@/components/calendar/booking-edit-save";
 import { createdEventFromResponse } from "@/lib/calendar/event-overrides-view";
+import { importedOwnerName } from "@/lib/calendar/imported-event";
 import { toDate } from "@/lib/format";
 import {
   eventOccupiesSlot,
   eventSource,
   eventStatus,
   eventStatusLabel,
+  isImportedEvent,
   type CalendarEvent,
   type EventFormData,
   type EventNotifySkipReason,
   type EventStatus,
 } from "@/types/events";
 import type { Contact } from "@/types/contacts";
+import type { AssignableMember } from "@/types";
 
 interface EventDialogProps {
   open: boolean;
@@ -80,6 +84,8 @@ interface EventDialogProps {
   onDeleted?: (eventId: string) => void;
   /** The event the create route's 201 says it stored. */
   onCreated?: (event: CalendarEvent) => void;
+  /** The roster, to name the owner of an imported Google event. */
+  members?: Pick<AssignableMember, "uid" | "displayName">[];
 }
 
 function toDateInput(d: Date): string {
@@ -141,6 +147,7 @@ export function EventDialog({
   onSyncCleared,
   onDeleted,
   onCreated,
+  members = [],
 }: EventDialogProps) {
   const { subAccountId } = useSubAccount();
   const isEdit = !!event;
@@ -385,6 +392,17 @@ export function EventDialog({
   }
 
   const isBookingPageEvent = event ? eventSource(event) === "booking_page" : false;
+
+  if (event && isImportedEvent(event)) {
+    return (
+      <ImportedEventSheet
+        open={open}
+        onOpenChange={onOpenChange}
+        event={event}
+        ownerName={importedOwnerName(members, event.importOwnerUid)}
+      />
+    );
+  }
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>

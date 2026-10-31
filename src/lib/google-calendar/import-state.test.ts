@@ -79,6 +79,23 @@ describe("the switches", () => {
     expect(imported(U1)[0]).toMatchObject({ title: "Busy", location: "", importMode: "busy" });
   });
 
+  it.each([
+    ["off → busy", "off", "busy"],
+    ["busy → details", "busy", "details"],
+    ["details → busy", "details", "busy"],
+  ] as const)("%s clears the last pass's status, error and sync time", async (_name, from, to) => {
+    mem.seed(CONN(U1), {
+      ...conn(U1),
+      importMode: from,
+      importStatus: "error",
+      importError: "Google said no",
+      importLastSyncAt: new Date("2020-01-01T00:00:00Z"),
+      importedCount: 4,
+    });
+    await setImportMode(SA, U1, to);
+    expect(conn(U1)).toMatchObject({ importMode: to, importStatus: null, importError: null, importLastSyncAt: null });
+  });
+
   it("the workspace switch off resets every member to off and removes every import; on again re-imports nobody", async () => {
     await seedImports();
     expect(await setWorkspaceImportAllowed(SA, false)).toBe(2);

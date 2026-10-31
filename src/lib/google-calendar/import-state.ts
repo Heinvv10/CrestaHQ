@@ -227,7 +227,8 @@ export class ImportModeRefusedError extends Error {
 /**
  * The member's own opt-in. The generation bump comes first (see the race
  * rule); a new mode also forgets the sync token, so the next pass is a full
- * walk under the new detail level. Switching ON re-checks the workspace keys
+ * walk under the new detail level, and the last pass's status, error and sync
+ * time are cleared so nothing stale is shown for it. Switching ON re-checks the workspace keys
  * and the connection INSIDE the transaction (throws ImportModeRefusedError),
  * so an admin's switch-off between the route's check and this write cannot
  * leave an opt-in behind. Off always goes through. Returns how many imports
@@ -251,7 +252,11 @@ export async function setImportMode(subAccountId: string, uid: string, mode: Imp
       importGeneration: FieldValue.increment(1),
       importSyncToken: null,
       importLastFullSyncAt: null,
-      ...(mode === "off" ? { importedCount: 0, importStatus: null, importError: null } : {}),
+      // A new mode starts a new first pass, so the last pass's outcome no longer describes it.
+      importStatus: null,
+      importError: null,
+      importLastSyncAt: null,
+      ...(mode === "off" ? { importedCount: 0 } : {}),
     });
     return (snap.data() as GoogleCalendarConnection).importMode ?? "off";
   });

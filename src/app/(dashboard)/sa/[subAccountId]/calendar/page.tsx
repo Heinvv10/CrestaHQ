@@ -52,8 +52,9 @@ export default function CalendarPage() {
         <div>
           <h1 className="text-2xl font-bold tracking-tight">Calendar</h1>
           <p className="text-sm text-muted-foreground">
-            Manual events — meetings, calls, reminders. Click any day to add
-            something.
+            Manual events — meetings, calls, reminders — plus any Google
+            Calendar events your team chose to show (read-only). Click any day
+            to add something.
           </p>
         </div>
         <CalendarViewSwitch active="calendar" />
