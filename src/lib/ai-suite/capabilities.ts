@@ -77,6 +77,7 @@ import { REPUTATION_CAPABILITIES } from "./capabilities/reputation";
 import { BROADCAST_CAPABILITIES } from "./capabilities/broadcasts";
 import { VOICE_CAPABILITIES } from "./capabilities/voice";
 import { WATCHDOG_CAPABILITIES } from "./capabilities/watchdog";
+import { STALE_DEALS_CAPABILITIES } from "./capabilities/stale-deals";
 
 export { CapabilityNotFound, CapabilityOutcomeUnknown, CapabilityUserError, CapabilityWriteRefused } from "./capabilities/types";
 export type {
@@ -179,6 +180,7 @@ export const AI_SUITE_CAPABILITIES: AiSuiteCapability[] = [
   ...BROADCAST_CAPABILITIES,
   ...VOICE_CAPABILITIES,
   ...WATCHDOG_CAPABILITIES,
+  ...STALE_DEALS_CAPABILITIES,
 ];
 
 /**

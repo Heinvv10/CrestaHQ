@@ -74,6 +74,7 @@ export const FIXTURE_ARGS: Record<string, Record<string, unknown>> = {
   mark_booking_paid: { eventId: "ev_awaiting" },
   list_communities: {},
   watchdog_status: {},
+  stale_deals_status: {},
   list_booking_pages: {},
   list_social_posts: {},
   create_social_post: { caption: "Winter special", targets: ["facebook"], status: "scheduled" },

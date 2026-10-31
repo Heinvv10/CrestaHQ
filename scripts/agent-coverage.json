@@ -548,15 +548,14 @@
       }
     },
     "api/sub-accounts/[id]/agents/stale-deals:GET": {
-      "exclude": {
-        "category": "human-only",
-        "reason": "The Stale deals monitor's config card on AI Agents → Monitors (on/off, threshold, pipeline and stage filters, quiet hours, recent runs); a sub-account admin's act, behind the Agent monitors gate. Assistant tools are a separate unit (T3)."
-      }
+      "tools": [
+        "stale_deals_status"
+      ]
     },
     "api/sub-accounts/[id]/agents/stale-deals:PATCH": {
       "exclude": {
         "category": "human-only",
-        "reason": "The Stale deals monitor's config card on AI Agents → Monitors (on/off, threshold, pipeline and stage filters, quiet hours, recent runs); a sub-account admin's act, behind the Agent monitors gate. Assistant tools are a separate unit (T3)."
+        "reason": "The Stale deals monitor's config card on AI Agents → Monitors (on/off, threshold, pipeline and stage filters, quiet hours, recent runs); a sub-account admin's act, behind the Agent monitors gate. The assistant's configure_stale_deals_monitor is chat-only behind a confirm card; an API agent reads it with stale_deals_status."
       }
     },
     "api/sub-accounts/[id]/agents/watchdog:GET": {

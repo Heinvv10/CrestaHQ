@@ -87,8 +87,14 @@ Agents ([monitors/page.tsx](../../src/app/(dashboard)/sa/[subAccountId]/ai-agent
   [stale-deals-section.tsx](../../src/components/ai-agents/monitors/stale-deals-section.tsx).
   Storage: `customAgents/{subAccountId}_stale-deals` + `runs/` (see
   [firestore-collections.md](../architecture/firestore-collections.md)).
-- **Assistant.** No tools yet: `stale_deals_status` /
-  `configure_stale_deals_monitor` are unit T3.
+- **Assistant.** [capabilities/stale-deals.ts](../../src/lib/ai-suite/capabilities/stale-deals.ts):
+  `stale_deals_status` (admin read, chat + API agents) and
+  `configure_stale_deals_monitor` (admin, chat-only, confirm card, through
+  `upsertStaleDealsConfig`; quiet hours take the workspace timezone). Both
+  refuse while `agentsEnabledByAgency` is off — every change, turning it off
+  included, as the route does — and the assistant cannot switch that gate on
+  (`assistantMayEnable: false`). It sets on/off, threshold, guidance and quiet
+  hours only; pipeline and stage filters stay on the Monitors tab.
 - **Deploy step.** `firebase deploy --only firestore:rules,firestore:indexes` —
   without the `deals(subAccountId, stageChangedAt ASC)` and
   `activities(meta.dealId, createdAt DESC)` composites the sweep's queries throw
