@@ -197,8 +197,14 @@ export async function acquire(
             );
             return mine;
           }
-          // 422: another run moved it first (not a fast-forward any more).
+          // A not-fast-forward 422: another run moved it first. Any other
+          // 422 is a real fault and fails here.
           check(moved, [422], "take over lock ref");
+          if (!/fast.?forward/i.test(JSON.stringify(moved.body))) {
+            throw new Error(
+              `take over lock ref: HTTP 422 ${JSON.stringify(moved.body)}`
+            );
+          }
           log(
             "a free or stale fixture lock was taken by another run first; waiting"
           );

@@ -174,6 +174,41 @@ describe("fixture lock: ownership and faults", () => {
     expect(patches).toBe(1);
   });
 
+  it("takeover fails on a 422 that is not a moved ref instead of waiting", async () => {
+    const clock = { t: 0 };
+    const gh = fakeGitHub(clock);
+    await acquire(gh.api, {
+      tree: "t",
+      holder: holder("1"),
+      now: () => clock.t,
+      sleep: noSleep,
+      log: quiet,
+    });
+    gh.runs.set("1/1", "completed");
+    let patches = 0;
+    const broken = async (
+      method: string,
+      path: string,
+      body?: Record<string, unknown>
+    ) =>
+      method === "PATCH" && ++patches
+        ? { status: 422, body: { message: "Object does not exist" } }
+        : gh.api(method, path, body);
+    const sleep = async () => {
+      throw new Error("waited after a non-fast-forward-unrelated 422");
+    };
+    await expect(
+      acquire(broken, {
+        tree: "t",
+        holder: holder("2"),
+        now: () => clock.t,
+        sleep,
+        log: quiet,
+      })
+    ).rejects.toThrow("take over lock ref: HTTP 422");
+    expect(patches).toBe(1);
+  });
+
   it("stops waiting once its PR has a newer head", async () => {
     const clock = { t: 0 };
     const gh = fakeGitHub(clock);
