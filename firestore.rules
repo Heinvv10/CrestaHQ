@@ -1170,6 +1170,19 @@ service cloud.firestore {
       allow write: if false;
     }
 
+    // What a paid product order delivered (community access, a download
+    // link). Member-read so staff see it; ALL writes are server-only
+    // (lib/server/entitlements-service.ts). The deterministic id
+    // `{orderId}_{productId}` is what stops a replayed payment granting twice,
+    // so no browser may create or change one. Mirrors orders.
+    match /entitlements/{entitlementId} {
+      allow read: if canAccessSub(
+        resource.data.subAccountId,
+        resource.data.agencyId
+      );
+      allow write: if false;
+    }
+
     // ---------- paymentLinks (Paystack payment links) ----------
     // Member-read so the operator can list links and copy their URLs; ALL
     // writes are server-only (lib/server/payment-links-service.ts and the

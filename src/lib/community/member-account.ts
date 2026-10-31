@@ -1,5 +1,7 @@
 import "server-only";
 
+import { createHash } from "node:crypto";
+
 import { FieldValue } from "firebase-admin/firestore";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { createContactServerSide } from "@/lib/server/contacts-service";
@@ -24,6 +26,11 @@ export async function findMemberByEmail(
   return { id: doc.id, ...(doc.data() as Omit<Member, "id">) };
 }
 
+/** Deterministic id for a member created by `ensureMember`; see the claim below. */
+function memberDocId(subAccountId: string, normalizedEmail: string): string {
+  return createHash("sha256").update(`member:${subAccountId}:${normalizedEmail}`).digest("hex").slice(0, 40);
+}
+
 interface EnsureMemberInput {
   subAccountId: string;
   email: string;
@@ -34,15 +41,18 @@ interface EnsureMemberInput {
  * Idempotently get-or-create a member identity for `email` in this sub-account,
  * reconciling it to a CRM contact along the way (joining the community doubles
  * as lead capture). Called at magic-link VERIFY time — never at request time —
- * so a member doc only ever exists for an email whose owner clicked the link.
+ * so a login request alone never creates a member doc. The one other caller is
+ * the paid product-order delivery (`entitlements-service`), which creates a
+ * member from the email the BUYER typed at checkout, unverified: whoever pays
+ * can make a member for any address. That only grants what the payment bought;
+ * signing in still needs a magic link sent to that address.
  *
  * Contact reconciliation: reuse an existing contact matched by email within the
  * sub-account, otherwise create one (`source: "community"`) via the same
  * server-side write path the rest of the app uses, so `contact.created` fires.
  *
- * Concurrent verify clicks for the same brand-new email could race into two
- * member docs; the 15-minute single-use magic link makes this vanishingly
- * unlikely, and a later slice can add a transactional guard if needed.
+ * Concurrent calls for the same brand-new email create one member (see the
+ * deterministic-id claim in the body); the loser returns the winner's doc.
  */
 export async function ensureMember({
   subAccountId,
@@ -63,6 +73,33 @@ export async function ensureMember({
   const sa = saSnap.data()!;
   const agencyId = (sa.agencyId as string) ?? "";
   const ownerUid = (sa.createdByUid as string) ?? "";
+
+  // Claim the member first, under an id derived from (sub-account, email), so
+  // two concurrent first sightings of one email (two orders, a verify racing a
+  // purchase) create ONE member: the loser's create() fails and it reads the
+  // winner. Members created before this carry random ids and are found by the
+  // email query above. Only the winner reconciles the contact, so the race
+  // can't create two contacts either.
+  const ref = db.doc(`subAccounts/${subAccountId}/members/${memberDocId(subAccountId, normalizedEmail)}`);
+  try {
+    await ref.create({
+      subAccountId,
+      agencyId,
+      email: normalizedEmail,
+      displayName: displayName?.trim() || null,
+      avatarUrl: null,
+      bio: "",
+      contactId: null,
+      status: "active",
+      createdAt: FieldValue.serverTimestamp(),
+      updatedAt: FieldValue.serverTimestamp(),
+      lastSeenAt: FieldValue.serverTimestamp(),
+    });
+  } catch (err) {
+    if ((err as { code?: unknown }).code !== 6) throw err;
+    const winner = await ref.get();
+    return { id: ref.id, ...(winner.data() as Omit<Member, "id">) };
+  }
 
   // Reconcile to an existing contact by email, else create one.
   let contactId: string | null = null;
@@ -91,28 +128,13 @@ export async function ensureMember({
       });
       contactId = result.id;
     }
+    await ref.update({ contactId, updatedAt: FieldValue.serverTimestamp() });
   } catch (err) {
     // A reconciliation blip must not block the member from signing in — the
     // contact link is recoverable, the login is not.
     console.warn("[community/member-account] contact reconcile failed", err);
   }
 
-  const docRef = await db
-    .collection(`subAccounts/${subAccountId}/members`)
-    .add({
-      subAccountId,
-      agencyId,
-      email: normalizedEmail,
-      displayName: displayName?.trim() || null,
-      avatarUrl: null,
-      bio: "",
-      contactId,
-      status: "active",
-      createdAt: FieldValue.serverTimestamp(),
-      updatedAt: FieldValue.serverTimestamp(),
-      lastSeenAt: FieldValue.serverTimestamp(),
-    });
-
-  const snap = await docRef.get();
-  return { id: docRef.id, ...(snap.data() as Omit<Member, "id">) };
+  const snap = await ref.get();
+  return { id: ref.id, ...(snap.data() as Omit<Member, "id">) };
 }

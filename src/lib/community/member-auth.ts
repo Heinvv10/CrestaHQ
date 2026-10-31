@@ -112,11 +112,13 @@ export function signMemberMagicLinkToken(
   subAccountId: string,
   email: string,
   joinGroupId?: string,
+  /** Longer for purchase emails, which are often opened hours later. */
+  ttlMs: number = MAGIC_LINK_TTL_MS,
 ): string {
   return encodeToken({
     sa: subAccountId,
     e: email.trim().toLowerCase(),
-    exp: Date.now() + MAGIC_LINK_TTL_MS,
+    exp: Date.now() + ttlMs,
     k: "ml",
     n: randomBytes(12).toString("hex"),
     ...(joinGroupId ? { j: joinGroupId } : {}),
@@ -139,13 +141,14 @@ export function signMemberSessionToken(
 
 export function verifyMemberMagicLinkToken(
   token: string,
-): { subAccountId: string; email: string; joinGroupId?: string } | null {
+): { subAccountId: string; email: string; joinGroupId?: string; exp: number } | null {
   const payload = decodeToken(token);
   if (!payload || payload.k !== "ml") return null;
   return {
     subAccountId: payload.sa,
     email: payload.e,
     joinGroupId: payload.j,
+    exp: payload.exp,
   };
 }
 

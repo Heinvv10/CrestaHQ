@@ -142,15 +142,6 @@ export async function loadBuyContext(
   };
 }
 
-/**
- * False while the sale needs a path this build doesn't have yet: granting
- * community access (unit F4). The page says "not available yet" and the
- * session route answers 503 — no order, no session.
- */
-export function canBuyExpressNow(buy: BuyContext): boolean {
-  return buy.product.delivery?.type !== "community";
-}
-
 /** Brand for pages that must render even when the product is unavailable. */
 export async function loadBuyBrand(subAccountId: string): Promise<BuyBrand> {
   const sub = await readSub(subAccountId);

@@ -8,7 +8,7 @@ import {
   checkCheckoutRateLimit,
   clientIpFrom,
 } from "@/lib/checkout/rate-limit";
-import { canBuyExpressNow, loadBuyContext } from "@/lib/server/product-buy-service";
+import { loadBuyContext } from "@/lib/server/product-buy-service";
 import {
   buyRequestKey,
   dedupedSession,
@@ -35,9 +35,7 @@ export const dynamic = "force-dynamic";
  * The Paystack rail (ZAR-only workspaces) differs only in that Paystack's
  * page cannot ask for the buyer's email, so the body also carries `email`;
  * the order and the payment attempt are written before Paystack is called
- * (product-buy-paystack.ts). Community access is unit F4: until it lands such
- * a product answers 503 and no order or session is created
- * (`canBuyExpressNow`).
+ * (product-buy-paystack.ts).
  */
 
 function fail(message: string, status = 400): NextResponse {
@@ -45,7 +43,6 @@ function fail(message: string, status = 400): NextResponse {
 }
 
 const UNAVAILABLE = "This item isn't available to buy right now.";
-const NOT_YET = "Buying this online isn't available yet.";
 // No whitespace or address-list/quoting characters: the address goes into
 // Paystack's request and our mail header as the one recipient.
 const EMAIL_RE = /^[^\s@,;<>"()]+@[^\s@,;<>"()]+\.[^\s@,;<>"()]+$/;
@@ -80,7 +77,6 @@ export async function POST(
   if (!buy) return fail(UNAVAILABLE, 404);
   // A linked checkout page owns this product's sale (bumps, extra fields).
   if (buy.checkoutPageSlug) return fail(UNAVAILABLE, 409);
-  if (!canBuyExpressNow(buy)) return fail(NOT_YET, 503);
   const { product } = buy;
 
   if (buy.rail === "paystack") {

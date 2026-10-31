@@ -5,7 +5,7 @@ import CheckoutThanksPage from "@/app/co/[subAccountId]/[slug]/thanks/page";
 import { BuyButton } from "@/components/buy/buy-button";
 import { BuyShell, LockLine, formatMoney, safeAccent } from "@/components/buy/buy-shell";
 import { isDocId } from "@/lib/server/doc-id";
-import { canBuyExpressNow, loadBuyContext } from "@/lib/server/product-buy-service";
+import { loadBuyContext } from "@/lib/server/product-buy-service";
 
 export const dynamic = "force-dynamic";
 
@@ -15,8 +15,7 @@ export const dynamic = "force-dynamic";
  *
  * 404s for anything not for sale (gate off, archived, re-priced, ambiguous
  * slug, no rail), like the checkout pages: a buyer isn't the audience for a
- * configuration message. A product with a delivery this build can't take yet
- * (community access) gets a friendly "not available yet" page instead.
+ * configuration message.
  */
 
 type Params = Promise<{ subAccountId: string; slug: string }>;
@@ -55,19 +54,6 @@ export default async function ExpressBuyPage({
   const buy = await loadBuyContext(subAccountId, slug);
   if (!buy) notFound();
   if (buy.checkoutPageSlug) redirect(`/co/${subAccountId}/${buy.checkoutPageSlug}`);
-
-  if (!canBuyExpressNow(buy)) {
-    return (
-      <BuyShell brand={buy.brand}>
-        <div className="rounded-2xl border border-zinc-200 bg-white p-8 text-center shadow-sm">
-          <h1 className="text-xl font-semibold">Buying online isn&apos;t available yet</h1>
-          <p className="mt-2 text-sm leading-relaxed text-zinc-600">
-            Please get in touch to buy this. Nothing has been charged.
-          </p>
-        </div>
-      </BuyShell>
-    );
-  }
 
   const { product, brand } = buy;
   const accent = safeAccent(brand.accent);

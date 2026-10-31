@@ -269,3 +269,71 @@ it("the confirmation never echoes buyer-typed text (name, email) back", async ()
     expect(text).toContain("Fibre guide");
   }
 });
+
+describe("delivery (entitlements)", () => {
+  beforeEach(() => {
+    process.env.AUTOMATIONS_TOKEN_SECRET = "test-secret";
+    mem.seed(`subAccounts/${SA}`, { agencyId: "ag1", name: "Fixture", communityEnabledByAgency: true });
+    mem.seed(`subAccounts/${SA}/communityGroups/g1`, {
+      subAccountId: SA, agencyId: "ag1", name: "Fibre Club", slug: "fibre-club", access: "free", status: "published", memberCount: 0,
+    });
+  });
+  const communityOrder = () =>
+    productLinkOrder({ deliveries: [{ productId: "p1", delivery: { type: "community", communityGroupId: "g1", courseId: null } }] });
+
+  it("a paid order is granted once across a replay, after the confirmation", async () => {
+    communityOrder();
+    await deliver("checkout.session.completed", paid());
+    await deliver("checkout.session.completed", paid(), "evt_2");
+    await flushAfterResponse();
+
+    expect(mem.list("entitlements")).toEqual([
+      expect.objectContaining({ id: "o1_p1", orderId: "o1", subAccountId: SA, agencyId: "ag1", sends: 1 }),
+    ]);
+    expect(mem.list(`subAccounts/${SA}/communityGroups/g1/purchases`)).toHaveLength(1);
+    expect(sendEmail.mock.calls.map(([m]) => m.subject)).toEqual([
+      "[Test] Order confirmed: Fibre guide",
+      "Your access to Fibre guide",
+    ]);
+  });
+
+  it("a held order (other amount) is never granted", async () => {
+    communityOrder();
+    await deliver("checkout.session.completed", paid({ amount_total: 100 }));
+    await flushAfterResponse();
+    expect(mem.list("entitlements")).toHaveLength(0);
+    expect(mem.list(`subAccounts/${SA}/members`)).toHaveLength(0);
+  });
+
+  it("a full refund revokes the entitlement; a partial one leaves it", async () => {
+    communityOrder();
+    await deliver("checkout.session.completed", paid());
+    await flushAfterResponse();
+    const charge = (refunded: number) => ({ id: "ch_1", object: "charge", payment_intent: "pi_cs_o1", amount_refunded: refunded, currency: "usd" });
+
+    await deliver("charge.refunded", charge(10_000), "evt_r1");
+    expect(mem.read("entitlements/o1_p1")).toMatchObject({ status: "active" });
+    await deliver("charge.refunded", charge(49_900), "evt_r2");
+    expect(mem.read("orders/o1")).toMatchObject({ status: "refunded" });
+    expect(mem.read("entitlements/o1_p1")).toMatchObject({ status: "revoked" });
+    expect(mem.list(`subAccounts/${SA}/communityGroups/g1/memberships`)).toHaveLength(1);
+  });
+
+  it("a revoke that fails is logged at error level and flags the order for staff (the refund is already recorded)", async () => {
+    communityOrder();
+    await deliver("checkout.session.completed", paid());
+    await flushAfterResponse();
+    const real = mem.db.doc;
+    vi.spyOn(mem.db, "doc").mockImplementation((path: string) => {
+      if (path.startsWith("entitlements/")) throw new Error("firestore unavailable");
+      return real(path);
+    });
+    const res = await deliver("charge.refunded", { id: "ch_1", object: "charge", payment_intent: "pi_cs_o1", amount_refunded: 49_900, currency: "usd" }, "evt_r1");
+
+    expect(res.status).toBe(200);
+    expect(mem.read("orders/o1")).toMatchObject({ status: "refunded", attentionOpen: true });
+    expect(mem.read("orders/o1")!.attention).toMatch(/could not be marked revoked/);
+    expect(mem.read("entitlements/o1_p1")).toMatchObject({ status: "active" });
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining("revoke failed order=o1: firestore unavailable"));
+  });
+});

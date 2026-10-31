@@ -320,6 +320,8 @@ export interface Purchase {
   grantedByUid: string | null;
   /** The Stripe order whose payment settled this purchase, when one did. */
   paidOrderId?: string | null;
+  /** Set when access came with a product order rather than a community checkout. */
+  orderId?: string;
   requestedAt: Timestamp | FieldValue | null;
   paidAt: Timestamp | FieldValue | null;
 }

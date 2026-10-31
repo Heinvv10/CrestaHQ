@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /**
  * A community magic link is ONE sign-in. Replaying the same emailed link
@@ -14,6 +14,15 @@ vi.mock("@/lib/community/gate", () => ({
 }));
 const ensureMember = vi.hoisted(() => vi.fn(async () => ({ id: "m1", status: "active" })));
 vi.mock("@/lib/community/member-account", () => ({ ensureMember }));
+// The real api-cleanup sweep runs in the replay tests; its unrelated sweeps are inert here.
+vi.mock("@/lib/automations/qstash", () => ({
+  verifyQStashSignature: async () => true,
+  publishCallback: async () => ({ messageId: "m1" }),
+}));
+vi.mock("@/lib/server/agents-watchdog-service", () => ({ sweepOldWatchdogRuns: async () => 0 }));
+vi.mock("@/lib/server/agent-proposals-sweeps", () => ({
+  sweepAgentProposals: async () => ({ collection: "agentProposals", deleted: 0, hitCap: false }),
+}));
 const setMemberSessionCookie = vi.hoisted(() => vi.fn(async () => {}));
 vi.mock("@/lib/community/member-session", () => ({ setMemberSessionCookie }));
 
@@ -21,6 +30,7 @@ process.env.AUTOMATIONS_TOKEN_SECRET = "test-secret";
 const { mem } = await import("@/test/gbp-sync-store");
 const { signMemberMagicLinkToken } = await import("@/lib/community/member-auth");
 const { GET, HEAD, POST } = await import("./route");
+const { runApiCleanup } = await import("@/app/api/cron/api-cleanup/route");
 
 const SA = "sa1";
 const base = `https://app.test/api/community/${SA}/login/verify`;
@@ -33,6 +43,8 @@ const location = (res: Response) => {
   return u.pathname + u.search;
 };
 const uses = () => mem.list("communityMagicLinkUses");
+
+afterEach(() => vi.useRealTimers());
 
 beforeEach(() => {
   mem.clear();
@@ -106,5 +118,70 @@ describe("community magic link", () => {
     await signIn(signMemberMagicLinkToken(SA, "member@example.com"));
     expect(location(await signIn(signMemberMagicLinkToken(SA, "member@example.com")))).toBe(`/c/${SA}`);
     expect(setMemberSessionCookie).toHaveBeenCalledTimes(2);
+  });
+
+  describe("a link that outlives the default 15 minutes (purchase emails: 24 h)", () => {
+    const H = 60 * 60 * 1000;
+    const DAY = 24 * H;
+    const at = (t0: number, ms: number) => vi.setSystemTime(t0 + ms);
+
+    // After every wait the real api-cleanup sweep runs, as it does daily: the
+    // use record must survive it for as long as the link still verifies.
+    it("used once, then replayed at +1 h, +12 h and +23 h after each sweep: refused every time", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const t0 = Date.now();
+      const token = signMemberMagicLinkToken(SA, "member@example.com", "g1", DAY);
+      expect(location(await signIn(token))).toBe(`/c/${SA}`);
+      expect(setMemberSessionCookie).toHaveBeenCalledTimes(1);
+
+      for (const wait of [1 * H, 12 * H, 23 * H]) {
+        at(t0, wait);
+        expect((await runApiCleanup()).ok).toBe(true);
+        expect(uses()).toHaveLength(1);
+        const replay = await signIn(token);
+        expect(location(replay)).toBe(`/c/${SA}`);
+      }
+      // Three replays, no second session.
+      expect(setMemberSessionCookie).toHaveBeenCalledTimes(1);
+    });
+
+    it("the record is only swept after the link has died, and then the link is refused anyway", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const t0 = Date.now();
+      const token = signMemberMagicLinkToken(SA, "member@example.com", undefined, DAY);
+      await signIn(token);
+
+      at(t0, DAY + 10 * 60 * 1000);
+      await runApiCleanup();
+      expect(uses()).toEqual([]);
+      expect(location(await signIn(token))).toBe(`/c/${SA}/login?error=expired`);
+      expect(setMemberSessionCookie).toHaveBeenCalledTimes(1);
+    });
+
+    it("a default-TTL link behaves as before: record kept until just after the link dies, then swept", async () => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      const t0 = Date.now();
+      const token = signMemberMagicLinkToken(SA, "member@example.com");
+      await signIn(token);
+      const [use] = uses();
+      // The 15-minute link, plus the 5-minute margin.
+      expect((use.expiresAt as Date).getTime() - t0).toBe(20 * 60 * 1000);
+
+      at(t0, 10 * 60 * 1000);
+      await runApiCleanup();
+      expect(uses()).toHaveLength(1);
+      expect(location(await signIn(token))).toBe(`/c/${SA}`);
+
+      at(t0, 16 * 60 * 1000);
+      await runApiCleanup();
+      expect(uses()).toHaveLength(1);
+      expect(location(await signIn(token))).toBe(`/c/${SA}/login?error=expired`);
+
+      at(t0, 21 * 60 * 1000);
+      await runApiCleanup();
+      expect(uses()).toEqual([]);
+      expect(location(await signIn(token))).toBe(`/c/${SA}/login?error=expired`);
+      expect(setMemberSessionCookie).toHaveBeenCalledTimes(1);
+    });
   });
 });

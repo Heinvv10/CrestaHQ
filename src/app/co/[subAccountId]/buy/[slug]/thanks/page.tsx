@@ -3,6 +3,7 @@ import { notFound } from "next/navigation";
 
 import { BuyShell, formatMoney, readableTextOn, safeAccent } from "@/components/buy/buy-shell";
 import { isDocId } from "@/lib/server/doc-id";
+import { getGroupById } from "@/lib/server/community-service";
 import { loadThanksOrder, loadThanksShop } from "@/lib/server/product-buy-service";
 import { thanksView } from "@/lib/products/thanks-view";
 
@@ -50,6 +51,10 @@ export default async function ExpressBuyThanksPage({
   const view = thanksView(order, emailConfigured);
   const { state, download } = view;
   const item = order?.lineItems[0] ?? null;
+  // The order was loaded for this sub-account, so the group is read under it.
+  const communityName = view.communityGroupId
+    ? ((await getGroupById(subAccountId, view.communityGroupId))?.name ?? "the community")
+    : null;
   const waiting = state === "processing" || state === "held";
 
   return (
@@ -120,7 +125,13 @@ export default async function ExpressBuyThanksPage({
           </a>
         )}
 
-        {state === "paid" && (
+        {communityName && (
+          <p className="mt-5 text-sm leading-relaxed text-zinc-600">
+            Check your email for a sign-in link to {communityName}.
+          </p>
+        )}
+
+        {state === "paid" && !communityName && (
           <p className="mt-5 text-sm leading-relaxed text-zinc-600">
             {download
               ? "Download it now and keep a copy somewhere safe."

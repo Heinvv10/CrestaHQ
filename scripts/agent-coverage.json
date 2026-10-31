@@ -674,6 +674,12 @@
         "list_members"
       ]
     },
+    "api/sub-accounts/[id]/orders/[orderId]/redeliver:POST": {
+      "exclude": {
+        "category": "human-only",
+        "reason": "Staff Re-send delivery for a paid product order: re-emails the buyer their community sign-in or download link. Outbound mail to a customer stays a person's click, like resolving an order flag."
+      }
+    },
     "api/sub-accounts/[id]/pipelines:GET": {
       "tools": [
         "list_pipelines"
