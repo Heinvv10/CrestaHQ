@@ -36,6 +36,9 @@ export interface FlagNotice {
   amountCents: number | null;
   currency: string | null;
   reference: string | null;
+  /** A notice that is not about a payment (e.g. a rejected key): its own
+   *  wording. Without `intro`, the payment wording and rows are used. */
+  custom?: { headline: string; intro: string; where: string };
 }
 
 type Resend = typeof import("@/lib/comms/resend");
@@ -124,19 +127,26 @@ export async function notifyFlag(input: FlagNotice): Promise<void> {
     const lines: Array<[string, string]> = [
       ["Sub-account", subName],
       ["Reason", input.reason],
-      ["Amount", formatBillingPrice(input.amountCents, input.currency)],
-      ["Reference", input.reference ?? "—"],
+      ...(input.custom
+        ? []
+        : ([
+            ["Amount", formatBillingPrice(input.amountCents, input.currency)],
+            ["Reference", input.reference ?? "—"],
+          ] as Array<[string, string]>)),
     ];
     const where =
-      input.audience === "subAccountAdmins"
+      input.custom?.where ??
+      (input.audience === "subAccountAdmins"
         ? "Review it under Reports → Payments, then mark it resolved."
-        : "Review it under Agency → Client billing, then mark it resolved.";
-    const subject = `A payment needs attention — ${subName.replace(/[\r\n]+/g, " ")}`;
-    const intro = "A payment arrived that could not be applied automatically. It may need a refund or a manual fix.";
+        : "Review it under Agency → Client billing, then mark it resolved.");
+    const headline = input.custom?.headline ?? "A payment needs attention";
+    const subject = `${headline} — ${subName.replace(/[\r\n]+/g, " ")}`;
+    const intro =
+      input.custom?.intro ?? "A payment arrived that could not be applied automatically. It may need a refund or a manual fix.";
     const text = [intro, "", ...lines.map(([k, v]) => `${k}: ${v}`), "", where].join("\n");
     const html = `
     <div style="font-family:system-ui,-apple-system,sans-serif;max-width:520px;margin:0 auto;padding:24px;">
-      <h2 style="margin:0 0 12px;">A payment needs attention</h2>
+      <h2 style="margin:0 0 12px;">${escapeHtml(headline)}</h2>
       <p>${escapeHtml(intro)}</p>
       <table style="border-collapse:collapse;font-size:14px;">${lines
         .map(

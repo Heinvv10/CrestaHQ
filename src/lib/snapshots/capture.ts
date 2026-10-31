@@ -91,8 +91,21 @@ export async function captureSnapshot(
   const messageTemplates = templatesSnap.docs.map(
     (d) => stripDoc(d.id, d.data()) as unknown as SnapshotMessageTemplate,
   );
+  // Sell-online fields point at the source workspace (its slugs, groups,
+  // checkout pages, Storage files), so they stay behind; the copy is
+  // catalog-only.
   const products = productsSnap.docs.map(
-    (d) => stripDoc(d.id, d.data()) as unknown as SnapshotProduct,
+    (d) =>
+      stripDoc(d.id, d.data(), [
+        "images",
+        "imageGeneration",
+        "imageGenerationDay",
+        "sellOnline",
+        "slug",
+        "checkoutPageId",
+        "delivery",
+        "publicVersion",
+      ]) as unknown as SnapshotProduct,
   );
   // Workflow folders do not travel either (same reason as custom-field
   // folders below): a copied `folderId` would dangle, so workflows land Unfiled.

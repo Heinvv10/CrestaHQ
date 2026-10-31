@@ -37,7 +37,7 @@ import {
 import type { Contact } from "@/types/contacts";
 import type { Deal, PipelineDoc } from "@/types/deals";
 import type { Task } from "@/types/tasks";
-import type { CalendarEvent } from "@/types/events";
+import { isImportedEvent, type CalendarEvent } from "@/types/events";
 import type { LeadForm } from "@/types/forms";
 import { contactDisplayName } from "@/lib/contacts/display-name";
 
@@ -307,6 +307,8 @@ export function CommandPalette({ open, onOpenChange }: CommandPaletteProps) {
       if (out.filter((r) => r.kind === "task").length >= 5) break;
     }
     for (const e of events) {
+      // Imported Google events stay on the calendar only.
+      if (isImportedEvent(e)) continue;
       if (match(e.title) || match(e.location) || match(e.notes)) {
         const when = toDate(e.startAt);
         out.push({

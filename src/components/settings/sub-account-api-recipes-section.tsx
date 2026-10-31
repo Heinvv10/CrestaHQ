@@ -68,8 +68,9 @@ const RECIPES: Recipe[] = [
   },
   {
     id: "slack-alert",
-    title: "Slack alert on new leads",
-    subtitle: "Get pinged in Slack the moment a contact or hot deal lands.",
+    title: "Slack alert on new leads (via Zapier)",
+    subtitle:
+      "For Slack posts with extra logic in between. The native Slack notifications card on the Admin tab needs no third tool.",
     icon: MessageSquare,
     duration: "~5 min via Zapier",
     presetName: null as unknown as string,

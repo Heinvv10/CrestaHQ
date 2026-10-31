@@ -34,6 +34,8 @@ const valuesOf = (q: FirebaseFirestore.DocumentData, patch: Record<string, unkno
   Object.fromEntries(Object.keys(patch).sort().map((k) => [k, k === "validUntil" ? (toDate(q[k])?.toISOString() ?? null) : (q[k] ?? null)]));
 
 const PAY_LINK_REFUSAL = "This invoice's emailed pay link charges the old amount; void it and send a new invoice.";
+/** A signature's fingerprint is of the content signed, so the document is frozen once one is recorded. */
+const SIGNED_REFUSAL = "It has been signed, so it's locked against edits; create a new quote instead.";
 type QueryGet = (q: FirebaseFirestore.Query) => Promise<FirebaseFirestore.QuerySnapshot>;
 
 /** Why the patch may not change what it charges, or null: a saved card is
@@ -198,6 +200,7 @@ export const QUOTE_CAPABILITIES: AiSuiteCapability[] = [
     preview: async (ctx, args) => {
       const q = await tenantQuote(ctx.subAccountId!, args.quoteId);
       if (q.status === "paid") throw new CapabilityUserError(`That ${docLabel(q).toLowerCase()} is already paid.`);
+      if (q.signature) throw new CapabilityUserError(SIGNED_REFUSAL);
       const { quoteId: _id, ...fields } = args;
       const patch = sanitizePayload(checkedFields(fields));
       const refused = await repriceRefusal(ctx.subAccountId!, q.id, q, patch);
@@ -244,6 +247,7 @@ export const QUOTE_CAPABILITIES: AiSuiteCapability[] = [
       await db.runTransaction(async (tx) => {
         const current = (await tx.get(ref)).data();
         if (!current || current.subAccountId !== ctx.subAccountId) throw new CapabilityUserError("That quote or invoice isn't in this workspace.");
+        if (current.signature) throw new CapabilityUserError(SIGNED_REFUSAL);
         // Not while its email is going out: the link must show what the email says.
         if (sendClaimFresh(current)) throw new CapabilityUserError("It is being sent right now, so it wasn't changed; try again in a minute.");
         if (ctx.approved) {

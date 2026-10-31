@@ -5,13 +5,16 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { gcalConnectionPath, readConnection } from "@/lib/google-calendar/connection";
 import { googleCalendarGateOn } from "@/lib/google-calendar/gate";
+import { deleteImportedEvents } from "@/lib/google-calendar/import-state";
 import { gcalAppConfigured } from "@/lib/google-calendar/provider/mode";
 
 /**
  * The CALLER's own Google Calendar connection on this sub-account.
  *
  *   GET    /api/sub-accounts/[id]/google-calendar
- *     → { configured, connected, status, googleEmail, lastError, lastPushError }
+ *     → { configured, connected, status, googleEmail, lastError, lastPushError,
+ *         importAllowed, importMode, importStatus, importError, importLastSyncAt,
+ *         importedCount }
  *     Any active member. While the agency gate is off: { gateOff: true,
  *     connected, googleEmail } only — enough for the card to offer Disconnect
  *     on a connection left behind. Never a token, never another member's.
@@ -19,10 +22,17 @@ import { gcalAppConfigured } from "@/lib/google-calendar/provider/mode";
  *   DELETE /api/sub-accounts/[id]/google-calendar
  *     UNGATED, so a member can always remove their connection after the gate
  *     is switched off. Deletes the stored tokens only — never revokes at
- *     Google (see below). Events already written to Google stay there.
+ *     Google (see below). Events already written to Google stay there; the
+ *     member's imported Google events are deleted from the CRM.
  */
 
 type Ctx = { params: Promise<{ id: string }> };
+
+/** A stored Date comes back from Firestore as a Timestamp. */
+function isoOrNull(v: unknown): string | null {
+  const d = v instanceof Date ? v : (v as { toDate?: () => Date } | null)?.toDate?.();
+  return d instanceof Date && !Number.isNaN(d.getTime()) ? d.toISOString() : null;
+}
 
 export async function GET(request: Request, ctx: Ctx) {
   const { id } = await ctx.params;
@@ -43,6 +53,12 @@ export async function GET(request: Request, ctx: Ctx) {
     googleEmail: conn?.googleEmail ?? null,
     lastError: conn?.lastError ?? null,
     lastPushError: conn?.lastPushError ?? null,
+    importAllowed: (await getAdminDb().doc(`subAccounts/${id}`).get()).data()?.calendarImportAllowed === true,
+    importMode: conn?.importMode ?? "off",
+    importStatus: conn?.importStatus ?? null,
+    importError: conn?.importError ?? null,
+    importLastSyncAt: isoOrNull(conn?.importLastSyncAt),
+    importedCount: conn?.importedCount ?? 0,
   });
 }
 
@@ -56,5 +72,16 @@ export async function DELETE(request: Request, ctx: Ctx) {
   // connection down with it. The card tells the member where to remove the
   // app's access themselves (myaccount.google.com/permissions).
   await getAdminDb().doc(gcalConnectionPath(id, access.uid)).delete();
+  // After the connection doc is gone, so a running import sees it and backs
+  // off. Best-effort like every other cleanup path: the connection is already
+  // gone, and the daily orphan sweep removes anything left.
+  try {
+    await deleteImportedEvents(id, access.uid);
+  } catch (err) {
+    console.error(
+      `[google-calendar] disconnect import cleanup failed sa=${id}`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
   return NextResponse.json({ ok: true });
 }

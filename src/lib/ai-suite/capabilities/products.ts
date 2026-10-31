@@ -7,7 +7,12 @@ import { agentEditStamp } from "@/lib/server/agent-edit-stamp";
 import { sanitizeProductPayload } from "@/lib/products/sanitize";
 import { createProduct } from "@/lib/products/write";
 import { productSellers, productUsage } from "@/lib/products/usage";
+import {
+  SellOnlineError,
+  prepareSellOnlineUpdate,
+} from "@/lib/server/products-sell-online-service";
 import type { Product } from "@/types/products";
+import type { SubAccountDoc } from "@/types/tenancy";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
 import { agentActor, fmtMoney, str } from "./helpers";
 import { hasUnsafeText, lookAlikeProblem, oneLine, UNSAFE_TEXT_MESSAGE } from "./text-safety";
@@ -17,6 +22,7 @@ import { recordProvenanceRows } from "./record-provenance";
  * Catalog products for API agents (AGENT_API_V1_PLAN.md, PR10): list,
  * create / update as direct writes (the products route's own sanitizer and
  * writer) — except any edit of a product a checkout page or funnel sells,
+ * or that is on sale online,
  * which a person approves — and delete
  * approved, refused while anything sells the product (it would break that
  * checkout). Text fields must be visible text.
@@ -153,20 +159,21 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     },
     summarize: (args) => `Edit the product ${args.productId}.`,
     // Checkout pages show a product's name, description, price and bump
-    // settings: any change to one a checkout page or funnel sells is what its
+    // settings (a buy link shows the same): any change to one a checkout page,
+    // funnel or its own buy link sells is what its
     // buyers see and pay, so a person approves it (spend).
     approvalFor: async (args, ctx) => {
       const p = await tenantProduct(ctx.subAccountId!, args.productId);
-      return (await productSellers(ctx.subAccountId!, p.id)).length ? "spend" : undefined;
+      return (await productSellers(ctx.subAccountId!, p)).length ? "spend" : undefined;
     },
-    approvalHint: { approval: "spend", when: "the product is sold by a checkout page or funnel" },
+    approvalHint: { approval: "spend", when: "the product is sold by a checkout page or funnel, or is on sale online" },
     approvalTarget: async (ctx, args) => {
       await tenantProduct(ctx.subAccountId!, args.productId);
       return { contactId: null, territoryId: null, scoped: false };
     },
     preview: async (ctx, args) => {
       const p = await tenantProduct(ctx.subAccountId!, args.productId);
-      const sellers = await productSellers(ctx.subAccountId!, p.id);
+      const sellers = await productSellers(ctx.subAccountId!, p);
       const { productId: _id, ...fields } = args;
       const next = { ...p, ...(fields as Partial<Product>) };
       const shown: Record<string, (x: Product) => string> = {
@@ -201,17 +208,31 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
       if (typeof fields.name === "string") await assertNameDistinct(ctx.subAccountId!, fields.name, p.id);
       const db = getAdminDb();
       const ref = db.doc(`products/${p.id}`);
+      const sub = ((await db.doc(`subAccounts/${ctx.subAccountId}`).get()).data() ?? {}) as Partial<SubAccountDoc>;
       await db.runTransaction(async (tx) => {
         const current = (await tx.get(ref)).data();
         if (!current || current.subAccountId !== ctx.subAccountId) throw new CapabilityUserError("That product isn't in this workspace.");
+        // A product sold online keeps a valid price and a rail for its
+        // currency, as the products route enforces (no sell-online keys here).
+        const sell = await prepareSellOnlineUpdate({
+          db,
+          subAccountId: ctx.subAccountId!,
+          sub,
+          productId: p.id,
+          existing: current as Partial<Product>,
+          baseUpdates: fields as Partial<Product>,
+          body: {},
+        }).catch((err: unknown) => {
+          throw err instanceof SellOnlineError ? new CapabilityUserError(err.message) : err;
+        });
         if (ctx.approved) {
           if (JSON.stringify(valuesOf(current, fields)) !== JSON.stringify(ctx.approved.pinned?.before)) {
             throw new CapabilityUserError("The product changed since this was reviewed; nothing was changed.");
           }
-        } else if ((await productSellers(ctx.subAccountId!, p.id, (q) => tx.get(q))).length) {
-          throw new CapabilityUserError("A checkout page or funnel now sells this product, so this change needs approval: send it again.");
+        } else if ((await productSellers(ctx.subAccountId!, { ...(current as Partial<Product>), id: p.id }, (q) => tx.get(q))).length) {
+          throw new CapabilityUserError("A checkout page, funnel or buy link now sells this product, so this change needs approval: send it again.");
         }
-        tx.update(ref, { ...fields, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(agentActor(ctx, "update_product")) });
+        tx.update(ref, { ...fields, ...sell, updatedAt: FieldValue.serverTimestamp(), ...agentEditStamp(agentActor(ctx, "update_product")) });
       });
       return { resultText: "Updated the product.", ref: { kind: "product", id: p.id } };
     },
@@ -224,7 +245,7 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     approval: "hard_delete",
     menuLabel: "Delete a product (a person approves)",
     description:
-      "Delete a product permanently. Refused while a checkout page or funnel sells it (archive it with update_product active:false instead). Open quotes keep their own copy. Queued for a sub-account admin to approve.",
+      "Delete a product permanently. Refused while a checkout page or funnel sells it or it is on sale online (archive it with update_product active:false instead). Open quotes keep their own copy. Queued for a sub-account admin to approve.",
     parameters: { type: "object", properties: { productId: productIdParam }, required: ["productId"], additionalProperties: false },
     validate: (raw) => {
       const productId = str(raw, "productId");
@@ -237,10 +258,15 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
     },
     preview: async (ctx, args) => {
       const p = await tenantProduct(ctx.subAccountId!, args.productId);
-      const used = await productUsage(ctx.subAccountId!, p.id);
+      const used = await productUsage(ctx.subAccountId!, p);
       if (used.checkoutPages || used.funnels) {
         throw new CapabilityUserError(
           `That product is sold by ${used.checkoutPages} checkout page(s) and ${used.funnels} funnel(s); deleting it would break them. Archive it instead (update_product active:false).`
+        );
+      }
+      if (used.onSale) {
+        throw new CapabilityUserError(
+          "That product is on sale online; deleting it would break its buy link. Archive it instead (update_product active:false)."
         );
       }
       return [
@@ -258,8 +284,8 @@ export const PRODUCT_CAPABILITIES: AiSuiteCapability[] = [
       await db.runTransaction(async (tx) => {
         const current = (await tx.get(ref)).data();
         if (!current || current.subAccountId !== ctx.subAccountId) throw new CapabilityUserError("That product isn't in this workspace.");
-        if ((await productSellers(ctx.subAccountId!, p.id, (q) => tx.get(q))).length) {
-          throw new CapabilityUserError("A checkout page or funnel now sells this product; it was not deleted.");
+        if ((await productSellers(ctx.subAccountId!, { ...(current as Partial<Product>), id: p.id }, (q) => tx.get(q))).length) {
+          throw new CapabilityUserError("A checkout page, funnel or buy link now sells this product; it was not deleted.");
         }
         tx.delete(ref);
       });

@@ -11,6 +11,7 @@ import {
 } from "@/lib/server/feature-gates-service";
 import { paddedSubAccountId, subAccountsToList } from "./agency-support";
 import { CapabilityUserError, type AiSuiteCapability } from "./types";
+import { IMPORTED_EVENT_SOURCE } from "@/types/events";
 import { SLUG_RE, str, FEATURE_GATES, enabledGateLabels, assistantEnableRefusal } from "./helpers";
 
 export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
@@ -109,13 +110,22 @@ export const AGENCY_CAPABILITIES: AiSuiteCapability[] = [
             .count()
             .get()
         ).data().count;
-      const [contacts, deals, tasks, events, quotes] = await Promise.all([
+      const [contacts, deals, tasks, allEvents, importedEvents, quotes] = await Promise.all([
         count("contacts"),
         count("deals"),
         count("tasks"),
         count("events"),
+        // Imported Google events are members' own calendars, not records.
+        db
+          .collection("events")
+          .where("subAccountId", "==", targetId)
+          .where("source", "==", IMPORTED_EVENT_SOURCE)
+          .count()
+          .get()
+          .then((r) => r.data().count),
         count("quotes"),
       ]);
+      const events = allEvents - importedEvents;
       const name = (snap.data()?.name as string) || targetId;
       return {
         resultText: `“${name}” record counts: ${contacts} contacts, ${deals} deals, ${tasks} tasks, ${events} calendar events, ${quotes} quotes.`,

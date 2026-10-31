@@ -1,5 +1,6 @@
 import type { StripeConnectionMeta } from "@/types/payments";
 import type { WebVoiceMeta } from "@/types/web-voice";
+import type { SlackMeta } from "@/types/slack";
 import type { GbpWidgetMeta, GoogleConnectionMeta, GoogleListing } from "@/types/google";
 import type { GbpSummary } from "@/lib/gbp/sync/types";
 import type { PaystackConnectionMeta } from "@/types/paystack-connection";
@@ -114,6 +115,14 @@ export interface AgencyDoc {
    */
   agencyAssistantModel?: AiSuiteModelChoice;
   /**
+   * Usage rebilling master switch, read `=== true`. Off = no client is billed
+   * for usage, whatever their own switch says. Written by PATCH /api/agency
+   * (owner only).
+   */
+  usageRebillingEnabled?: boolean;
+  /** When the master switch last turned on (same rule as the client switch). */
+  usageRebillingSince?: Date | null;
+  /**
    * Agency Agent API kill switch. OFF by default — read `=== true`. While
    * off, every agency API key is refused at auth and none can be minted.
    * Written by PATCH /api/agency; shown in the Agency Assistant card.
@@ -190,6 +199,14 @@ export interface SubAccountDoc {
    * `usageQuotas` but for the sell rates. See UsageRates.
    */
   usageRates?: import("./usage").UsageRates | null;
+  /**
+   * Bill this client for usage past its allowance. Needs
+   * AgencyDoc.usageRebillingEnabled too. Default off; read `=== true`.
+   * Agency-owner-only writes via the feature-gates PATCH.
+   */
+  usageRebillingEnabled?: boolean;
+  /** When the switch last turned on; a month is only billed if it was on before the month ended. */
+  usageRebillingSince?: Date | null;
   createdByUid: string;
   createdAt: Date;
   updatedAt: Date;
@@ -579,8 +596,18 @@ export interface SubAccountDoc {
    * per-client decision. While off the card is hidden, connect refuses, and
    * booking pages neither read Google busy time nor push bookings. No
    * tear-down: members' connections are preserved; disconnect stays ungated.
+   * Switching it off does remove every imported Google event (calendar import).
    */
   googleCalendarEnabledByAgency?: boolean;
+  /**
+   * Google Calendar import: a sub-account admin allows members to show their
+   * own Google events on the CRM calendar (each member still opts in). Read
+   * `=== true`, only while `googleCalendarEnabledByAgency` is on. Server-only
+   * writes (lib/google-calendar/import-state.ts); off resets every member to off.
+   */
+  calendarImportAllowed?: boolean;
+  /** Bumped with every `calendarImportAllowed` change; a running import that sees it move backs off. */
+  calendarImportGeneration?: number;
   /**
    * Agency-controlled gate for Web Voice (ElevenLabs): website visitors talk
    * to the web-chat assistant through the sub-account's own ElevenLabs key.
@@ -596,12 +623,37 @@ export interface SubAccountDoc {
    */
   webVoiceMeta?: WebVoiceMeta | null;
   /**
+   * Slack notifications display metadata. The Incoming Webhook URL lives at
+   * `subAccounts/{id}/private/slack`; never add it here. Null/absent = not
+   * connected (in `CHANNEL_CONNECTION_FIELDS`).
+   */
+  slackMeta?: SlackMeta | null;
+  /**
    * Agency-controlled gate for the browser phone dialer (softphone) that
    * places calls through the sub-account's own Twilio account. Opt-in:
    * `false` at creation, read `=== true`. Standalone (NOT in
    * `PLAN_GATE_KEYS`). No tear-down: stored dialer config is preserved.
    */
   dialerEnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for the Stale deals agent monitor (the inbox
+   * watchdog on the same Monitors tab keeps the Labs + AI Suite gates).
+   * Opt-in because every flagged deal spends the agency's AI credits.
+   * Standalone (NOT in `PLAN_GATE_KEYS`). Read `=== true`.
+   */
+  agentsEnabledByAgency?: boolean;
+  /**
+   * Agency-controlled gate for selling products online through the
+   * sub-account's own payment connection. Moves money, so standalone (NOT in
+   * `PLAN_GATE_KEYS`). Controls selling only. Read `=== true`.
+   */
+  sellOnlineEnabledByAgency?: boolean;
+  /**
+   * "Send AI text" workflow step. Opt-in; enabling is refused until the AI
+   * outbound SMS readiness check passes (see `aiOutboundSmsEnableBlock`).
+   * Standalone (NOT in `PLAN_GATE_KEYS`). Read `=== true`.
+   */
+  aiOutboundSmsEnabledByAgency?: boolean;
   /**
    * Agency-controlled gate for Email AI drafts: the shared AI agent drafts a
    * reply to each new inbound mailbox email for a person to approve in
@@ -790,6 +842,13 @@ export interface SubAccountDoc {
    * of which teammate triggered the send.
    */
   replyToEmail: string | null;
+  /**
+   * Broadcast open pixel and click redirect (lib/broadcasts/email-tracking.ts).
+   * Absent or false = off, the default. Set by a sub-account admin through
+   * PATCH /api/agency/sub-accounts/[id]; read at send time and again on each
+   * open or click, so switching off also stops collection for sent emails.
+   */
+  emailTracking?: { opens?: boolean; clicks?: boolean };
   /**
    * Sub-account-level kill switch for the automation engine. When true:
    *   - fireTriggers() returns early without creating any execution docs

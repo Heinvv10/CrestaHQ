@@ -1,26 +1,31 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { AlarmClockCheck, Loader2 } from "lucide-react";
+import { Loader2, TimerOff } from "lucide-react";
 import { useSubAccount } from "@/context/sub-account-context";
+import { fetchPipelines } from "@/lib/pipelines/client";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import type {
-  WatchdogConfigResponse,
-  WatchdogRunResponse,
+import {
+  STALE_DEALS_MAX_THRESHOLD_DAYS,
+  STALE_DEALS_MIN_THRESHOLD_DAYS,
+  type StaleDealsConfigResponse,
+  type WatchdogRunResponse,
 } from "@/types/custom-agents";
+import type { PipelineDoc } from "@/types/deals";
 
 /**
- * Inbox Follow-up Watchdog config card (Labs). Admin-configurable; members
- * see a read-only description. The Labs PAGE gates on labsEnabledByAgency —
- * this card additionally surfaces the AI Suite gate requirement (the
- * watchdog spends agency AI credits) without duplicating the page gate.
+ * Stale deals monitor config. Admins edit, members see a description. Rules
+ * pick the deals (non-terminal stage past the threshold with no open task,
+ * message or activity); the AI only writes the one-line next step. The
+ * Monitors page renders it only while `agentsEnabledByAgency` is on (the
+ * route 403s otherwise).
  */
 
-const THRESHOLD_OPTIONS = [1, 2, 3, 6, 12, 24] as const;
+const THRESHOLD_OPTIONS = [3, 5, 7, 10, 14, 21, 30, 60] as const;
 
 function relativeTime(iso: string | null): string {
   if (!iso) return "—";
@@ -33,35 +38,55 @@ function relativeTime(iso: string | null): string {
   return `${Math.round(hours / 24)}d ago`;
 }
 
-export function WatchdogSection() {
-  const { subAccountId, subAccount, isAdmin } = useSubAccount();
+export function StaleDealsSection() {
+  const { subAccountId, isAdmin } = useSubAccount();
+  // Loaded here rather than from the context, whose list starts as a
+  // synthesized default: filtering stage keys against that would wipe keys
+  // for custom pipelines on save.
+  const [pipelines, setPipelines] = useState<PipelineDoc[]>([]);
+  const [pipelinesReady, setPipelinesReady] = useState(false);
 
-  const [config, setConfig] = useState<WatchdogConfigResponse | null>(null);
+  const [config, setConfig] = useState<StaleDealsConfigResponse | null>(null);
   const [runs, setRuns] = useState<WatchdogRunResponse[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const [enabled, setEnabled] = useState(false);
-  const [thresholdHours, setThresholdHours] = useState(3);
+  const [thresholdDays, setThresholdDays] = useState(7);
+  // Empty = every pipeline.
+  const [pipelineIds, setPipelineIds] = useState<string[]>([]);
+  const [excludeStageKeys, setExcludeStageKeys] = useState<string[]>([]);
   const [instructions, setInstructions] = useState("");
   const [quietOn, setQuietOn] = useState(false);
   const [quietStart, setQuietStart] = useState(21);
   const [quietEnd, setQuietEnd] = useState(7);
   const [quietTz, setQuietTz] = useState("UTC");
 
-  const aiGateOn = subAccount?.aiSuiteEnabledByAgency === true;
-
   const hydrate = useCallback(async () => {
+    fetchPipelines(subAccountId)
+      .then((list) => {
+        setPipelines(list);
+        setPipelinesReady(true);
+      })
+      .catch(() => {
+        // Filters stay hidden and saved stage keys are sent back untouched.
+        toast.error("Couldn't load pipelines for the stale deals filters.");
+      });
     try {
-      const res = await fetch(`/api/sub-accounts/${subAccountId}/agents/watchdog`);
+      const res = await fetch(
+        `/api/sub-accounts/${subAccountId}/agents/stale-deals`,
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as {
-        config?: WatchdogConfigResponse;
+        config?: StaleDealsConfigResponse;
         runs?: WatchdogRunResponse[];
       };
       if (data.config) {
         setConfig(data.config);
         setEnabled(data.config.enabled);
-        setThresholdHours(data.config.thresholdHours);
+        setThresholdDays(data.config.thresholdDays);
+        setPipelineIds(data.config.pipelineIds ?? []);
+        setExcludeStageKeys(data.config.excludeStageKeys ?? []);
         setInstructions(data.config.instructions ?? "");
         setQuietOn(data.config.quietHours !== null);
         if (data.config.quietHours) {
@@ -76,7 +101,7 @@ export function WatchdogSection() {
       }
       setRuns(data.runs ?? []);
     } catch {
-      toast.error("Couldn't load the watchdog config.");
+      toast.error("Couldn't load the stale deals monitor config.");
     } finally {
       setLoaded(true);
     }
@@ -90,17 +115,51 @@ export function WatchdogSection() {
     void hydrate();
   }, [isAdmin, hydrate]);
 
+  // Stage picks only make sense for pipelines that are in scope.
+  const stageChoices = useMemo(
+    () =>
+      pipelines
+        .filter((p) => pipelineIds.length === 0 || pipelineIds.includes(p.id))
+        .flatMap((p) =>
+          p.stages
+            .filter((s) => !s.terminal)
+            .map((s) => ({
+              key: `${p.id}:${s.id}`,
+              label: pipelines.length > 1 ? `${p.name} · ${s.label}` : s.label,
+            })),
+        ),
+    [pipelines, pipelineIds],
+  );
+
+  const togglePipeline = (id: string) =>
+    setPipelineIds((cur) =>
+      cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id],
+    );
+  const toggleStage = (key: string) =>
+    setExcludeStageKeys((cur) =>
+      cur.includes(key) ? cur.filter((x) => x !== key) : [...cur, key],
+    );
+
   async function handleSave() {
     setSaving(true);
     try {
       const res = await fetch(
-        `/api/sub-accounts/${subAccountId}/agents/watchdog`,
+        `/api/sub-accounts/${subAccountId}/agents/stale-deals`,
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             enabled,
-            thresholdHours,
+            thresholdDays,
+            pipelineIds: pipelineIds.length > 0 ? pipelineIds : null,
+            // Drop stale keys for pipelines that left the scope. Before the
+            // pipelines load only the default is known, so filtering then
+            // would wipe keys for custom pipelines.
+            excludeStageKeys: pipelinesReady
+              ? excludeStageKeys.filter((k) =>
+                  stageChoices.some((c) => c.key === k),
+                )
+              : excludeStageKeys,
             instructions: instructions.trim() || null,
             quietHours: quietOn
               ? { startHour: quietStart, endHour: quietEnd, timezone: quietTz }
@@ -110,14 +169,17 @@ export function WatchdogSection() {
       );
       const data = (await res.json().catch(() => ({}))) as {
         error?: string;
-        config?: WatchdogConfigResponse;
+        config?: StaleDealsConfigResponse;
       };
       if (!res.ok) throw new Error(data.error ?? "Failed to save.");
-      if (data.config) setConfig(data.config);
+      if (data.config) {
+        setConfig(data.config);
+        setExcludeStageKeys(data.config.excludeStageKeys ?? []);
+      }
       toast.success(
         enabled
-          ? "Watchdog enabled — it checks the inbox every hour."
-          : "Watchdog settings saved.",
+          ? "Stale deals monitor enabled — it checks the pipeline every hour."
+          : "Stale deals monitor settings saved.",
       );
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to save.");
@@ -129,14 +191,14 @@ export function WatchdogSection() {
   const lastRun = runs[0] ?? null;
 
   return (
-    <div className="rounded-2xl border bg-card p-6">
+    <div className="rounded-2xl border bg-card p-6" data-testid="monitor-stale-deals">
       <div className="flex items-start gap-3">
-        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-amber-500/10 text-amber-600 dark:text-amber-400">
-          <AlarmClockCheck className="h-4 w-4" />
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-emerald-500/10 text-emerald-600 dark:text-emerald-400">
+          <TimerOff className="h-4 w-4" />
         </span>
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2">
-            <h2 className="text-base font-semibold">Inbox Follow-up Watchdog</h2>
+            <h2 className="text-base font-semibold">Stale deals</h2>
             <span
               className={
                 "rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider " +
@@ -149,18 +211,18 @@ export function WatchdogSection() {
             </span>
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
-            Checks your unified inbox every hour, spots inbound conversations
-            that have gone unanswered too long, and judges which ones genuinely
-            need a human — then creates a follow-up task and sends a push
-            notification with the reason. It never messages your customers and
-            never changes your data.
+            Checks the pipeline every hour for deals that have sat in one stage
+            past your threshold with no open task, no message either way and no
+            activity. Each one gets a follow-up task with a suggested next step
+            and a push to the team. It never messages your customers and never
+            moves a deal.
           </p>
         </div>
       </div>
 
       {!isAdmin ? (
         <p className="mt-4 text-sm text-muted-foreground">
-          A workspace admin can configure this agent.
+          A workspace admin can configure this monitor.
         </p>
       ) : !loaded ? (
         <p className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
@@ -168,27 +230,18 @@ export function WatchdogSection() {
         </p>
       ) : (
         <div className="mt-5 space-y-4">
-          {!aiGateOn && (
-            <p className="rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-400">
-              The watchdog needs the <strong>AI Suite</strong> enabled for this
-              workspace (it spends your agency&apos;s AI credits). Ask your
-              agency owner to enable it from the Manage panel before switching
-              the watchdog on.
-            </p>
-          )}
-
           <label className="flex cursor-pointer items-start gap-2.5">
             <Checkbox
               checked={enabled}
               onCheckedChange={(v) => setEnabled(v === true)}
-              disabled={saving || (!aiGateOn && !enabled)}
+              disabled={saving}
               className="mt-0.5"
             />
             <span>
-              <span className="text-sm font-medium">Enable the watchdog</span>
+              <span className="text-sm font-medium">Enable the stale deals monitor</span>
               <span className="block text-xs text-muted-foreground">
                 Runs hourly. Worst case it&apos;s wrong: an unnecessary task —
-                it can&apos;t touch customers or data.
+                it can&apos;t touch customers or deals.
               </span>
             </span>
           </label>
@@ -196,17 +249,25 @@ export function WatchdogSection() {
           <div className="grid gap-4 sm:grid-cols-2">
             <div>
               <Label className="mb-1 block text-xs font-medium text-muted-foreground">
-                Flag conversations unanswered for
+                Flag deals in one stage for
               </Label>
               <select
-                value={thresholdHours}
-                onChange={(e) => setThresholdHours(Number(e.target.value))}
+                value={thresholdDays}
+                onChange={(e) => setThresholdDays(Number(e.target.value))}
                 disabled={saving}
                 className="h-9 w-full rounded-md border border-input bg-transparent px-3 text-sm shadow-xs outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60 [&_option]:bg-background [&_option]:text-foreground"
               >
-                {THRESHOLD_OPTIONS.map((h) => (
-                  <option key={h} value={h}>
-                    {h} hour{h === 1 ? "" : "s"}+
+                {/* The assistant can set any day count, so keep the saved value selectable. */}
+                {[...new Set<number>([...THRESHOLD_OPTIONS, thresholdDays])]
+                  .filter(
+                    (d) =>
+                      d >= STALE_DEALS_MIN_THRESHOLD_DAYS &&
+                      d <= STALE_DEALS_MAX_THRESHOLD_DAYS,
+                  )
+                  .sort((a, b) => a - b)
+                  .map((d) => (
+                  <option key={d} value={d}>
+                    {d} days+
                   </option>
                 ))}
               </select>
@@ -250,14 +311,60 @@ export function WatchdogSection() {
             </div>
           </div>
 
+          {pipelinesReady && pipelines.length > 1 && (
+            <div>
+              <Label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Pipelines to watch (none ticked = all)
+              </Label>
+              <div className="flex flex-wrap gap-3">
+                {pipelines.map((p) => (
+                  <label
+                    key={p.id}
+                    className="flex cursor-pointer items-center gap-1.5 text-sm"
+                  >
+                    <Checkbox
+                      checked={pipelineIds.includes(p.id)}
+                      onCheckedChange={() => togglePipeline(p.id)}
+                      disabled={saving}
+                    />
+                    {p.name}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {pipelinesReady && stageChoices.length > 0 && (
+            <div>
+              <Label className="mb-1 block text-xs font-medium text-muted-foreground">
+                Stages to ignore (e.g. a parked or waiting stage)
+              </Label>
+              <div className="flex flex-wrap gap-3">
+                {stageChoices.map((c) => (
+                  <label
+                    key={c.key}
+                    className="flex cursor-pointer items-center gap-1.5 text-sm"
+                  >
+                    <Checkbox
+                      checked={excludeStageKeys.includes(c.key)}
+                      onCheckedChange={() => toggleStage(c.key)}
+                      disabled={saving}
+                    />
+                    {c.label}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div>
             <Label className="mb-1 block text-xs font-medium text-muted-foreground">
-              Extra criteria for the judge (optional)
+              Guidance for the suggested next step (optional)
             </Label>
             <Textarea
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
-              placeholder="e.g. Prioritise anything mentioning price, cancellation, or a complaint. Ignore delivery notifications."
+              placeholder="e.g. Always suggest a phone call before a third email. Mention our 10% end-of-month offer."
               maxLength={1000}
               rows={2}
               disabled={saving}
@@ -269,7 +376,7 @@ export function WatchdogSection() {
               {lastRun
                 ? `Last run ${relativeTime(lastRun.startedAt)} — ${
                     lastRun.status === "completed"
-                      ? `${lastRun.scanned} scanned, ${lastRun.judged} judged, ${lastRun.flagged} flagged`
+                      ? `${lastRun.scanned} past threshold, ${lastRun.flagged} flagged`
                       : lastRun.status === "skipped"
                         ? `skipped (${lastRun.skippedReason ?? "—"})`
                         : "failed"
@@ -324,9 +431,9 @@ export function WatchdogSection() {
                       {r.status === "completed"
                         ? r.actions.length > 0
                           ? r.actions
-                              .map((a) => `${a.contactName}: ${a.reason}`)
+                              .map((a) => `${a.dealTitle ?? a.contactName}: ${a.reason}`)
                               .join(" · ")
-                          : `${r.scanned} scanned, ${r.judged} judged`
+                          : `${r.scanned} past threshold, none needed a nudge`
                         : (r.skippedReason ?? "")}
                     </span>
                   </li>

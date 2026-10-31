@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { requireSubAccountMember } from "@/lib/auth/require-tenancy";
 import { territoryGate } from "@/lib/auth/territory-filter";
 import { pushBookingToGoogle } from "@/lib/google-calendar/push";
+import { isImportedEvent } from "@/types/events";
 
 /**
  * Retry a booking's Google Calendar sync (the event dialog's "Retry sync").
@@ -31,6 +32,9 @@ export async function POST(request: Request, ctx: { params: Promise<{ id: string
   if (access instanceof NextResponse) return access;
   const gate = await territoryGate(access, snap.data()?.territoryId as string | null | undefined);
   if (gate) return gate;
+  if (isImportedEvent(snap.data())) {
+    return NextResponse.json({ error: "Imported Google events are read-only." }, { status: 400 });
+  }
 
   // One retry per event per 30 s: each is a round of Google calls per host.
   // Read and stamp in one transaction so two concurrent clicks can't both pass.

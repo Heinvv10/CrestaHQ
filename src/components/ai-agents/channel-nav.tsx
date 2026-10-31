@@ -7,6 +7,7 @@ import { useSubAccount } from "@/context/sub-account-context";
 import {
   VISIBLE_AI_CHANNELS,
   buildChannelHref,
+  monitorsTabVisible,
 } from "@/components/ai-agents/channels";
 import { cn } from "@/lib/utils";
 
@@ -17,15 +18,19 @@ import { cn } from "@/lib/utils";
  * Tabs are colored by direction group so the surface reads at a glance:
  *   - inbound channels (the AI reacts) → violet
  *   - outbound (the AI calls out)      → orange, after a divider
+ *   - monitors (the AI watches the CRM) → emerald, after a divider
  */
 export function ChannelNav() {
   const pathname = usePathname();
-  const { subAccountId } = useSubAccount();
+  const { subAccountId, subAccount } = useSubAccount();
   const baseHref = `/sa/${subAccountId}/ai-agents`;
+  const tabs = VISIBLE_AI_CHANNELS.filter((c) =>
+    monitorsTabVisible(c, subAccount),
+  );
 
   return (
     <div className="flex items-center overflow-x-auto border-b">
-      {VISIBLE_AI_CHANNELS.map((channel, i) => {
+      {tabs.map((channel, i) => {
         const href = buildChannelHref(subAccountId, channel);
         const isActive =
           channel.id === "overview"
@@ -33,8 +38,9 @@ export function ChannelNav() {
             : pathname.startsWith(href);
         const Icon = channel.icon;
         const outbound = channel.group === "outbound";
-        // Divider between the inbound group and the first outbound tab.
-        const prev = VISIBLE_AI_CHANNELS[i - 1];
+        const monitor = channel.group === "monitor";
+        // Divider wherever the group changes.
+        const prev = tabs[i - 1];
         const showDivider = prev && prev.group !== channel.group;
 
         return (
@@ -52,7 +58,11 @@ export function ChannelNav() {
                 isActive
                   ? cn(
                       "font-medium text-foreground",
-                      outbound ? "border-orange-500" : "border-violet-500",
+                      outbound
+                        ? "border-orange-500"
+                        : monitor
+                          ? "border-emerald-500"
+                          : "border-violet-500",
                     )
                   : "border-transparent text-muted-foreground hover:text-foreground",
               )}
@@ -62,7 +72,9 @@ export function ChannelNav() {
                   "h-3.5 w-3.5",
                   outbound
                     ? "text-orange-500/80"
-                    : "text-violet-500/70",
+                    : monitor
+                      ? "text-emerald-500/80"
+                      : "text-violet-500/70",
                 )}
               />
               {channel.label}

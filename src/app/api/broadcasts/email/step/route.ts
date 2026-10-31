@@ -18,6 +18,7 @@ import {
   type ClaimedRow,
 } from "@/lib/broadcasts/settle-send";
 import { maybeMarkBroadcastCompleted } from "@/lib/broadcasts/completion";
+import { instrumentBroadcastHtml } from "@/lib/broadcasts/email-tracking";
 import { editedByAgentSinceApproval, templateFingerprint } from "@/lib/broadcasts/approved";
 import type {
   AgencyDoc,
@@ -275,7 +276,6 @@ async function deliver(
     { ...baseSubject, unsubscribeLink: htmlAnchor },
     { escape: "html", safeTags: ["unsubscribeLink"] },
   ).replace(/\r?\n/g, "<br>");
-  const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${htmlInner}</body></html>`;
 
   // Monthly email quota (Usage Metering v1) — record the row as failed
   // with a clear reason rather than silently dropping it. Fails open.
@@ -289,6 +289,20 @@ async function deliver(
     await maybeMarkBroadcastCompleted(broadcastRef);
     return NextResponse.json({ ok: true, status: "failed" });
   }
+
+  // Open pixel + click redirect, only where the sub-account switched them on
+  // (otherwise the body is unchanged). Before providerReached: a failed
+  // link-doc write releases the claim instead of sending links that 404.
+  const trackedInner = await instrumentBroadcastHtml({
+    html: htmlInner,
+    broadcastId,
+    contactId,
+    agencyId: broadcast.agencyId,
+    subAccountId: broadcast.subAccountId,
+    tracking: subAccount.emailTracking,
+    unsubscribeLink,
+  });
+  const html = `<!doctype html><html><body style="font-family:system-ui,-apple-system,sans-serif;line-height:1.6;color:#1a1a1a;max-width:600px;margin:0 auto;padding:24px;">${trackedInner}</body></html>`;
 
   let resendMessageId: string | null = null;
   let error: string | null = null;

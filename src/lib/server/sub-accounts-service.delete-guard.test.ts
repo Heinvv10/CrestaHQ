@@ -76,6 +76,39 @@ describe("deleteSubAccountForAgency emptiness guard", () => {
   });
 });
 
+describe("imported Google events", () => {
+  const imported = (id: string) =>
+    mem.db.doc(`events/${id}`).set({ agencyId: AG, subAccountId: SA, source: "google", importOwnerUid: "uid_owner" });
+
+  it("do not block the delete, and go with the sub-account", async () => {
+    await imported("gcal_1");
+    await imported("gcal_2");
+    await mem.db.doc("events/gcal_other").set({ subAccountId: "sa_other", source: "google", importOwnerUid: "u" });
+
+    await deleteSubAccountForAgency({ agencyId: AG, subAccountId: SA });
+
+    expect(mem.read(`subAccounts/${SA}`)).toBeUndefined();
+    expect(mem.read("events/gcal_1")).toBeUndefined();
+    expect(mem.read("events/gcal_2")).toBeUndefined();
+    expect(mem.read("events/gcal_other")).toBeDefined();
+  });
+
+  it.each([
+    ["a manual event", { source: "manual" }],
+    ["a legacy event with no source", {}],
+    ["a booking", { source: "booking_page" }],
+  ])("%s beside them still blocks as calendar events, and nothing is deleted", async (_n, over) => {
+    await imported("gcal_1");
+    await mem.db.doc("events/ev_1").set({ agencyId: AG, subAccountId: SA, ...over });
+
+    const err = await deleteSubAccountForAgency({ agencyId: AG, subAccountId: SA }).catch((e) => e);
+
+    expect((err as SubAccountNotEmptyError).blockers).toEqual(["calendar events"]);
+    expect(mem.read(`subAccounts/${SA}`)).toBeDefined();
+    expect(mem.read("events/gcal_1")).toBeDefined();
+  });
+});
+
 describe("findDeleteBlockers' except", () => {
   it("without except, every usage collection blocks as before; except drops only the named ones", async () => {
     await mem.db.doc("contacts/c_1").set({ agencyId: AG, subAccountId: SA });

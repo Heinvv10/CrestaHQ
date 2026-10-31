@@ -11,6 +11,9 @@ import {
   WATCHDOG_DEFAULT_DAILY_TOKEN_BUDGET,
   WATCHDOG_DEFAULT_THRESHOLD_HOURS,
   WATCHDOG_MAX_JUDGMENTS_PER_RUN,
+  agentDocId,
+  type AgentConfigBase,
+  type AgentType,
   type WatchdogConfigDoc,
   type WatchdogConfigResponse,
   type WatchdogQuietHours,
@@ -37,6 +40,10 @@ import { runAfterResponse } from "@/lib/server/after-response";
  *      clamped fields; unparseable → treated as "no follow-up needed".
  *   4. Cost bounds: deterministic pre-filter first; ≤20 judgments/run;
  *      per-day token budget; gates re-checked EVERY run.
+ *
+ * The Stale deals monitor (agents-stale-deals-service.ts) shares the
+ * `customAgents` collection, the run-log shape and the hourly schedule; it
+ * runs after this sweep, under its own gate (`agentsEnabledByAgency`).
  */
 
 const AGENTS_COLLECTION = "customAgents";
@@ -46,8 +53,12 @@ const PREFILTER_FETCH_LIMIT = 60;
 const THREAD_EXCERPT_MESSAGES = 5;
 const MAX_RUNS_KEPT_DAYS = 30;
 
-function agentRef(subAccountId: string) {
-  return getAdminDb().collection(AGENTS_COLLECTION).doc(subAccountId);
+/** The watchdog's doc is `customAgents/{subAccountId}`; every later agent
+ *  is `customAgents/{subAccountId}_{type}`. */
+export function agentRef(subAccountId: string, type: AgentType = "inbox-watchdog") {
+  return getAdminDb()
+    .collection(AGENTS_COLLECTION)
+    .doc(agentDocId(subAccountId, type));
 }
 
 // ---------------------------------------------------------------------------
@@ -123,11 +134,19 @@ function tsToIso(value: unknown): string | null {
   return null;
 }
 
-export async function listWatchdogRuns(
+export function listWatchdogRuns(
   subAccountId: string,
   limit = 10,
 ): Promise<WatchdogRunResponse[]> {
-  const snap = await agentRef(subAccountId)
+  return listAgentRuns(subAccountId, "inbox-watchdog", limit);
+}
+
+export async function listAgentRuns(
+  subAccountId: string,
+  type: AgentType,
+  limit = 10,
+): Promise<WatchdogRunResponse[]> {
+  const snap = await agentRef(subAccountId, type)
     .collection("runs")
     .orderBy("startedAt", "desc")
     .limit(limit)
@@ -222,7 +241,7 @@ export function isInQuietHours(
   return hour >= startHour || hour < endHour; // overnight window
 }
 
-function toMillis(value: unknown): number | null {
+export function toMillis(value: unknown): number | null {
   if (value instanceof Timestamp) return value.toMillis();
   if (value instanceof Date) return value.getTime();
   return null;
@@ -257,7 +276,7 @@ async function loadThreadExcerpt(
   return lines.join("\n") || "(no readable messages)";
 }
 
-interface SweepAccountResult {
+export interface SweepAccountResult {
   subAccountId: string;
   status: WatchdogRunDoc["status"];
   skippedReason: WatchdogSkippedReason | null;
@@ -575,7 +594,8 @@ async function runWatchdogForSubAccount(
 
 /** The hourly cron entry point: run every enabled watchdog, sequentially
  *  (fleet sizes are small; sequential keeps the invocation bounded and the
- *  Firestore load smooth). */
+ *  Firestore load smooth). Other agent types in the collection are skipped
+ *  here; the step route runs them after this sweep. */
 export async function runWatchdogSweep(): Promise<{
   agents: number;
   results: SweepAccountResult[];
@@ -583,18 +603,23 @@ export async function runWatchdogSweep(): Promise<{
   const snap = await getAdminDb()
     .collection(AGENTS_COLLECTION)
     .where("enabled", "==", true)
-    .limit(200)
+    // Ceiling: 500 enabled agent docs of ANY type (stale-deals docs count
+    // too, filtered below); past it some agents silently never run.
+    .limit(500)
     .get();
 
+  const watchdogs = snap.docs.filter(
+    (d) => (d.data() as Partial<AgentConfigBase>).type !== "stale-deals",
+  );
   const results: SweepAccountResult[] = [];
-  for (const doc of snap.docs) {
+  for (const doc of watchdogs) {
     const agent = {
       ...(doc.data() as WatchdogConfigDoc),
       subAccountId: doc.id,
     };
     results.push(await runWatchdogForSubAccount(agent));
   }
-  return { agents: snap.size, results };
+  return { agents: watchdogs.length, results };
 }
 
 /** 30-day retention sweep for run logs — called from the daily cleanup cron. */
