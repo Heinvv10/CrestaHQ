@@ -210,28 +210,23 @@ describe("check-agent-coverage-shrink CLI", () => {
       expect(unlock).toContain(`needs: [${lockId}, ${suiteId}]`);
       // Only the lock jobs get a write token, and they run nothing but the
       // lock script: no install, no secrets, no third-party action but checkout.
-      // The script is the default branch's copy; this commit's copy is checked
-      // out only when the default branch has none (the one-time bootstrap).
+      // The script is the default branch's copy, never this commit's.
       for (const [j, cmd] of [
         [lock, "acquire"],
         [unlock, "release"],
       ]) {
         expect(j).toMatch(/permissions:\n\s+contents: write\n/);
         expect(j).not.toMatch(/secrets\.|pnpm|npm |setup-node|action-setup/);
-        expect(j.match(/uses: actions\/checkout@/g)).toHaveLength(2);
-        expect(j.match(/uses: /g)).toHaveLength(2);
-        expect(j.match(/persist-credentials: false/g)).toHaveLength(2);
+        expect(j.match(/uses: actions\/checkout@/g)).toHaveLength(1);
+        expect(j.match(/uses: /g)).toHaveLength(1);
+        expect(j.match(/persist-credentials: false/g)).toHaveLength(1);
         expect(j.match(/github\.token/g)).toHaveLength(1);
         const trusted = j.slice(j.indexOf("uses: actions/checkout@"));
         expect(trusted).toMatch(
           /^uses: actions\/checkout@\S+ # v4\n\s+with:\n\s+ref: \$\{\{ github\.event\.repository\.default_branch \}\}\n/
         );
-        const bootstrap = trusted.slice(trusted.indexOf("- name: Bootstrap"));
-        expect(bootstrap).toMatch(/^- name: [^\n]+\n\s+if: \$\{\{ hashFiles\('scripts\/ci\/fixture-lock\.mjs'\) == '' \}\}\n\s+uses: actions\/checkout@\S+ # v4\n\s+with:\n\s+path: \.bootstrap-lock\n/);
-        expect(j).toContain('LOCK=scripts/ci/fixture-lock.mjs\n');
-        expect(j).toContain('LOCK=.bootstrap-lock/$LOCK\n');
-        expect(j).toContain(`node "$LOCK" ${cmd}\n`);
-        expect(j).not.toMatch(/node scripts\/ci\/fixture-lock\.mjs/);
+        expect(j).not.toMatch(/bootstrap|hashFiles|path: /i);
+        expect(j).toContain(`run: node scripts/ci/fixture-lock.mjs ${cmd}\n`);
       }
       // The suite job is read-only and checks it holds the lock before installing anything.
       expect(suite).toMatch(/permissions:\n\s+contents: read\n\s+(timeout-minutes|#)/);
