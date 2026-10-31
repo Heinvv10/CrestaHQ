@@ -3,6 +3,9 @@ import { defineConfig } from "vitest/config";
 // Firestore rules tests (`pnpm test:rules`). Kept out of `pnpm test` so the
 // Admin credential they need is handed to one CI step, not to every unit
 // test. See src/lib/audit/audit-events.firestore-rules.test.ts.
+//
+// Skips locally without FIREBASE_ADMIN_*, fails in CI: see "The gates" in
+// docs/agent-workflow.md.
 export default defineConfig({
   test: {
     environment: "node",

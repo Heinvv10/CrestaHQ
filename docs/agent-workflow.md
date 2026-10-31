@@ -20,9 +20,16 @@ Moved verbatim from `CLAUDE.md` (former lines 54-161). CLAUDE.md keeps a summary
 | Blind `/review` | you, before merge | yes |
 
 `pnpm ci:check` runs the first five locally — byte-for-byte the same commands
-CI runs, so a green local run means a green pipeline. Keep them identical; a
+CI runs. Keep them identical; a
 `npx` here and a `pnpm exec` there is the first millimetre of the same drift
 that let FibreFlow's baselines diverge across five files.
+
+`pnpm test:rules` needs `FIREBASE_ADMIN_PROJECT_ID`, `FIREBASE_ADMIN_CLIENT_EMAIL`
+and `FIREBASE_ADMIN_PRIVATE_KEY`. Without them the rules specs skip, so a green
+local `ci:check` is incomplete evidence for the rules gate. A fully equivalent
+local run needs valid credentials; otherwise the mandatory CI "Firestore rules
+tests" step supplies the missing evidence, and with `CI` set a missing
+credential fails the step instead of skipping.
 
 **Nothing in CI is `continue-on-error`, and nothing should become so.** The
 entire gate takes ~52s, so there is no speed argument for softening a step. If
