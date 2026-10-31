@@ -88,7 +88,7 @@
     "@types/react-dom": "^19",
     "@types/sanitize-html": "^2.16.1",
     "@types/web-push": "^3.6.4",
-    "@vitest/coverage-v8": "^4.1.11",
+    "@vitest/coverage-v8": "^4.1.12",
     "eslint": "^9",
     "eslint-config-next": "15.5.28",
     "eslint-config-prettier": "^10.1.8",
@@ -99,6 +99,7 @@
     "rolldown": "1.2.6",
     "tailwindcss": "^4",
     "typescript": "^5",
-    "vitest": "^4.1.11"
+    "vite": "~8.2.4",
+    "vitest": "^4.1.12"
   }
 }
