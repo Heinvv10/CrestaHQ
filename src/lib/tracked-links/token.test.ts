@@ -26,6 +26,15 @@ describe("verifyTrackedLinkToken", () => {
     });
   });
 
+  it("returns null — never throws — for a signature that is not 64 lower-case hex", () => {
+    const [linkId, contactId, sig] = issueTrackedLinkToken("link1", "contactA").split(".") as [string, string, string];
+    // Same UTF-16 length as a real signature, more bytes: timingSafeEqual would throw.
+    for (const bad of [`é${sig.slice(1)}`, `${sig.slice(0, -1)}€`, sig.toUpperCase(), sig.slice(1)]) {
+      expect(() => verifyTrackedLinkToken(`${linkId}.${contactId}.${bad}`)).not.toThrow();
+      expect(verifyTrackedLinkToken(`${linkId}.${contactId}.${bad}`)).toBeNull();
+    }
+  });
+
   it("rejects a tampered payload (contact swapped, signature kept)", () => {
     const token = issueTrackedLinkToken("link1", "contactA");
     const [linkId, , sig] = token.split(".");

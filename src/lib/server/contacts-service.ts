@@ -194,7 +194,7 @@ export function buildContactDoc(input: CreateContactInput) {
   };
 }
 
-type Announcer = Pick<CreateContactInput, "subAccountId" | "agencyId" | "mode" | "apiKeyId" | "actor">;
+type Announcer = Pick<CreateContactInput, "subAccountId" | "agencyId" | "mode" | "apiKeyId" | "actor" | "createdByUid">;
 
 /**
  * Everything a newly written contact announces: the `contact.created`
@@ -224,6 +224,7 @@ export function announceContactCreated(
     type: "contact.created",
     payload: { contact },
     ...(input.actor ? { byAgent: true } : {}),
+    actorUid: input.createdByUid,
   }));
   const trigger =
     input.mode === "live"

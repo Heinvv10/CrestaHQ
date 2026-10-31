@@ -20,6 +20,11 @@ import {
   stripeCanChargeCurrency,
 } from "@/lib/stripe/amount";
 import { getAdminDb } from "@/lib/firebase/admin";
+import {
+  handleCheckoutExpired,
+  handleProductLinkCompleted,
+  sessionBuyer,
+} from "@/lib/stripe/product-link-reconcile";
 import { eventTokenSecretConfigured } from "@/lib/booking/event-token";
 import type { Order } from "@/types/orders";
 
@@ -75,6 +80,8 @@ export async function reconcileStripeEvent(input: {
       // later with this event, carrying the same session, now paid.
       case "checkout.session.async_payment_succeeded":
         return await handleCheckoutCompleted(subAccountId, event);
+      case "checkout.session.expired":
+        return await handleCheckoutExpired(subAccountId, event.data.object as Stripe.Checkout.Session);
       case "charge.refunded":
         return await handleChargeRefunded(subAccountId, event);
       case "charge.dispute.created":
@@ -128,11 +135,17 @@ async function handleCheckoutCompleted(
       ? session.payment_intent
       : (session.payment_intent?.id ?? null);
 
+  // Express buy links have their own paid transition (product-link-reconcile.ts).
+  if (order.source === "product_link") {
+    return await handleProductLinkCompleted(order, session, paymentIntentId);
+  }
+
+  const buyer = sessionBuyer(session);
   const { changed, order: updated } = await markOrderPaid({
     orderId: order.id,
     stripePaymentIntentId: paymentIntentId,
-    buyerEmail: session.customer_details?.email ?? null,
-    buyerName: session.customer_details?.name ?? null,
+    buyerEmail: buyer.email,
+    buyerName: buyer.name,
   });
 
   if (!updated) return { handled: true, detail: "order no longer exists" };

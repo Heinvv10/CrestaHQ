@@ -99,12 +99,64 @@ the PR's individual commits stay readable in history.
 
 ### CI runner
 
-CI runs on a **self-hosted runner** (`velo-crestahq-u`, labels
-`self-hosted, linux, velo, crestahq`) because GitHub-hosted runner billing is
-paused on this account. It runs as its own unix user (`gha-crestahq`) under
-`actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`, matching the four
-sibling runners on the same box. If PRs sit queued forever, check that service
-first — a stopped runner looks exactly like a slow CI.
+Every CI job runs on **GitHub-hosted `ubuntu-latest`** — lint/typecheck/test/build,
+secret scan, FROZEN-shrink, the Go workflows, the **E2E job in `ci.yml`** and
+**`e2e-smoke.yml`**. Nothing runs on velo-server any more.
+
+Every E2E run (PR or production smoke) seeds and purges the same fixture
+sub-accounts in the production Firestore (`e2e/global-setup.ts`
+`purgeFixtureData` is global), so runs must never overlap. A GitHub concurrency
+group cannot do that without losing runs: it keeps only one *pending* run and
+cancels the older one when a third queues. Instead the suite job sits between
+two jobs that run `scripts/ci/fixture-lock.mjs` (`e2e-lock` → `E2E (Playwright)`
+→ `e2e-unlock` in `ci.yml`; `smoke-lock` → smoke → `smoke-unlock` in
+`e2e-smoke.yml`):
+
+- `acquire` creates the git ref `refs/ci-locks/e2e-fixtures` (create is atomic:
+  422 if it exists) and otherwise **waits**, polling once a minute and logging
+  the holder run. It never cancels anything. Waiting is not FIFO, and a wait
+  longer than 220 min fails that run's check. A hosted run holds the lock for
+  ~55-60 min (the suite took 18 min on velo-server), so the queue drains about
+  one run an hour. On a PR it gives up (failing that
+  superseded commit's check) once the PR has a newer head or is closed.
+- A lock whose holder run attempt the actions API shows completed (or no longer
+  exists) is taken over with a fast-forward-only ref update on top of it, so two
+  waiters cannot both take the same stale lock. Age never frees a live holder;
+  the 150-min limit applies only to a ref commit the script did not write. The
+  lock is held for the whole suite job (setup + Playwright, 120-min timeout).
+- The suite job first runs `held` and fails unless this run attempt holds the
+  lock. **Re-run all jobs, not "re-run failed jobs"**: the latter reruns the
+  suite job but not the lock job, and the first attempt already released it.
+- `release` runs in its own job under `if: always()` and, only if the recorded
+  holder is this run attempt, commits a "released" marker on top of the lock
+  commit it read and fast-forwards the ref to it — a compare-and-swap, so it can
+  never free a lock another run took in between. The next waiter takes the
+  marker at once.
+
+Only the lock jobs get `contents: write` (the ref), plus `actions: read` (holder
+check) and, for E2E, `pull-requests: read` (newer head). They check out
+`scripts/ci` from the **default branch** (never the PR's copy; a one-time
+bootstrap falls back to the PR's copy while main lacks the script) and run it on
+node built-ins: no install, no secrets, no app
+code. The suite job, which installs dependencies and runs the PR's code with the
+fixture secrets, gets `contents: read`. That is not a boundary against a
+same-repo PR's author, who can edit the workflow (fork PRs never run these
+jobs). `E2E (Playwright)` is the required check and a skipped required check
+counts as passing, so it runs under `always()` and fails itself when
+`e2e-lock` did not succeed. Follow-up: the suite job still receives the fixture
+secrets while running PR code (unchanged from velo-server).
+
+**Local Playwright runs do not take the lock.** A local run against the fixture
+tenants can still collide with CI; check `gh run list --status in_progress` (or
+the lock ref) before starting one. The self-hosted runner `velo-crestahq-u`
+(service `actions.runner.Heinvv10-CrestaHQ.velo-crestahq-u.service`) no longer
+receives jobs once this is merged and can be stopped and unregistered.
+To clear a wedged lock by hand: `gh api -X DELETE repos/Heinvv10/CrestaHQ/git/refs/ci-locks/e2e-fixtures`
+— only when no E2E or smoke run is in its Playwright step.
+
+Follow-up: scope `purgeFixtureData` and the fixture data per run id (as
+`e2e/lib/run-id.ts` already does for specs' fixture prefixes) so runs could
+overlap safely; until no spec depends on global fixture state, the lock stays.
 
 ### Deploy
 

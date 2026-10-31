@@ -141,6 +141,23 @@ export async function sendQuoteServerSide(input: {
   if (quote.status === "paid") {
     return fail("already_paid", 409, `This ${quote.kind === "invoice" ? "invoice" : "quote"} is already paid.`);
   }
+  // A re-send would rotate the link and flip the status back over a signed
+  // accept. A signed quote moves on by converting it to an invoice.
+  if (quote.kind !== "invoice" && quote.signature) {
+    return fail(
+      "already_signed",
+      409,
+      "This quote has been signed and can't be re-sent. Convert it to an invoice to request payment, or create a new quote.",
+    );
+  }
+  // Its accept is final, so the fresh link a send mints would never be recorded (quote-send-claim.ts).
+  if (quote.kind !== "invoice" && quote.status === "accepted") {
+    return fail(
+      "already_accepted",
+      409,
+      "This quote has already been accepted and can't be re-sent. Convert it to an invoice to request payment, or create a new quote.",
+    );
+  }
 
   // 4. Load contact + email check
   // A quote can be written client-side naming any contact id, so the

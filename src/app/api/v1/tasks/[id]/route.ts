@@ -32,6 +32,7 @@ export const PATCH = withApiAuth<{ id: string }>(async ({ body, params, ctx }) =
     agencyId: ctx.agencyId,
     mode: ctx.mode,
     patch: parsed.value!,
+    actorUid: `apikey:${ctx.keyPrefix}`,
   });
   if (!result.ok) {
     return result.code === "task_not_found"

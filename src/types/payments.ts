@@ -87,6 +87,9 @@ export const SECRET_KEY_RE = /^sk_(live|test)_[A-Za-z0-9]+$/;
 export const SUB_ACCOUNT_WEBHOOK_EVENTS = [
   "checkout.session.completed",
   "checkout.session.async_payment_succeeded",
+  // Closes an express buy-link order that was never paid. Endpoints
+  // registered before this was added don't send it; their orders stay pending.
+  "checkout.session.expired",
   "charge.refunded",
   "charge.dispute.created",
 ] as const;

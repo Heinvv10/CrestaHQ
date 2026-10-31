@@ -11,7 +11,7 @@ import {
   type FeedEventInput,
 } from "@/lib/booking/ics-feed";
 import { queryHostEvents } from "@/lib/booking/hosts";
-import { eventStatus } from "@/types/events";
+import { eventStatus, isImportedEvent } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
 
@@ -154,22 +154,41 @@ export async function GET(
   const window = (q: FirebaseFirestore.Query) =>
     q
       .where("startAt", ">=", Timestamp.fromDate(lookback))
-      .orderBy("startAt", "asc")
-      .limit(FEED_EVENT_CAP);
+      .orderBy("startAt", "asc");
   let eventDocs: FirebaseFirestore.QueryDocumentSnapshot[];
   try {
     if (hostMode && host) {
       // Per-host feed: every booking this member attends — owned, or a
-      // collective one listing them — earliest first, same cap.
-      eventDocs = (await queryHostEvents(subAccountId, host, window))
+      // collective one listing them — earliest first, same cap, paged past
+      // imported events like the all-bookings feed below.
+      eventDocs = (
+        await queryHostEvents(subAccountId, host, window, { want: FEED_EVENT_CAP })
+      )
         .sort((a, b) => startMs(a) - startMs(b))
         .slice(0, FEED_EVENT_CAP);
     } else {
-      eventDocs = (
-        await window(
-          db.collection("events").where("subAccountId", "==", subAccountId),
-        ).get()
-      ).docs;
+      // Paged so imported Google events (dropped below) can't crowd real
+      // bookings out of the cap.
+      const q = window(
+        db.collection("events").where("subAccountId", "==", subAccountId),
+      );
+      eventDocs = [];
+      let kept = 0;
+      let cursor: FirebaseFirestore.QueryDocumentSnapshot | null = null;
+      for (let page = 0; page < 10 && kept < FEED_EVENT_CAP; page++) {
+        const pageSnap: FirebaseFirestore.QuerySnapshot = await (cursor
+          ? q.startAfter(cursor)
+          : q
+        )
+          .limit(FEED_EVENT_CAP)
+          .get();
+        for (const d of pageSnap.docs) {
+          eventDocs.push(d);
+          if (!isImportedEvent(d.data())) kept++;
+        }
+        if (pageSnap.size < FEED_EVENT_CAP) break;
+        cursor = pageSnap.docs[pageSnap.docs.length - 1];
+      }
     }
   } catch (err) {
     // Most likely a missing composite index in production — surface a
@@ -183,7 +202,10 @@ export async function GET(
 
   const feedEvents: FeedEventInput[] = [];
   for (const d of eventDocs) {
+    if (feedEvents.length >= FEED_EVENT_CAP) break;
     const e = d.data() as CalendarEvent;
+    // Imported Google events never leave the CRM.
+    if (isImportedEvent(e)) continue;
     const startAt = tsToDate(e.startAt);
     const endAt = tsToDate(e.endAt);
     if (!startAt || !endAt) continue;

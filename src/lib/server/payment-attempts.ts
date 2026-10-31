@@ -4,6 +4,8 @@ import { FieldValue } from "firebase-admin/firestore";
 
 import { getAdminDb } from "@/lib/firebase/admin";
 import { formatCurrency } from "@/lib/format";
+import { flagOrderAttention } from "@/lib/server/orders-service";
+import type { Order } from "@/types/orders";
 import type { PaymentAttempt } from "@/types/payment-attempts";
 import type { PaymentLink } from "@/types/payment-links";
 
@@ -25,29 +27,48 @@ export function loadPaymentAttempt(reference: string): Promise<PaymentAttempt | 
  * Flag an attempt, once. A settled attempt is left alone (its money is
  * recorded), and an attempt already flagged keeps its first reason, so a
  * redelivery does not repeat the sentence on the link.
+ *
+ * An attempt that pays an order (`orderId`) has no link to carry the sentence,
+ * so it goes on the order's `attention`, where the operator and the buyer's
+ * thanks page see it. That runs on every call, not only the first: if it
+ * failed once, the retry (the attempt is already flagged by then) finishes it.
+ * `notify: false` writes the flags without emailing the admins (a bulk caller
+ * that reports once itself).
  */
 export async function flagPaymentAttempt(
   reference: string,
   reason: (attempt: PaymentAttempt) => string,
+  opts: { notify?: boolean } = {},
 ): Promise<void> {
   const db = getAdminDb();
   const attemptRef = db.doc(`paymentAttempts/${reference}`);
-  await db.runTransaction(async (t) => {
+  const flagged = await db.runTransaction(async (t) => {
     const snap = await t.get(attemptRef);
-    if (!snap.exists) return;
+    if (!snap.exists) return null;
     const attempt = { ...snap.data(), id: snap.id } as PaymentAttempt;
-    if (attempt.state === "settled" || attempt.state === "flagged") return;
+    if (attempt.state === "settled") return null;
+    if (attempt.state === "flagged") {
+      return attempt.orderId && attempt.reason ? { orderId: attempt.orderId, why: attempt.reason } : null;
+    }
     const linkRef = attempt.paymentLinkId ? db.doc(`paymentLinks/${attempt.paymentLinkId}`) : null;
     const link = linkRef ? ((await t.get(linkRef)).data() as PaymentLink | undefined) : undefined;
     const why = reason(attempt);
-    t.update(attemptRef, { state: "flagged", reason: why, updatedAt: FieldValue.serverTimestamp() });
+    t.update(attemptRef, { state: "flagged", reason: why, flaggedAt: FieldValue.serverTimestamp(), updatedAt: FieldValue.serverTimestamp() });
     if (linkRef && link) {
       t.update(linkRef, {
         attention: link.attention ? `${link.attention}\n${why}` : why,
         updatedAt: FieldValue.serverTimestamp(),
       });
     }
+    return attempt.orderId ? { orderId: attempt.orderId, why } : null;
   });
+  if (!flagged) return;
+  const orderSnap = await db.doc(`orders/${flagged.orderId}`).get();
+  const order = orderSnap.exists ? ({ id: orderSnap.id, ...orderSnap.data() } as Order) : null;
+  // Money that settled the order is not "lost": a paid order is left alone.
+  if (order && order.status !== "paid" && order.status !== "partially_refunded") {
+    await flagOrderAttention(order, flagged.why, opts);
+  }
 }
 
 type Lost = "disconnected" | "switched";
@@ -67,6 +88,7 @@ function lostPaymentReason(what: Lost) {
 export async function flagStaleAttempts(
   subAccountId: string,
   currentFingerprint: string | null,
+  opts: { notify?: boolean } = {},
 ): Promise<void> {
   const open = await getAdminDb()
     .collection("paymentAttempts")
@@ -81,7 +103,7 @@ export async function flagStaleAttempts(
   for (const doc of open.docs) {
     if ((doc.data() as PaymentAttempt).keyFingerprint === currentFingerprint) continue;
     try {
-      await flagPaymentAttempt(doc.id, reason);
+      await flagPaymentAttempt(doc.id, reason, opts);
     } catch (err) {
       console.error(`[payment-attempts] sa=${subAccountId} ref=${doc.id} could not be flagged`, err);
       failed.push(doc.id);

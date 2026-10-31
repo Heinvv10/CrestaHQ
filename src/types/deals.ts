@@ -199,6 +199,19 @@ export interface Deal {
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
   stageChangedAt: Timestamp | FieldValue | null;
+  /**
+   * Server-only stamp from the stale deals monitor. A deal is flagged once
+   * per stage visit: a stage change moves `stageChangedAt` past it.
+   */
+  staleAlertedAt?: Timestamp | FieldValue | null;
+  /**
+   * Server-only, stale deals monitor: when it last found recent work on the
+   * deal, and that work's time (null = an open task). The sweep skips the
+   * deal until `staleWorkAt + thresholdDays` (an open task: a day after
+   * `staleCheckedAt`), computed with the current threshold.
+   */
+  staleCheckedAt?: Timestamp | FieldValue | null;
+  staleWorkAt?: Timestamp | FieldValue | null;
 }
 
 export type DealFormData = {

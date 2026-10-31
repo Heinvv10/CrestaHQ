@@ -28,6 +28,7 @@ beforeEach(() => {
   vi.stubGlobal("fetch", el.fetchMock);
   vi.spyOn(console, "warn").mockImplementation(() => {});
   vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date(`${new Date().toISOString().slice(0, 10)}T12:00:00Z`)); // days are UTC: never cross midnight mid-test
 });
 afterEach(() => {
   vi.unstubAllGlobals();
