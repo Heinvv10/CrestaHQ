@@ -94,6 +94,7 @@ describe("reserveGrant", () => {
 describe("a grant nobody claims (breaker A1)", () => {
   it("is charged its full reservation when it lapses, so unreported calls still hit the cap", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${new Date().toISOString().slice(0, 10)}T12:00:00Z`)); // days are UTC: never cross midnight mid-test
     let admitted = 0;
     for (let i = 0; i < 40; i++) {
       try {
@@ -112,6 +113,7 @@ describe("a grant nobody claims (breaker A1)", () => {
 
   it("frees its concurrency slot when it lapses, at the same moment it stops being claimable (B1)", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${new Date().toISOString().slice(0, 10)}T12:00:00Z`)); // days are UTC: never cross midnight mid-test
     const first = await reserveGrant("sa1", CONN);
     for (let i = 0; i < 2; i++) await reserveGrant("sa1", CONN);
     await expect(reserveGrant("sa1", CONN)).rejects.toMatchObject({ reason: "busy" });
@@ -185,6 +187,7 @@ describe("markConnected", () => {
 
   it("a grant that lapses while its lookup is in flight is not claimed (it was already charged)", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${new Date().toISOString().slice(0, 10)}T12:00:00Z`)); // days are UTC: never cross midnight mid-test
     const grantId = await reserveGrant("sa1", CONN);
     vi.setSystemTime(Date.now() + 2 * 60 * 1000 - 500);
     el.live("conv_000001");
@@ -234,6 +237,7 @@ describe("voiceTurnAllowed", () => {
 
   it("allows a live grant, refuses it once it lapses unclaimed", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${new Date().toISOString().slice(0, 10)}T12:00:00Z`)); // days are UTC: never cross midnight mid-test
     const grantId = await reserveGrant("sa1", CONN);
     expect(await allowed(grantId)).toBe(true);
     vi.setSystemTime(Date.now() + 2 * 60 * 1000 + 1);
@@ -317,6 +321,7 @@ describe("settleConversation", () => {
 describe("sweepStalePending and the widget cap", () => {
   it("settles finished calls older than 15 seconds, leaving fresh ones", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date(`${new Date().toISOString().slice(0, 10)}T12:00:00Z`)); // days are UTC: never cross midnight mid-test
     await connected("conv_old0001");
     vi.setSystemTime(Date.now() + 20_000);
     await connected("conv_new0001");

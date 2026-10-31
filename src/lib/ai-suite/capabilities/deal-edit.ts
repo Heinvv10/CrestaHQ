@@ -135,7 +135,7 @@ export const DEAL_EDIT_CAPABILITIES: AiSuiteCapability[] = [
     },
     execute: async (ctx, args) => {
       await tenantDeal(ctx.subAccountId!, args.dealId);
-      if (!(await deleteDealServerSide({ dealId: args.dealId as string }))) {
+      if (!(await deleteDealServerSide({ dealId: args.dealId as string, actorUid: ctx.uid }))) {
         throw new CapabilityUserError("That deal wasn't found in this workspace.");
       }
       return { resultText: "Deleted the deal.", ref: { kind: "deal", id: args.dealId as string } };

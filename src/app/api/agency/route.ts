@@ -5,6 +5,7 @@ import { FieldValue } from "firebase-admin/firestore";
 import { getAdminAuth, getAdminDb } from "@/lib/firebase/admin";
 import { invalidateAgencyPolicyCache } from "@/lib/agency/policy";
 import { activeOwnerRefusal } from "@/lib/auth/require-active-agency-owner";
+import { setAgencyUsageRebilling } from "@/lib/server/usage-rebilling";
 import { MIN_CONTRAST, contrastOnWhite, isUsableBrandColor } from "@/lib/branding/brand-color";
 import type { MemberStatus, Role } from "@/types";
 
@@ -34,6 +35,7 @@ interface PatchBody {
   agencyAssistantEnabled?: boolean;
   agencyAssistantModel?: "opus" | "sonnet";
   agentApiEnabled?: boolean;
+  usageRebillingEnabled?: boolean;
 }
 
 const APP_THEMES = new Set(["leadstack", "green", "neutral"]);
@@ -220,6 +222,22 @@ export async function PATCH(request: Request) {
     update.agentApiEnabled = body.agentApiEnabled;
   }
 
+  // Usage rebilling master switch (off by default; read `=== true`). A money
+  // switch, so turning it on re-checks the live owner row like the API switch.
+  // Written in its own transaction below (lib/server/usage-rebilling.ts).
+  if (body.usageRebillingEnabled !== undefined) {
+    if (typeof body.usageRebillingEnabled !== "boolean") {
+      return NextResponse.json(
+        { error: "usageRebillingEnabled must be a boolean." },
+        { status: 400 },
+      );
+    }
+    if (body.usageRebillingEnabled) {
+      const refusal = await activeOwnerRefusal(access.uid, access.agencyId);
+      if (refusal) return refusal;
+    }
+  }
+
   // Agency Assistant model tier ("opus" | "sonnet"; unset docs read as
   // opus — matching pre-picker behavior).
   if (body.agencyAssistantModel !== undefined) {
@@ -252,14 +270,24 @@ export async function PATCH(request: Request) {
     }
   }
 
-  if (Object.keys(update).length === 1) {
+  const wantsRebilling = body.usageRebillingEnabled !== undefined;
+  if (Object.keys(update).length === 1 && !wantsRebilling) {
     return NextResponse.json(
       { error: "No fields to update." },
       { status: 400 },
     );
   }
 
-  await getAdminDb().doc(`agencies/${access.agencyId}`).update(update);
+  if (Object.keys(update).length > 1) {
+    await getAdminDb().doc(`agencies/${access.agencyId}`).update(update);
+  }
+  if (wantsRebilling) {
+    await setAgencyUsageRebilling(
+      access.agencyId,
+      body.usageRebillingEnabled === true,
+      access.uid,
+    );
+  }
 
   // Drop the cached policy so send paths pick up the new value immediately on
   // this instance (other serverless instances expire via the 60s TTL).

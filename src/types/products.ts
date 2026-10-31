@@ -55,10 +55,31 @@ export interface Product {
    */
   bumpHeadline?: string;
 
+  // ── Sell online (upstream 1.0.54) ────────────────────────────────
+  // Optional too: absent = catalog-only, as before. Written only through
+  // the products routes (products-sell-online-service validates them).
+  /** Has an express buy link; needs `sellOnlineEnabledByAgency`. */
+  sellOnline?: boolean;
+  /** Unique per sub-account, lowercase kebab. Minted on first sellOnline. */
+  slug?: string;
+  /** Longer public sales copy for the product page. Falls back to description. */
+  publicDescription?: string;
+  /** Buy buttons go to this published checkout page instead of express. */
+  checkoutPageId?: string | null;
+  /** What the buyer gets once paid. Absent = { type: "none" }. */
+  delivery?: ProductDelivery;
+  /** Bumped on public-facing edits so resyncs can skip no-ops. */
+  publicVersion?: number;
+
   // ── Audit ────────────────────────────────────────────────────────
   createdAt: Timestamp | FieldValue | null;
   updatedAt: Timestamp | FieldValue | null;
 }
+
+export type ProductDelivery =
+  | { type: "none" }
+  | { type: "community"; communityGroupId: string; courseId?: string | null }
+  | { type: "download"; url: string; label?: string };
 
 export const DEFAULT_PRODUCT: Omit<
   Product,

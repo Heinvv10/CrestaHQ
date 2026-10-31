@@ -56,15 +56,18 @@ CGO_ENABLED=1 go build -o wa-agent-bridge .   # correct
 CGO_ENABLED=0 go build ./...                  # MUST fail; that guard is intentional
 ```
 
-**The `go 1.26.6` directive in `go.mod` is a security floor, not housekeeping —
+**The `go 1.26.10` directive in `go.mod` is a security floor, not housekeeping —
 do not lower it.** On 1.26.0 `govulncheck` reports eight standard-library
 advisories with call paths this service actually reaches — `net/http`,
 `crypto/tls`, `crypto/x509`, `net/textproto`, `net/url`, `encoding/asn1` — and
-this service serves HTTP on `/v1/*`. All eight are fixed in 1.26.6. The deploy
+this service serves HTTP on `/v1/*`. All eight are fixed in 1.26.6; later stdlib advisories (`GO-2026-6809` in
+`crypto/x509`, `GO-2026-6617`/`6613`/`6612` in `net/http`) raised the floor to
+1.26.10, and `golang.org/x/net` must stay at v0.60.0 or later
+(`GO-2026-6617`/`6612`/`6611`/`6603`). The deploy
 script (`scripts/deploy-wa.sh`) builds with whatever toolchain the box has, so
 the directive is the only thing standing between an old toolchain and a
 vulnerable binary: with the default `GOTOOLCHAIN=auto` an older Go fetches
-1.26.6 and builds with it, and under `GOTOOLCHAIN=local` it refuses to build at
+1.26.10 and builds with it, and under `GOTOOLCHAIN=local` it refuses to build at
 all. Both outcomes are correct; neither ships a vulnerable binary. The CI pin
 governs only what CI builds.
 
