@@ -178,6 +178,41 @@ describe("captureSnapshot — AI persona", () => {
     // Folders do not travel; a copied folderId would dangle on the target.
     expect(field).not.toHaveProperty("folderId");
   });
+
+  it("copies products catalog-only: the source's sell-online fields stay behind", async () => {
+    const { db } = fakeDb({
+      ...base,
+      collections: {
+        ...base.collections,
+        products: [
+          {
+            id: "pr1",
+            data: {
+              name: "Fibre 100",
+              description: "",
+              unitPriceCents: 49_900,
+              currency: "ZAR",
+              active: true,
+              sellOnline: true,
+              slug: "fibre-100",
+              checkoutPageId: "cp_src",
+              delivery: { type: "community", communityGroupId: "g_src" },
+              publicVersion: 4,
+              publicDescription: "Fast fibre.",
+              subAccountId: "sa_src",
+            },
+          },
+        ],
+      },
+      docs: {},
+    });
+
+    const [product] = (await captureSnapshot(db, "sa_src")).products;
+    expect(product).toMatchObject({ name: "Fibre 100", unitPriceCents: 49_900, publicDescription: "Fast fibre." });
+    for (const key of ["sellOnline", "slug", "checkoutPageId", "delivery", "publicVersion"]) {
+      expect(product).not.toHaveProperty(key);
+    }
+  });
 });
 
 describe("applySnapshot — create-only guarantees", () => {

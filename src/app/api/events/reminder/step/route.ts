@@ -18,7 +18,7 @@ import {
 } from "@/lib/booking/event-token";
 import { renderBookingReminderEmail } from "@/lib/booking/email";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
-import { eventStatus, eventOccupiesSlot } from "@/types/events";
+import { eventStatus, eventOccupiesSlot, isImportedEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { Contact } from "@/types/contacts";
@@ -90,6 +90,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ ok: true, skipped: "missing" });
   }
   const event = eventSnap.data() as CalendarEvent;
+  // A member's own Google event is not a booking: nobody is reminded of it.
+  if (isImportedEvent(event)) {
+    return NextResponse.json({ ok: true, skipped: "imported" });
+  }
   const status = eventStatus(event);
   if (!eventOccupiesSlot(status)) {
     return NextResponse.json({ ok: true, skipped: `status:${status}` });

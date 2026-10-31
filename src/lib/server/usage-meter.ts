@@ -145,10 +145,47 @@ export async function getEffectiveRates(
 }
 
 /**
+ * Both usage-rebilling switches, read fresh (never the 5-minute caches, so
+ * a flip shows at once). Overage is only valued while `active`: the agency
+ * master switch AND this client's switch, each read `=== true`.
+ */
+export async function usageRebillingState(sub: {
+  agencyId?: string;
+  usageRebillingEnabled?: boolean;
+}): Promise<{ active: boolean; agency: boolean; client: boolean }> {
+  const client = sub.usageRebillingEnabled === true;
+  const agency =
+    !!sub.agencyId &&
+    (await getAdminDb().doc(`agencies/${sub.agencyId}`).get()).data()
+      ?.usageRebillingEnabled === true;
+  return { active: agency && client, agency, client };
+}
+
+/**
+ * Minor units for `overUnits` ledger units at `rate` minor units per `per`
+ * ledger units, rounded half-up. Integer maths throughout (BigInt), so no
+ * float drift: exact for any counter Firestore can hold, as long as the
+ * result is below 2^53 minor units.
+ */
+function overageMinorUnits(overUnits: number, rate: number, per: number): number {
+  const two = BigInt(2);
+  const n = BigInt(overUnits) * BigInt(rate);
+  const d = BigInt(per);
+  return Number((n * two + d) / (two * d));
+}
+
+/**
  * Value the month's usage BEYOND the included quotas at the configured
  * sell rates. Overage only exists past a quota (no quota = unlimited
  * included = nothing billable), and only counts when a rate is set for
- * that unit. Display/accrual only in v1.5 — nothing here moves money.
+ * that unit. Display/accrual only — nothing here moves money.
+ *
+ * Money is integer minor units (cents; ZAR cents on Paystack). Rounding
+ * rule: each unit's line is rounded half-up to a whole minor unit once,
+ * and the total is the sum of the rounded lines, so lines always add up
+ * to the total. A fractional rate is rounded half-up first (the rate
+ * sanitizers store whole minor units anyway). A line too big to hold
+ * exactly (past Number.MAX_SAFE_INTEGER) is skipped.
  */
 export function computeOverage(
   usage: UsageMonthDoc,
@@ -167,46 +204,44 @@ export function computeOverage(
   const entries: {
     unit: UsageUnit;
     rateKey: keyof UsageRates;
-    /** cents for `over` ledger units at `rate` cents-per-configured-unit */
-    cents: (over: number, rate: number) => number;
+    /** Ledger units the rate is quoted per (1k tokens, 60 voice seconds). */
+    per: number;
   }[] = [
-    { unit: "emailsSent", rateKey: "emailCents", cents: (o, r) => o * r },
-    { unit: "smsSegments", rateKey: "smsSegmentCents", cents: (o, r) => o * r },
-    {
-      unit: "whatsappMessages",
-      rateKey: "whatsappMessageCents",
-      cents: (o, r) => o * r,
-    },
-    {
-      unit: "aiTokens",
-      rateKey: "aiTokensPer1kCents",
-      cents: (o, r) => (o / 1000) * r,
-    },
-    {
-      unit: "voiceSeconds",
-      rateKey: "voiceMinuteCents",
-      cents: (o, r) => (o / 60) * r,
-    },
+    { unit: "emailsSent", rateKey: "emailCents", per: 1 },
+    { unit: "smsSegments", rateKey: "smsSegmentCents", per: 1 },
+    { unit: "whatsappMessages", rateKey: "whatsappMessageCents", per: 1 },
+    { unit: "aiTokens", rateKey: "aiTokensPer1kCents", per: 1000 },
+    { unit: "voiceSeconds", rateKey: "voiceMinuteCents", per: 60 },
   ];
 
   for (const e of entries) {
     const limit = limitFor(quotas, e.unit);
-    const rate = rates[e.rateKey];
+    const raw = rates[e.rateKey];
     if (limit === null) continue;
-    if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
-      continue;
-    }
+    if (typeof raw !== "number" || !Number.isFinite(raw)) continue;
+    const rate = Math.round(raw);
+    if (rate <= 0) continue;
     const used = usage[e.unit] ?? 0;
-    const overUnits = Math.max(0, used - limit);
+    const overUnits = Number.isFinite(used) ? Math.max(0, Math.floor(used) - limit) : 0;
     if (overUnits <= 0) continue;
-    const cents = Math.round(e.cents(overUnits, rate));
+    const cents = overageMinorUnits(overUnits, rate, e.per);
+    // Past 2^53 a Number can't hold the amount exactly: skip the line, never
+    // round it. Both are >= 0, so this also covers a line too big on its own.
+    if (!Number.isSafeInteger(totalCents + cents)) continue;
     perUnit[e.unit] = { overUnits, cents };
     totalCents += cents;
   }
   return { perUnit, totalCents };
 }
 
-/** Sanitize an inbound rates payload — same contract as quotas. */
+/** Highest sell rate stored per unit: 1,000,000 minor units (R10,000 / $10,000). */
+export const MAX_USAGE_RATE_CENTS = 1_000_000;
+
+/**
+ * Sanitize an inbound rates payload — same contract as quotas, rounded to
+ * whole minor units (a rate that rounds to 0 is dropped) and capped at
+ * MAX_USAGE_RATE_CENTS.
+ */
 export function sanitizeUsageRates(raw: unknown): UsageRates | null {
   if (!raw || typeof raw !== "object") return null;
   const r = raw as Record<string, unknown>;
@@ -220,8 +255,8 @@ export function sanitizeUsageRates(raw: unknown): UsageRates | null {
   ];
   for (const key of keys) {
     const v = r[key];
-    if (typeof v === "number" && Number.isFinite(v) && v > 0) {
-      out[key] = Math.round(v);
+    if (typeof v === "number" && Number.isFinite(v) && Math.round(v) > 0) {
+      out[key] = Math.min(MAX_USAGE_RATE_CENTS, Math.round(v));
     }
   }
   return Object.keys(out).length > 0 ? out : null;

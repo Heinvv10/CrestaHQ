@@ -120,6 +120,7 @@ export async function createEventServerSide(
     agencyId: input.agencyId,
     mode: input.mode,
     type: "event.created",
+    actorUid: input.createdByUid,
     payload: { event },
   }));
 

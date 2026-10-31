@@ -58,6 +58,7 @@ vi.mock("@/components/settings/sub-account-whatsapp-senders-section", () => ({ S
 vi.mock("@/components/settings/sub-account-whatsapp-bridge-section", () => ({ SubAccountWhatsappBridgeSection: () => null }));
 vi.mock("@/components/settings/sub-account-mailbox-section", () => ({ SubAccountMailboxSection: () => null }));
 vi.mock("@/components/settings/sub-account-email-suppression-section", () => ({ SubAccountEmailSuppressionSection: () => null }));
+vi.mock("@/components/settings/sub-account-email-tracking-section", () => ({ SubAccountEmailTrackingSection: () => null }));
 vi.mock("@/components/settings/sub-account-smtp-section", () => ({ SubAccountSmtpSection: () => null }));
 vi.mock("@/components/settings/sub-account-email-domain-section", () => ({ SubAccountEmailDomainSection: () => null }));
 vi.mock("@/components/settings/sub-account-paypal-section", () => ({ SubAccountPayPalSection: () => null }));

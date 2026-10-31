@@ -19,6 +19,11 @@ import { useAuth } from "@/hooks/use-auth";
 import { useSubAccount } from "@/context/sub-account-context";
 import { subscribeToProducts } from "@/lib/firestore/products";
 import type { Product } from "@/types/products";
+import type { SubAccountDoc } from "@/types/tenancy";
+import {
+  ProductSellOnlinePanel,
+  type SellOnlineDraft,
+} from "@/components/products/product-sell-online-panel";
 
 /**
  * Sub-account product catalog. Operator creates reusable products here;
@@ -30,7 +35,7 @@ import type { Product } from "@/types/products";
 
 export default function ProductsPage() {
   const { user, loading: authLoading } = useAuth();
-  const { subAccountId, agencyId } = useSubAccount();
+  const { subAccountId, agencyId, subAccount } = useSubAccount();
 
   const [products, setProducts] = useState<Product[]>([]);
   const [showArchived, setShowArchived] = useState(false);
@@ -118,6 +123,7 @@ export default function ProductsPage() {
         open={creating || !!editing}
         product={editing}
         subAccountId={subAccountId}
+        subAccount={subAccount}
         onClose={() => {
           setCreating(false);
           setEditing(null);
@@ -182,7 +188,16 @@ function ProductRow({
 
   return (
     <tr className="border-b last:border-0">
-      <td className="px-4 py-3 font-medium">{product.name}</td>
+      <td className="px-4 py-3 font-medium">
+        <div className="flex items-center gap-2.5">
+          <span className="min-w-0 truncate">{product.name}</span>
+          {product.sellOnline && product.active && (
+            <span className="inline-flex shrink-0 rounded-full bg-sky-500/10 px-2 py-0.5 text-[10px] font-medium text-sky-700 dark:text-sky-400">
+              Online
+            </span>
+          )}
+        </div>
+      </td>
       <td className="max-w-md truncate px-4 py-3 text-muted-foreground">
         {product.description || (
           <span className="italic text-muted-foreground/60">No description</span>
@@ -228,15 +243,36 @@ function ProductRow({
   );
 }
 
+const EMPTY_SELL: SellOnlineDraft = {
+  sellOnline: false,
+  slug: "",
+  publicDescription: "",
+  delivery: { type: "none" },
+  checkoutPageId: null,
+};
+
+function sellDraftFrom(product: Product | null): SellOnlineDraft {
+  if (!product) return EMPTY_SELL;
+  return {
+    sellOnline: product.sellOnline === true,
+    slug: product.slug ?? "",
+    publicDescription: product.publicDescription ?? "",
+    delivery: product.delivery ?? { type: "none" },
+    checkoutPageId: product.checkoutPageId ?? null,
+  };
+}
+
 function ProductDialog({
   open,
   product,
   subAccountId,
+  subAccount,
   onClose,
 }: {
   open: boolean;
   product: Product | null;
   subAccountId: string;
+  subAccount: SubAccountDoc | null;
   onClose: () => void;
 }) {
   const editing = !!product;
@@ -246,7 +282,9 @@ function ProductDialog({
   const [currency, setCurrency] = useState("USD");
   const [bumpEligible, setBumpEligible] = useState(false);
   const [bumpHeadline, setBumpHeadline] = useState("");
+  const [sell, setSell] = useState<SellOnlineDraft>(EMPTY_SELL);
   const [saving, setSaving] = useState(false);
+  const sellGateOn = subAccount?.sellOnlineEnabledByAgency === true;
 
   useEffect(() => {
     if (!open) return;
@@ -266,6 +304,7 @@ function ProductDialog({
       setBumpEligible(false);
       setBumpHeadline("");
     }
+    setSell(sellDraftFrom(product));
   }, [open, product]);
 
   async function handleSubmit(e: FormEvent) {
@@ -282,9 +321,20 @@ function ProductDialog({
     }
     const unitPriceCents = Math.round(priceNum * 100);
 
+    if (sellGateOn && sell.sellOnline) {
+      if (sell.delivery.type === "community" && !sell.delivery.communityGroupId) {
+        toast.error("Pick the community group the buyer joins.");
+        return;
+      }
+      if (sell.delivery.type === "download" && !sell.delivery.url.trim()) {
+        toast.error("Add the download link.");
+        return;
+      }
+    }
+
     setSaving(true);
     try {
-      const payload = {
+      const payload: Record<string, unknown> = {
         name: trimmedName,
         description: description.trim(),
         unitPriceCents,
@@ -292,6 +342,21 @@ function ProductDialog({
         bumpEligible,
         bumpHeadline: bumpEligible ? bumpHeadline.trim() : "",
       };
+      // Only sent while the gate is on, so the request is unchanged otherwise.
+      if (sellGateOn) {
+        payload.sellOnline = sell.sellOnline;
+        payload.publicDescription = sell.publicDescription.trim();
+        payload.delivery =
+          sell.delivery.type === "download"
+            ? {
+                ...sell.delivery,
+                url: sell.delivery.url.trim(),
+                label: sell.delivery.label?.trim() || undefined,
+              }
+            : sell.delivery;
+        if (sell.slug.trim()) payload.slug = sell.slug.trim();
+        if (editing) payload.checkoutPageId = sell.checkoutPageId;
+      }
       const res = await fetch(
         editing
           ? `/api/sub-accounts/${subAccountId}/products/${product!.id}`
@@ -321,11 +386,13 @@ function ProductDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <DialogHeader>
           <DialogTitle>{editing ? "Edit product" : "New product"}</DialogTitle>
           <DialogDescription>
-            Reusable line item for quotes and invoices.
+            {sellGateOn
+              ? "A product or service for quotes, invoices and online sale."
+              : "Reusable line item for quotes and invoices."}
           </DialogDescription>
         </DialogHeader>
         <form onSubmit={handleSubmit} className="space-y-4">
@@ -411,6 +478,16 @@ function ProductDialog({
               </div>
             )}
           </div>
+
+          <ProductSellOnlinePanel
+            subAccountId={subAccountId}
+            subAccount={subAccount}
+            productId={product?.id ?? null}
+            productName={name}
+            currency={currency}
+            draft={sell}
+            onChange={setSell}
+          />
 
           <div className="flex items-center justify-end gap-2 pt-2">
             <Button type="button" variant="ghost" onClick={onClose} disabled={saving}>

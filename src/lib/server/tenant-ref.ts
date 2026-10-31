@@ -3,6 +3,7 @@ import "server-only";
 import { getAdminDb } from "@/lib/firebase/admin";
 import { isDocId } from "@/lib/server/doc-id";
 import type { Contact } from "@/types/contacts";
+import { isImportedEvent } from "@/types/events";
 
 /**
  * Whether a doc id taken from request input names a doc in the caller's
@@ -24,6 +25,9 @@ export async function refInSubAccount(
   if (!snap.exists) return false;
   const data = snap.data() ?? {};
   if (data.subAccountId !== subAccountId) return false;
+  // An imported Google event is a member's own calendar, never a record
+  // anything links to.
+  if (collection === "events" && isImportedEvent(data)) return false;
   if (mode === undefined || data.mode === mode) return true;
   // Events ONLY: booking-page and voice bookings are written without a
   // `mode`, and are still this sub-account's events. Deliberately, a test-mode

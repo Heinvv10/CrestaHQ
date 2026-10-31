@@ -11,7 +11,7 @@ import {
   type PageSlot,
   type PageSlotsInput,
 } from "@/lib/booking/page-slots";
-import { eventOccupiesSlot, eventStatus } from "@/types/events";
+import { eventOccupiesSlot, eventStatus, isImportedEvent } from "@/types/events";
 import type { CalendarEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { SubAccountMemberDoc } from "@/types/tenancy";
@@ -230,6 +230,15 @@ async function loadEventBusy(
     const startAt = toDate(e.startAt);
     const endAt = toDate(e.endAt);
     if (!startAt || !endAt) continue;
+    // An imported Google event blocks its owner only — from this copy, so it
+    // still holds while their live Google busy fails open. Never a booking.
+    if (isImportedEvent(e)) {
+      const owner = e.importOwnerUid;
+      if (owner && eventOccupiesSlot(eventStatus(e))) {
+        busy.push({ startAt, endAt, hostUids: [owner], bookingPageSlug: null, ownerOnly: true });
+      }
+      continue;
+    }
     const status = eventStatus(e);
     const entry: HostBusy = {
       startAt,

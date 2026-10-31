@@ -36,6 +36,7 @@ const { handleSubAccountPlanCheckoutCompleted, recordSubAccountSubscriptionId } 
   "./billing-lifecycle"
 );
 const { flagOrderAttention } = await import("./orders-service");
+const { listOrderFlags } = await import("./billing-attention");
 
 const session = (id: string) =>
   ({
@@ -197,6 +198,16 @@ describe("order flag email (sub-account admins)", () => {
 
     expect(sendEmail).toHaveBeenCalledTimes(1);
     expect(mem.read("orders/o1")).toMatchObject({ attentionOpen: true, attention: expect.stringContaining("completed") });
+  });
+
+  it("a Paystack order (empty Stripe session id) names its Paystack reference in the email and the listing", async () => {
+    const paystack = { ...order, source: "product_link", stripePaymentIntentId: null, stripeCheckoutSessionId: "", paystackReference: "po-o1" } as Order;
+    mem.seed("orders/o1", { ...paystack });
+
+    await flagOrderAttention(paystack, "Held: amount mismatch");
+
+    expect(sent()[0].text).toContain("po-o1");
+    expect(await listOrderFlags("sa1")).toEqual([expect.objectContaining({ orderId: "o1", reference: "po-o1" })]);
   });
 
   it("a redelivery does not reopen a flag an admin resolved", async () => {

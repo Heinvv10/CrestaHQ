@@ -13,6 +13,7 @@ import {
 import { GLOBAL_TERRITORY_ID } from "@/types";
 import { isLongEvent } from "@/lib/booking/long-event";
 import { runAfterResponse } from "@/lib/server/after-response";
+import { isImportedEvent } from "@/types/events";
 
 const DEFAULT_LIMIT = 20;
 const MAX_LIMIT = 100;
@@ -64,7 +65,11 @@ export const GET = withApiAuth(async ({ request, ctx }) => {
   const hasMore = snap.docs.length > limit;
   return apiOk(ctx, {
     object: "list",
-    data: docs.map((d) => serializeEventForApi(d.id, d.data(), ctx.mode)),
+    // Imported Google events carry no `mode`, so the query already leaves
+    // them out; never expose one even if it had.
+    data: docs
+      .filter((d) => !isImportedEvent(d.data()))
+      .map((d) => serializeEventForApi(d.id, d.data(), ctx.mode)),
     has_more: hasMore,
     url: "/v1/events",
   });
@@ -133,6 +138,7 @@ export const POST = withApiAuth(async ({ body, ctx }) => {
     agencyId: ctx.agencyId,
     mode: ctx.mode,
     type: "event.created",
+    actorUid: `apikey:${ctx.keyPrefix}`,
     payload: { event: wire },
   }));
   return apiOk(ctx, { event: wire }, { status: 201 });

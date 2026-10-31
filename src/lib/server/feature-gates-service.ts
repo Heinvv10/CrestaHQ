@@ -5,6 +5,7 @@ import { getAdminDb } from "@/lib/firebase/admin";
 import { removeSendingDomain } from "@/lib/comms/resend-domains";
 import { metaAppConfigured } from "@/lib/comms/meta";
 import { clearAllGbpCaches } from "@/lib/gbp/sync/clear";
+import { deleteImportedEvents } from "@/lib/google-calendar/import-state";
 import { recordSubAccountAuditEvent } from "@/lib/audit/record";
 import type { AuditActor } from "@/lib/audit/types";
 import { DEFAULT_ON_GATE_FIELDS } from "@/lib/comms/ai/gates";
@@ -66,6 +67,11 @@ export type AgencyGateField =
   // account the client owns, an explicit per-client decision.
   | "webVoiceEnabledByAgency"
   | "dialerEnabledByAgency"
+  // Agent monitors, selling online and AI texts — standalone: they spend AI
+  // credits, move money, and message customers, so no plan may switch them.
+  | "agentsEnabledByAgency"
+  | "sellOnlineEnabledByAgency"
+  | "aiOutboundSmsEnabledByAgency"
   // Email AI drafts — standalone: AI-written replies to a client's customers
   // are an explicit per-client decision, not a plan perk.
   | "emailAiDraftsEnabledByAgency"
@@ -156,6 +162,20 @@ export async function applyFeatureGates(
     } catch (err) {
       console.error(
         `[feature-gates] GBP cache clear failed sa=${subAccountId} kind=${err instanceof Error ? err.name : typeof err}`,
+      );
+    }
+  }
+  // Google Calendar gate OFF → every imported Google event goes now, on every
+  // path that switches it. After the gate write, so a running import is
+  // refused by its fingerprint check. Members' opt-ins stay: re-enabling
+  // resumes their imports. A failed delete does not fail the gate: each
+  // member's next import pass and the daily orphan sweep delete too.
+  if (gates.googleCalendarEnabledByAgency === false) {
+    try {
+      await deleteImportedEvents(subAccountId);
+    } catch (err) {
+      console.error(
+        `[feature-gates] imported-event cleanup failed sa=${subAccountId} kind=${err instanceof Error ? err.name : typeof err}`,
       );
     }
   }

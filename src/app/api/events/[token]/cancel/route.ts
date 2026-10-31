@@ -21,7 +21,7 @@ import {
 } from "@/lib/booking/lifecycle";
 import { renderBookingCancelledEmail } from "@/lib/booking/email";
 import { bookedEventLabel } from "@/lib/booking/calendar-types";
-import { eventStatus } from "@/types/events";
+import { eventStatus, isImportedEvent } from "@/types/events";
 import type { BookingPage } from "@/types/booking";
 import type { CalendarEvent } from "@/types/events";
 import type { SubAccountDoc } from "@/types/tenancy";
@@ -59,7 +59,7 @@ export async function POST(
       const eventSnap = await txn.get(ref);
       if (!eventSnap.exists) throw new TokenInvalid();
       const event = eventSnap.data() as CalendarEvent;
-      if (event.publicTokenHash !== hashEventToken(token)) {
+      if (event.publicTokenHash !== hashEventToken(token) || isImportedEvent(event)) {
         throw new TokenInvalid();
       }
       const status = eventStatus(event);
